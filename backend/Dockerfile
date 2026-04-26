@@ -1,23 +1,25 @@
 FROM node:20-alpine
 
-# Install OpenSSL - required by Prisma on Alpine Linux
+# Install OpenSSL and required libs for Prisma
 RUN apk add --no-cache openssl openssl-dev libc6-compat
 
 WORKDIR /app
 
-# Install dependencies
+# Copy package files
 COPY package*.json ./
-RUN npm ci
-
-# Copy prisma schema and generate client
 COPY prisma ./prisma/
+
+# Install all dependencies
+RUN npm install
+
+# Generate Prisma client explicitly (no postinstall)
 RUN npx prisma generate
 
-# Copy source and build TypeScript
+# Copy rest of source and build
 COPY . .
 RUN npm run build
 
 EXPOSE 4000
 
-# At runtime: migrate then start (DATABASE_URL is available here from Railway env)
+# Migrate and start at runtime (DATABASE_URL available here)
 CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]

@@ -30,7 +30,7 @@ async function main() {
           create: {
             currency: 'KES',
             timezone: 'Africa/Nairobi',
-            backendUrl: 'http://localhost:4000',
+            backendUrl: 'https://dartbit-production.up.railway.app',
           },
         },
       },
@@ -61,7 +61,7 @@ async function main() {
       service: 'PPPOE',
       speedUpKbps: 10240,
       speedDownKbps: 10240,
-      validityMinutes: 43200, // 30 days
+      validityMinutes: 43200,
       price: 1500,
       tenantId: tenant.id,
     },
@@ -76,7 +76,7 @@ async function main() {
       service: 'HOTSPOT',
       speedUpKbps: 5120,
       speedDownKbps: 5120,
-      validityMinutes: 1440, // 1 day
+      validityMinutes: 1440,
       price: 100,
       tenantId: tenant.id,
     },
