@@ -19,7 +19,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://dartbit:dartbit_pass@postgres:5432/dartbit
+      DATABASE_URL: "postgresql://postgres:NrIQqHOocsnSBxqZrlMlnBFgNPcpOHuN@postgres.railway.internal:5432/railway"
       JWT_SECRET: dartbit-super-secret-jwt-key
       PORT: 4000
       BACKEND_URL: http://localhost:4000
