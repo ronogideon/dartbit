@@ -1,6 +1,7 @@
-# Dartbit — ISP Billing & MikroTik Management Platform
+# Dartbit v1.1 — ISP Billing & MikroTik Management Platform
 
-A full-stack, multi-tenant ISP management platform with MikroTik zero-touch provisioning, subscriber management, billing, and a customer portal.
+A full-stack, multi-tenant ISP management platform with MikroTik zero-touch provisioning,
+subscriber management, billing, and a customer portal.
 
 ---
 
@@ -18,79 +19,107 @@ A full-stack, multi-tenant ISP management platform with MikroTik zero-touch prov
 
 ---
 
-## Quick Start
+## Local Development Setup
 
 ### Prerequisites
 - Node.js 18+
-- PostgreSQL (local or remote)
+- PostgreSQL running locally
 
----
-
-### 1. Clone & Install
+### 1. Backend
 
 ```bash
-# Backend
 cd backend
 cp .env.example .env
-# Edit .env with your DATABASE_URL and other values
+# Edit .env — set DATABASE_URL to your PostgreSQL connection string
+# Set BACKEND_URL to your LAN IP e.g. http://192.168.1.100:4000 (for MikroTik to reach you)
 npm install
-
-# Frontend
-cd ../frontend
-cp .env.example .env.local
-npm install
-```
-
-### 2. Setup Database
-
-```bash
-cd backend
 npx prisma migrate dev --name init
 npm run seed
+npm run dev
 ```
 
-### 3. Run
+### 2. Frontend
 
 ```bash
-# Terminal 1 — Backend
-cd backend
-npm run dev
-
-# Terminal 2 — Frontend
 cd frontend
+cp .env.example .env.local
+# Edit .env.local — set NEXT_PUBLIC_API_URL=http://localhost:4000
+npm install --legacy-peer-deps
 npm run dev
 ```
 
 - Frontend: http://localhost:3000
-- Backend API: http://localhost:4000
+- Backend: http://localhost:4000
+
+---
+
+## Railway Deployment
+
+### Step 1 — Deploy Backend
+
+1. Create a new Railway project
+2. Add a **PostgreSQL** plugin — Railway sets `DATABASE_URL` automatically
+3. Create a new service from your GitHub repo (or upload)
+4. Set root directory to `backend`
+5. Set these environment variables in Railway:
+
+```
+JWT_SECRET=your-secure-random-string
+BACKEND_URL=https://your-backend.up.railway.app
+FRONTEND_URL=https://your-frontend.up.railway.app
+NODE_ENV=production
+PORT=4000
+```
+
+6. Railway will auto-run `npm install` → `postinstall` (prisma generate) → `npm start`
+7. After first deploy, open Railway shell and run:
+```bash
+npx prisma migrate deploy
+npm run seed
+```
+
+### Step 2 — Deploy Frontend
+
+1. Add a second service in the same Railway project
+2. Set root directory to `frontend`
+3. Set environment variables:
+```
+NEXT_PUBLIC_API_URL=https://your-backend.up.railway.app
+```
+4. Deploy
+
+### Step 3 — Update BACKEND_URL for MikroTik
+
+Once deployed, go to **Settings** in Dartbit and set Backend URL to your Railway backend URL.
+This ensures the MikroTik bootstrap command uses the correct public URL.
 
 ---
 
 ## Default Credentials
 
-| Role        | Email                      | Password       |
-|-------------|----------------------------|----------------|
-| Superadmin  | superadmin@dartbit.local   | SuperAdmin123! |
-| Tenant Admin| admin@demoisp.com          | Test12345      |
+| Role         | Email                      | Password       |
+|--------------|----------------------------|----------------|
+| Superadmin   | superadmin@dartbit.local   | SuperAdmin123! |
+| Tenant Admin | admin@demoisp.com          | Test12345      |
 
 ---
 
 ## Pages
 
-| Route           | Description                        |
-|-----------------|------------------------------------|
-| `/auth/login`   | Admin login                        |
-| `/dashboard`    | Main dashboard with stats          |
-| `/active-users` | Live online sessions (2s refresh)  |
-| `/subscribers`  | Subscriber CRUD                    |
-| `/packages`     | Package CRUD (PPPoE / Hotspot)     |
-| `/payments`     | Payment recording (M-Pesa ready)   |
-| `/messages`     | SMS/Email message log              |
-| `/routers`      | MikroTik router management         |
-| `/settings`     | Tenant configuration               |
-| `/admin/tenants`| Superadmin tenant management       |
-| `/customer`     | Customer self-service portal       |
-| `/hotspot`      | Hotspot landing page               |
+| Route            | Description                        |
+|------------------|------------------------------------|
+| `/auth/login`    | Admin login                        |
+| `/dashboard`     | Main dashboard with stats          |
+| `/active-users`  | Live online sessions (2s refresh)  |
+| `/subscribers`   | Subscriber CRUD                    |
+| `/packages`      | Package CRUD (PPPoE / Hotspot)     |
+| `/payments`      | Payment recording (M-Pesa ready)   |
+| `/messages`      | SMS/Email message log              |
+| `/routers`       | MikroTik router management         |
+| `/settings`      | Tenant configuration               |
+| `/admin/tenants` | Superadmin tenant management       |
+| `/customer`      | Customer self-service portal       |
+| `/hotspot`       | Hotspot landing page               |
 
 ---
 
@@ -103,109 +132,75 @@ npm run dev
 3. Copy the **bootstrap command** shown after linking
 4. Paste and run it in your MikroTik terminal
 
-**Bootstrap Command Format:**
-```
-/tool fetch url="http://YOUR_BACKEND_URL/router/ztp-script?apiKey=..." dst-path=dartbit-ztp.rsc; /import file-name=dartbit-ztp.rsc
-```
+**Important:** Make sure `BACKEND_URL` in your `.env` is set to a URL
+reachable by the router (LAN IP for local, Railway URL for production).
 
 ### What the ZTP Script Does
-- Sends a **heartbeat every 15 seconds** (CPU, uptime, identity)
-- Syncs **interface list every 5 minutes**
-- Router appears as **ONLINE** in the dashboard automatically
+- Sends **heartbeat every 15 seconds** (CPU load, uptime, identity)
+- Syncs **interfaces every 5 minutes**
+- Router status turns **ONLINE** in the dashboard automatically
 
 ---
 
-## API Endpoints
+## Windows Installation Notes (Local Dev)
 
-### Auth
-- `POST /auth/login` — Admin login
-- `POST /auth/subscriber-login` — Customer portal login
+If you encounter SWC binary errors on Windows:
 
-### Subscribers
-- `GET /subscribers` — List all
-- `POST /subscribers` — Create
-- `PUT /subscribers/:id` — Update
-- `DELETE /subscribers/:id` — Delete
-
-### Packages
-- `GET /packages` — List all
-- `POST /packages` — Create
-- `PUT /packages/:id` — Update
-- `DELETE /packages/:id` — Delete
-
-### Payments
-- `GET /payments` — List all
-- `POST /payments` — Record (auto-extends expiry)
-- `DELETE /payments/:id` — Delete
-
-### MikroTik
-- `POST /mikrotiks/link` — Link router
-- `GET /router/ztp-script?apiKey=` — ZTP script download
-- `POST /router/heartbeat` — Router heartbeat
-- `POST /router/interfaces` — Interface sync
-
-### Online Sessions
-- `GET /online-sessions` — Live sessions
-- `POST /online-sessions/sync` — Router reports active users
-
----
-
-## Railway Deployment
-
-1. Create two Railway services: one for backend, one for frontend
-2. Add a PostgreSQL plugin to the backend service
-3. Set environment variables:
-   - Backend: `DATABASE_URL`, `JWT_SECRET`, `BACKEND_URL`, `FRONTEND_URL`
-   - Frontend: `NEXT_PUBLIC_API_URL`
-4. Deploy — Railway auto-detects Node.js and runs `npm start`
-
----
-
-## Project Structure
-
+```cmd
+cd frontend
+rd /s /q node_modules
+del package-lock.json
+npm cache clean --force
+npm install --legacy-peer-deps
+npm run dev
 ```
-dartbit/
-├── backend/
-│   ├── prisma/
-│   │   └── schema.prisma
-│   └── src/
-│       ├── index.ts
-│       ├── middleware/auth.ts
-│       ├── routes/
-│       │   ├── auth.ts
-│       │   ├── subscribers.ts
-│       │   ├── packages.ts
-│       │   ├── payments.ts
-│       │   ├── messages.ts
-│       │   ├── routers.ts
-│       │   ├── routerZtp.ts
-│       │   ├── onlineSessions.ts
-│       │   ├── tenants.ts
-│       │   └── settings.ts
-│       ├── utils/
-│       │   ├── prisma.ts
-│       │   ├── jwt.ts
-│       │   └── response.ts
-│       └── seed.ts
-└── frontend/
-    └── src/
-        ├── app/
-        │   ├── dashboard/
-        │   ├── subscribers/
-        │   ├── packages/
-        │   ├── payments/
-        │   ├── messages/
-        │   ├── routers/
-        │   ├── active-users/
-        │   ├── settings/
-        │   ├── admin/tenants/
-        │   ├── customer/
-        │   ├── hotspot/
-        │   └── auth/login/
-        ├── components/
-        │   ├── layout/
-        │   └── ui/
-        └── lib/
-            ├── api.ts
-            └── auth.tsx
+
+Do NOT add a `.babelrc` file — it breaks the build.
+
+---
+
+## Changelog
+
+### v1.1
+- Fixed root page redirect (client-side instead of server redirect)
+- Fixed dashboard layout double-render conflict
+- Added `@babel/runtime` dependency to prevent missing module errors
+- Removed `.babelrc` (was causing Babel/SWC conflicts)
+- Updated `next.config.js` (clean, no experimental flags)
+- Added `--legacy-peer-deps` to frontend Dockerfile for Railway
+- Added `postinstall` script to backend for Railway prisma generate
+- Improved `.env.example` files with Railway-specific instructions
+- Added detailed Railway deployment guide to README
+- Pinned Next.js to 14.2.35 (stable Windows SWC binary)
+
+### v1.0
+- Initial release
+
+---
+
+## v1.1.2 Changes
+
+- **Railway URL**: Backend and frontend hardcoded to `https://dartbit-production.up.railway.app`
+- **Collapsible Sidebar**: Click the collapse button at the bottom of the sidebar to toggle between full (256px) and icon-only (64px) modes
+  - Smooth CSS transition animation
+  - Tooltips appear on hover when collapsed
+  - State persisted in localStorage across page refreshes
+- **CORS**: Backend now explicitly allows `https://dartbit-production.up.railway.app`
+- **AppLayout**: Updated to use flexbox spacer pattern so content area resizes correctly with sidebar
+
+### Railway Environment Variables to Set
+
+**Backend service:**
+```
+DATABASE_URL=<auto-set by Railway PostgreSQL plugin>
+JWT_SECRET=your-secure-random-string-here
+BACKEND_URL=https://dartbit-production.up.railway.app
+FRONTEND_URL=https://dartbit-production.up.railway.app
+NODE_ENV=production
+PORT=4000
+```
+
+**Frontend service:**
+```
+NEXT_PUBLIC_API_URL=https://dartbit-production.up.railway.app
 ```

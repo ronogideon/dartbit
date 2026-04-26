@@ -17,10 +17,23 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 4000;
 
+const allowedOrigins = [
+  'https://dartbit-production.up.railway.app',
+  'http://localhost:3000',
+  process.env.FRONTEND_URL,
+].filter(Boolean);
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
 }));
+
 app.use(express.json());
 
 // Routes
@@ -36,11 +49,12 @@ app.use('/tenants', tenantRoutes);
 app.use('/settings', settingsRoutes);
 
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'dartbit-backend', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', service: 'dartbit-backend', version: '1.1.2', timestamp: new Date().toISOString() });
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Dartbit backend running on port ${PORT}`);
+  console.log(`🚀 Dartbit v1.1.2 backend running on port ${PORT}`);
+  console.log(`   Backend URL: ${process.env.BACKEND_URL}`);
 });
 
 export default app;
