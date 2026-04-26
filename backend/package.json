@@ -6,9 +6,9 @@
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js",
-    "seed": "ts-node src/seed.ts"
-    
+    "start": "npx prisma migrate deploy && node dist/index.js",
+    "seed": "ts-node src/seed.ts",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^5.10.0",
