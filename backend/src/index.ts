@@ -21,22 +21,18 @@ const allowedOrigins = [
   'https://dartbit-production.up.railway.app',
   'http://localhost:3000',
   process.env.FRONTEND_URL,
-].filter(Boolean);
+].filter(Boolean) as string[];
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
 }));
 
 app.use(express.json());
 
-// Routes
 app.use('/auth', authRoutes);
 app.use('/subscribers', subscriberRoutes);
 app.use('/packages', packageRoutes);
@@ -49,12 +45,11 @@ app.use('/tenants', tenantRoutes);
 app.use('/settings', settingsRoutes);
 
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'dartbit-backend', version: '1.1.2', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', service: 'dartbit-backend', version: '1.1.3', timestamp: new Date().toISOString() });
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Dartbit v1.1.2 backend running on port ${PORT}`);
-  console.log(`   Backend URL: ${process.env.BACKEND_URL}`);
+  console.log(`🚀 Dartbit v1.1.3 backend running on port ${PORT}`);
 });
 
 export default app;

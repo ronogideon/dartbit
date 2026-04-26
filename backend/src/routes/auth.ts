@@ -24,28 +24,18 @@ router.post('/login', async (req: Request, res: Response) => {
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return sendError(res, 'Invalid credentials', 401);
 
-    const token = signToken({
-      userId: user.id,
-      role: user.role,
-      tenantId: user.tenantId || undefined,
-    });
+    const token = signToken({ userId: user.id, role: user.role, tenantId: user.tenantId || undefined });
 
     sendSuccess(res, {
       token,
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-        tenantId: user.tenantId,
-      },
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, tenantId: user.tenantId },
     });
-  } catch (err) {
+  } catch {
     sendError(res, 'Login failed', 500);
   }
 });
 
-// Subscriber login for customer portal
+// Customer portal login
 const subscriberLoginSchema = z.object({
   username: z.string(),
   password: z.string(),
@@ -63,18 +53,68 @@ router.post('/subscriber-login', async (req: Request, res: Response) => {
       include: { package: true },
     });
 
-    if (!subscriber) return sendError(res, 'Invalid credentials', 401);
-    if (subscriber.secret !== password) return sendError(res, 'Invalid credentials', 401);
+    if (!subscriber || subscriber.secret !== password) return sendError(res, 'Invalid credentials', 401);
 
-    const token = signToken({
-      userId: subscriber.id,
-      role: 'SUBSCRIBER',
-      tenantId: subscriber.tenantId,
-    });
-
+    const token = signToken({ userId: subscriber.id, role: 'SUBSCRIBER', tenantId: subscriber.tenantId });
     sendSuccess(res, { token, subscriber });
   } catch {
     sendError(res, 'Login failed', 500);
+  }
+});
+
+// Hotspot login — validates subscriber credentials (MikroTik hotspot page)
+const hotspotLoginSchema = z.object({
+  username: z.string(),
+  password: z.string(),
+  mac: z.string().optional(),
+  ip: z.string().optional(),
+});
+
+router.post('/subscriber-login-hotspot', async (req: Request, res: Response) => {
+  try {
+    const parsed = hotspotLoginSchema.safeParse(req.body);
+    if (!parsed.success) return sendError(res, 'Invalid input', 400);
+
+    const { username, password, mac, ip } = parsed.data;
+
+    // Find subscriber across all tenants by username
+    const subscriber = await prisma.subscriber.findFirst({
+      where: { username },
+      include: { package: true, router: true },
+    });
+
+    if (!subscriber || subscriber.secret !== password) return sendError(res, 'Invalid credentials', 401);
+
+    // Check if subscription is active
+    const now = new Date();
+    const expired = subscriber.expiresAt ? subscriber.expiresAt < now : false;
+    if (!subscriber.isActive || expired) {
+      return sendError(res, 'Subscription expired or inactive', 403);
+    }
+
+    // Update last seen and MAC/IP if provided
+    await prisma.subscriber.update({
+      where: { id: subscriber.id },
+      data: {
+        lastOnlineAt: now,
+        macAddress: mac || subscriber.macAddress,
+        ipAddress: ip || subscriber.ipAddress,
+      },
+    });
+
+    sendSuccess(res, {
+      authenticated: true,
+      subscriber: {
+        id: subscriber.id,
+        username: subscriber.username,
+        fullName: subscriber.fullName,
+        service: subscriber.service,
+        expiresAt: subscriber.expiresAt,
+        package: subscriber.package,
+      },
+    });
+  } catch {
+    sendError(res, 'Hotspot login failed', 500);
   }
 });
 
