@@ -32,7 +32,9 @@ async function main() {
     tenant = await prisma.tenant.create({
       data: {
         name: 'Demo ISP',
+        subdomain: 'demo-isp',
         domain: 'demoisp.com',
+        status: 'ACTIVE',
         settings: {
           create: {
             currency: 'KES',
