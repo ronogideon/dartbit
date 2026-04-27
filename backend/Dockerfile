@@ -18,5 +18,5 @@ RUN npm run build
 
 EXPOSE 4000
 
-# Run migrations then start — DATABASE_URL from Railway env is available here
-CMD ["sh", "-c", "npx prisma migrate deploy --schema=./prisma/schema.prisma && node dist/index.js"]
+# Run smart migration then start
+CMD ["sh", "-c", "node dist/migrate.js && node dist/index.js"]
