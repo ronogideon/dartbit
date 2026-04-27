@@ -150,3 +150,33 @@ router.get('/seed', async (req: Request, res: Response) => {
 });
 
 export default router;
+
+// GET /admin/test-signup — test if signup would work
+router.get('/test-signup', async (_req: Request, res: Response) => {
+  try {
+    // Test 1: Can we query tenants?
+    const tenantCount = await prisma.tenant.count();
+
+    // Test 2: Does subdomain column exist?
+    const testSubdomain = await prisma.tenant.findUnique({ where: { subdomain: 'test-does-not-exist' } });
+
+    // Test 3: Does status column exist?
+    const firstTenant = await prisma.tenant.findFirst({ select: { id: true, subdomain: true, status: true, trialEndsAt: true } });
+
+    res.json({
+      ok: true,
+      tenantCount,
+      subdomainColumnExists: true,
+      statusColumnExists: true,
+      sampleTenant: firstTenant,
+      message: 'All columns exist — signup should work',
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    res.status(500).json({
+      ok: false,
+      error: msg,
+      message: 'This tells us what migration is missing',
+    });
+  }
+});
