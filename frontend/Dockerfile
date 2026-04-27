@@ -2,7 +2,6 @@ FROM node:20-alpine AS deps
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
 COPY package.json ./
-# Generate lockfile and install — Railway needs this
 RUN npm install --legacy-peer-deps
 
 FROM node:20-alpine AS builder
@@ -19,6 +18,7 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
+# Copy public dir only if it exists (the .gitkeep ensures it always does)
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static

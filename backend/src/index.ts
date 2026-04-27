@@ -20,6 +20,7 @@ const PORT = process.env.PORT || 4000;
 
 const allowedOrigins = [
   'https://dartbit-production.up.railway.app',
+  'https://accomplished-patience-production-dd5a.up.railway.app',
   'http://localhost:3000',
   'http://localhost:3001',
   process.env.FRONTEND_URL,
