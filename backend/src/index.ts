@@ -41,13 +41,13 @@ app.use(express.json());
 // ── Public routes (no auth) ─────────────────────────────────
 app.get('/', (_req, res) => {
   res.json({
-    service: 'Dartbit API', version: '1.1.5', status: 'running',
+    service: 'Dartbit API', version: '1.1.9', status: 'running',
     timestamp: new Date().toISOString(),
   });
 });
 
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.1.5', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', version: '1.1.9', timestamp: new Date().toISOString() });
 });
 
 app.use('/auth', authRoutes);
@@ -70,7 +70,7 @@ app.use((_req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.1.5 running on port ${PORT}`);
+  console.log(`\n🚀 Dartbit v1.1.9 running on port ${PORT}`);
   console.log(`   DB: ${process.env.DATABASE_URL ? '✓ connected' : '✗ DATABASE_URL missing!'}\n`);
 });
 

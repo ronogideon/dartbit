@@ -5,11 +5,19 @@ import bcrypt from 'bcryptjs';
 const router = Router();
 const prisma = new PrismaClient();
 
-// One-time seed endpoint — protected by a secret key
-// Call: GET /admin/seed?secret=dartbit-seed-2024
+function generateSubdomain(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .substring(0, 30);
+}
+
+// GET /admin/seed?secret=dartbit-seed-2024
 router.get('/seed', async (req: Request, res: Response) => {
   const { secret } = req.query;
-
   if (secret !== 'dartbit-seed-2024') {
     return res.status(403).json({ error: 'Forbidden' });
   }
@@ -22,17 +30,36 @@ router.get('/seed', async (req: Request, res: Response) => {
     await prisma.user.upsert({
       where: { email: 'superadmin@dartbit.local' },
       update: {},
-      create: { email: 'superadmin@dartbit.local', password: superHash, name: 'Super Admin', role: 'SUPERADMIN' },
+      create: {
+        email: 'superadmin@dartbit.local',
+        password: superHash,
+        name: 'Super Admin',
+        role: 'SUPERADMIN',
+      },
     });
     results.push('✓ Superadmin created');
 
-    // Tenant
+    // Demo Tenant
+    const subdomain = 'demo-isp';
     let tenant = await prisma.tenant.findFirst({ where: { name: 'Demo ISP' } });
     if (!tenant) {
+      // Check subdomain availability
+      const existingSub = await prisma.tenant.findUnique({ where: { subdomain } });
+      const finalSubdomain = existingSub ? `${subdomain}-${Date.now()}` : subdomain;
+
       tenant = await prisma.tenant.create({
         data: {
-          name: 'Demo ISP', domain: 'demoisp.com',
-          settings: { create: { currency: 'KES', timezone: 'Africa/Nairobi', backendUrl: process.env.BACKEND_URL || '' } },
+          name: 'Demo ISP',
+          subdomain: finalSubdomain,
+          domain: 'demoisp.com',
+          status: 'ACTIVE',
+          settings: {
+            create: {
+              currency: 'KES',
+              timezone: 'Africa/Nairobi',
+              backendUrl: process.env.BACKEND_URL || '',
+            },
+          },
         },
       });
       results.push('✓ Tenant created');
@@ -45,7 +72,13 @@ router.get('/seed', async (req: Request, res: Response) => {
     await prisma.user.upsert({
       where: { email: 'admin@demoisp.com' },
       update: {},
-      create: { email: 'admin@demoisp.com', password: adminHash, name: 'Demo Admin', role: 'TENANT_ADMIN', tenantId: tenant.id },
+      create: {
+        email: 'admin@demoisp.com',
+        password: adminHash,
+        name: 'Demo Admin',
+        role: 'TENANT_ADMIN',
+        tenantId: tenant.id,
+      },
     });
     results.push('✓ Tenant admin created');
 
@@ -53,14 +86,32 @@ router.get('/seed', async (req: Request, res: Response) => {
     const pppoe = await prisma.package.upsert({
       where: { id: 'pkg-pppoe-10mb' },
       update: {},
-      create: { id: 'pkg-pppoe-10mb', name: '10Mbps Home PPPoE', service: 'PPPOE', speedUpKbps: 10240, speedDownKbps: 10240, validityMinutes: 43200, price: 1500, tenantId: tenant.id },
+      create: {
+        id: 'pkg-pppoe-10mb',
+        name: '10Mbps Home PPPoE',
+        service: 'PPPOE',
+        speedUpKbps: 10240,
+        speedDownKbps: 10240,
+        validityMinutes: 43200,
+        price: 1500,
+        tenantId: tenant.id,
+      },
     });
     results.push(`✓ Package: ${pppoe.name}`);
 
     await prisma.package.upsert({
       where: { id: 'pkg-hotspot-daily' },
       update: {},
-      create: { id: 'pkg-hotspot-daily', name: '5Mbps Hotspot Daily', service: 'HOTSPOT', speedUpKbps: 5120, speedDownKbps: 5120, validityMinutes: 1440, price: 50, tenantId: tenant.id },
+      create: {
+        id: 'pkg-hotspot-daily',
+        name: '5Mbps Hotspot Daily',
+        service: 'HOTSPOT',
+        speedUpKbps: 5120,
+        speedDownKbps: 5120,
+        validityMinutes: 1440,
+        price: 50,
+        tenantId: tenant.id,
+      },
     });
     results.push('✓ Package: Hotspot Daily');
 
@@ -69,9 +120,15 @@ router.get('/seed', async (req: Request, res: Response) => {
       where: { id: 'sub-demo-001' },
       update: {},
       create: {
-        id: 'sub-demo-001', username: 'john.doe', secret: 'password123',
-        fullName: 'John Doe', phone: '+254700000001', service: 'PPPOE',
-        packageId: pppoe.id, tenantId: tenant.id, isActive: true,
+        id: 'sub-demo-001',
+        username: 'john.doe',
+        secret: 'password123',
+        fullName: 'John Doe',
+        phone: '+254700000001',
+        service: 'PPPOE',
+        packageId: pppoe.id,
+        tenantId: tenant.id,
+        isActive: true,
         expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
       },
     });
@@ -79,7 +136,7 @@ router.get('/seed', async (req: Request, res: Response) => {
 
     res.json({
       success: true,
-      message: 'Database seeded successfully!',
+      message: 'Database seeded!',
       results,
       credentials: {
         superadmin: 'superadmin@dartbit.local / SuperAdmin123!',
