@@ -31,7 +31,11 @@ export default function PackagesPage() {
   const [editing, setEditing] = useState<Package | null>(null);
   const [form, setForm] = useState(emptyForm);
 
+<<<<<<< HEAD
   const { data: packages = [], isPending } = useQuery({ queryKey: ['packages'], queryFn: getPackages });
+=======
+  const { data: packages = [], isLoading } = useQuery({ queryKey: ['packages'], queryFn: getPackages });
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253
 
   const createMut = useMutation({
     mutationFn: createPackage,
@@ -88,7 +92,11 @@ export default function PackagesPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+<<<<<<< HEAD
             {isPending ? (
+=======
+            {isLoading ? (
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253
               <tr><td colSpan={7} className="table-td text-center py-8 text-gray-400">Loading...</td></tr>
             ) : (packages as Package[]).map(p => (
               <tr key={p.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/30">

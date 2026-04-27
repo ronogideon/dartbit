@@ -16,7 +16,11 @@ function formatSpeed(kbps?: number) {
 }
 
 export default function ActiveUsersPage() {
+<<<<<<< HEAD
   const { data: sessions = [], isPending, dataUpdatedAt } = useQuery({
+=======
+  const { data: sessions = [], isLoading, dataUpdatedAt } = useQuery({
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253
     queryKey: ['online-sessions'],
     queryFn: getOnlineSessions,
     refetchInterval: 2000,
@@ -52,7 +56,11 @@ export default function ActiveUsersPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+<<<<<<< HEAD
             {isPending ? (
+=======
+            {isLoading ? (
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253
               <tr><td colSpan={8} className="table-td text-center py-8 text-gray-400">Loading...</td></tr>
             ) : (sessions as Session[]).length === 0 ? (
               <tr>

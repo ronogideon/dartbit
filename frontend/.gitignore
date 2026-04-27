@@ -1,5 +1,10 @@
 node_modules/
 .next/
+<<<<<<< HEAD
 *.log
 # Keep .env.local out of git but include .env.example
 .env.local
+=======
+.env.local
+*.log
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253

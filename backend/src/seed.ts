@@ -1,12 +1,16 @@
+<<<<<<< HEAD
 import dotenv from 'dotenv';
 dotenv.config();
 
+=======
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
 async function main() {
+<<<<<<< HEAD
   console.log('');
   console.log('🌱 Seeding Dartbit database...');
   console.log(`   DB: ${process.env.DATABASE_URL?.split('@')[1] ?? 'unknown'}`);
@@ -15,6 +19,13 @@ async function main() {
   // ── Superadmin ──────────────────────────────────────────────
   const superHash = await bcrypt.hash('SuperAdmin123!', 10);
   const superAdmin = await prisma.user.upsert({
+=======
+  console.log('🌱 Seeding Dartbit...');
+
+  // Superadmin
+  const superHash = await bcrypt.hash('SuperAdmin123!', 10);
+  await prisma.user.upsert({
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253
     where: { email: 'superadmin@dartbit.local' },
     update: {},
     create: {
@@ -24,9 +35,14 @@ async function main() {
       role: 'SUPERADMIN',
     },
   });
+<<<<<<< HEAD
   console.log(`✓ Superadmin: ${superAdmin.email}`);
 
   // ── Demo Tenant ─────────────────────────────────────────────
+=======
+
+  // Demo ISP Tenant
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253
   let tenant = await prisma.tenant.findFirst({ where: { name: 'Demo ISP' } });
   if (!tenant) {
     tenant = await prisma.tenant.create({
@@ -37,11 +53,16 @@ async function main() {
           create: {
             currency: 'KES',
             timezone: 'Africa/Nairobi',
+<<<<<<< HEAD
             backendUrl: process.env.BACKEND_URL || 'http://localhost:4000',
+=======
+            backendUrl: 'https://dartbit-production.up.railway.app',
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253
           },
         },
       },
     });
+<<<<<<< HEAD
     console.log(`✓ Tenant created: ${tenant.name}`);
   } else {
     console.log(`✓ Tenant exists: ${tenant.name}`);
@@ -50,6 +71,13 @@ async function main() {
   // ── Tenant Admin ────────────────────────────────────────────
   const adminHash = await bcrypt.hash('Test12345', 10);
   const tenantAdmin = await prisma.user.upsert({
+=======
+  }
+
+  // Tenant Admin
+  const adminHash = await bcrypt.hash('Test12345', 10);
+  await prisma.user.upsert({
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253
     where: { email: 'admin@demoisp.com' },
     update: {},
     create: {
@@ -60,15 +88,24 @@ async function main() {
       tenantId: tenant.id,
     },
   });
+<<<<<<< HEAD
   console.log(`✓ Tenant admin: ${tenantAdmin.email}`);
 
   // ── Packages ────────────────────────────────────────────────
+=======
+
+  // Demo packages
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253
   const pppoe10 = await prisma.package.upsert({
     where: { id: 'pkg-pppoe-10mb' },
     update: {},
     create: {
       id: 'pkg-pppoe-10mb',
+<<<<<<< HEAD
       name: '10Mbps Home PPPoE',
+=======
+      name: '10Mbps Home',
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253
       service: 'PPPOE',
       speedUpKbps: 10240,
       speedDownKbps: 10240,
@@ -77,6 +114,7 @@ async function main() {
       tenantId: tenant.id,
     },
   });
+<<<<<<< HEAD
   console.log(`✓ Package: ${pppoe10.name}`);
 
   const pppoe5 = await prisma.package.upsert({
@@ -100,11 +138,20 @@ async function main() {
     update: {},
     create: {
       id: 'pkg-hotspot-daily',
+=======
+
+  await prisma.package.upsert({
+    where: { id: 'pkg-hotspot-5mb' },
+    update: {},
+    create: {
+      id: 'pkg-hotspot-5mb',
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253
       name: '5Mbps Hotspot Daily',
       service: 'HOTSPOT',
       speedUpKbps: 5120,
       speedDownKbps: 5120,
       validityMinutes: 1440,
+<<<<<<< HEAD
       price: 50,
       tenantId: tenant.id,
     },
@@ -129,6 +176,15 @@ async function main() {
 
   // ── Subscribers ─────────────────────────────────────────────
   const sub1 = await prisma.subscriber.upsert({
+=======
+      price: 100,
+      tenantId: tenant.id,
+    },
+  });
+
+  // Demo subscribers
+  await prisma.subscriber.upsert({
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253
     where: { id: 'sub-demo-001' },
     update: {},
     create: {
@@ -145,9 +201,14 @@ async function main() {
       expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     },
   });
+<<<<<<< HEAD
   console.log(`✓ Subscriber: ${sub1.username}`);
 
   const sub2 = await prisma.subscriber.upsert({
+=======
+
+  await prisma.subscriber.upsert({
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253
     where: { id: 'sub-demo-002' },
     update: {},
     create: {
@@ -157,12 +218,17 @@ async function main() {
       fullName: 'Jane Smith',
       phone: '+254700000002',
       service: 'PPPOE',
+<<<<<<< HEAD
       packageId: pppoe5.id,
+=======
+      packageId: pppoe10.id,
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253
       tenantId: tenant.id,
       isActive: false,
       expiresAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000),
     },
   });
+<<<<<<< HEAD
   console.log(`✓ Subscriber: ${sub2.username}`);
 
   const sub3 = await prisma.subscriber.upsert({
@@ -215,4 +281,14 @@ main()
     console.error('❌ Seed failed:', e.message);
     process.exit(1);
   })
+=======
+
+  console.log('✅ Seed complete!');
+  console.log('   Superadmin: superadmin@dartbit.local / SuperAdmin123!');
+  console.log('   Tenant Admin: admin@demoisp.com / Test12345');
+}
+
+main()
+  .catch((e) => { console.error(e); process.exit(1); })
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253
   .finally(() => prisma.$disconnect());

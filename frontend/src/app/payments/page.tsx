@@ -19,7 +19,11 @@ export default function PaymentsPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm);
 
+<<<<<<< HEAD
   const { data: payments = [], isPending } = useQuery({ queryKey: ['payments'], queryFn: getPayments });
+=======
+  const { data: payments = [], isLoading } = useQuery({ queryKey: ['payments'], queryFn: getPayments });
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253
   const { data: subscribers = [] } = useQuery({ queryKey: ['subscribers'], queryFn: getSubscribers });
 
   const createMut = useMutation({
@@ -63,7 +67,11 @@ export default function PaymentsPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+<<<<<<< HEAD
             {isPending ? (
+=======
+            {isLoading ? (
+>>>>>>> aec8eb59fae5ddb9c2b5bdbd861d15f5e7b7c253
               <tr><td colSpan={7} className="table-td text-center py-8 text-gray-400">Loading...</td></tr>
             ) : (payments as Payment[]).map(p => (
               <tr key={p.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/30">
