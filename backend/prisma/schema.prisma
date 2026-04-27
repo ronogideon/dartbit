@@ -25,6 +25,13 @@ enum RouterStatus {
   UNKNOWN
 }
 
+enum TenantStatus {
+  TRIAL
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
@@ -38,20 +45,24 @@ model User {
 }
 
 model Tenant {
-  id          String           @id @default(cuid())
-  name        String
-  domain      String?          @unique
-  logoUrl     String?
-  isActive    Boolean          @default(true)
-  users       User[]
-  routers     MikrotikRouter[]
-  subscribers Subscriber[]
-  packages    Package[]
-  payments    Payment[]
-  messages    Message[]
-  settings    TenantSetting?
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
+  id            String       @id @default(cuid())
+  name          String
+  subdomain     String       @unique
+  domain        String?      @unique
+  logoUrl       String?
+  phone         String?
+  isActive      Boolean      @default(true)
+  status        TenantStatus @default(TRIAL)
+  trialEndsAt   DateTime?
+  users         User[]
+  routers       MikrotikRouter[]
+  subscribers   Subscriber[]
+  packages      Package[]
+  payments      Payment[]
+  messages      Message[]
+  settings      TenantSetting?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
 }
 
 model MikrotikRouter {

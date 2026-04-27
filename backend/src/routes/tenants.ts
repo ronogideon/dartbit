@@ -91,3 +91,18 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
 });
 
 export default router;
+
+// GET /tenants/my — get current tenant info including trial status
+router.get('/my', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return sendError(res, 'No tenant', 400);
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      include: { settings: true, _count: { select: { subscribers: true, routers: true } } },
+    });
+    sendSuccess(res, tenant);
+  } catch {
+    sendError(res, 'Failed to fetch tenant', 500);
+  }
+});

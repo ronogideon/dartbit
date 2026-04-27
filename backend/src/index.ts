@@ -1,5 +1,4 @@
 import dotenv from 'dotenv';
-// Load .env FIRST before anything else imports prisma
 dotenv.config();
 
 import express from 'express';
@@ -14,6 +13,8 @@ import onlineSessionRoutes from './routes/onlineSessions';
 import routerZtpRoutes from './routes/routerZtp';
 import tenantRoutes from './routes/tenants';
 import settingsRoutes from './routes/settings';
+import signupRoutes from './routes/signup';
+import adminRoutes from './routes/admin';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -28,7 +29,6 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, curl, MikroTik)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
     callback(new Error('Not allowed by CORS'));
@@ -38,62 +38,40 @@ app.use(cors({
 
 app.use(express.json());
 
-// ── Root route ──────────────────────────────────────────────
+// ── Public routes (no auth) ─────────────────────────────────
 app.get('/', (_req, res) => {
   res.json({
-    service: 'Dartbit API',
-    version: '1.1.4',
-    status: 'running',
+    service: 'Dartbit API', version: '1.1.5', status: 'running',
     timestamp: new Date().toISOString(),
-    endpoints: [
-      'POST /auth/login',
-      'POST /auth/subscriber-login',
-      'POST /auth/subscriber-login-hotspot',
-      'GET  /health',
-      'GET  /subscribers',
-      'GET  /packages',
-      'GET  /payments',
-      'GET  /messages',
-      'GET  /mikrotiks',
-      'GET  /online-sessions',
-      'GET  /router/ztp-script?apiKey=',
-      'POST /router/heartbeat',
-      'POST /router/interfaces',
-      'POST /router/sessions',
-      'GET  /tenants',
-      'GET  /settings',
-    ],
   });
 });
 
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'dartbit-backend', version: '1.1.4', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', version: '1.1.5', timestamp: new Date().toISOString() });
 });
 
-// ── Routes ──────────────────────────────────────────────────
 app.use('/auth', authRoutes);
+app.use('/signup', signupRoutes);
+app.use('/admin', adminRoutes);
+app.use('/router', routerZtpRoutes); // MikroTik calls this without auth
+
+// ── Authenticated routes ─────────────────────────────────────
 app.use('/subscribers', subscriberRoutes);
 app.use('/packages', packageRoutes);
 app.use('/payments', paymentRoutes);
 app.use('/messages', messageRoutes);
 app.use('/mikrotiks', routerRoutes);
 app.use('/online-sessions', onlineSessionRoutes);
-app.use('/router', routerZtpRoutes);
 app.use('/tenants', tenantRoutes);
 app.use('/settings', settingsRoutes);
 
-// ── 404 handler ─────────────────────────────────────────────
 app.use((_req, res) => {
   res.status(404).json({ success: false, error: 'Route not found' });
 });
 
 app.listen(PORT, () => {
-  console.log('');
-  console.log('🚀 Dartbit v1.1.4 backend running');
-  console.log(`   Local:   http://localhost:${PORT}`);
-  console.log(`   Health:  http://localhost:${PORT}/health`);
-  console.log(`   DB:      ${process.env.DATABASE_URL ? '✓ DATABASE_URL set' : '✗ DATABASE_URL missing!'}`);
-  console.log('');
+  console.log(`\n🚀 Dartbit v1.1.5 running on port ${PORT}`);
+  console.log(`   DB: ${process.env.DATABASE_URL ? '✓ connected' : '✗ DATABASE_URL missing!'}\n`);
 });
 
 export default app;

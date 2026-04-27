@@ -62,3 +62,10 @@ export const getSettings = () => api.get('/settings').then((r) => r.data.data);
 export const updateSettings = (data: unknown) => api.put('/settings', data).then((r) => r.data.data);
 
 export default api;
+
+// Signup
+export const signupISP = (data: unknown) => api.post('/signup', data).then(r => r.data.data);
+export const checkSubdomain = (name: string) => api.get(`/signup/check-subdomain?name=${encodeURIComponent(name)}`).then(r => r.data.data);
+
+// Tenant info
+export const getTenantInfo = () => api.get('/tenants/my').then(r => r.data.data);
