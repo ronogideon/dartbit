@@ -180,3 +180,25 @@ router.get('/test-signup', async (_req: Request, res: Response) => {
     });
   }
 });
+
+// GET /admin/run-migrations?secret=dartbit-seed-2024
+router.get('/run-migrations', async (req: Request, res: Response) => {
+  const { secret } = req.query;
+  if (secret !== 'dartbit-seed-2024') {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  try {
+    const { execSync } = require('child_process');
+    const output = execSync('npx prisma migrate deploy', {
+      cwd: '/app',
+      env: { ...process.env },
+      encoding: 'utf8',
+      timeout: 60000,
+    });
+    res.json({ ok: true, output });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown';
+    res.status(500).json({ ok: false, error: msg });
+  }
+});

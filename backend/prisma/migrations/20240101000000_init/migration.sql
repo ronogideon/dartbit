@@ -1,0 +1,214 @@
+-- CreateEnum
+CREATE TYPE "UserRole" AS ENUM ('SUPERADMIN', 'TENANT_ADMIN');
+CREATE TYPE "ServiceType" AS ENUM ('PPPOE', 'HOTSPOT', 'STATIC');
+CREATE TYPE "RouterStatus" AS ENUM ('ONLINE', 'OFFLINE', 'UNKNOWN');
+CREATE TYPE "TenantStatus" AS ENUM ('TRIAL', 'ACTIVE', 'SUSPENDED', 'CANCELLED');
+
+-- CreateTable Tenant
+CREATE TABLE "Tenant" (
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "subdomain" TEXT NOT NULL,
+    "domain" TEXT,
+    "logoUrl" TEXT,
+    "phone" TEXT,
+    "isActive" BOOLEAN NOT NULL DEFAULT true,
+    "status" "TenantStatus" NOT NULL DEFAULT 'TRIAL',
+    "trialEndsAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "Tenant_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX "Tenant_subdomain_key" ON "Tenant"("subdomain");
+CREATE UNIQUE INDEX "Tenant_domain_key" ON "Tenant"("domain");
+
+-- CreateTable User
+CREATE TABLE "User" (
+    "id" TEXT NOT NULL,
+    "email" TEXT NOT NULL,
+    "password" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "role" "UserRole" NOT NULL,
+    "tenantId" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "User_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
+
+-- CreateTable MikrotikRouter
+CREATE TABLE "MikrotikRouter" (
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "host" TEXT NOT NULL,
+    "apiKey" TEXT NOT NULL,
+    "status" "RouterStatus" NOT NULL DEFAULT 'UNKNOWN',
+    "identity" TEXT,
+    "cpuLoad" DOUBLE PRECISION,
+    "uptime" TEXT,
+    "lastSeenAt" TIMESTAMP(3),
+    "tenantId" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "MikrotikRouter_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX "MikrotikRouter_apiKey_key" ON "MikrotikRouter"("apiKey");
+
+-- CreateTable RouterInterface
+CREATE TABLE "RouterInterface" (
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "type" TEXT NOT NULL,
+    "macAddr" TEXT,
+    "running" BOOLEAN NOT NULL DEFAULT false,
+    "disabled" BOOLEAN NOT NULL DEFAULT false,
+    "routerId" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "RouterInterface_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable RouterProvisioningConfig
+CREATE TABLE "RouterProvisioningConfig" (
+    "id" TEXT NOT NULL,
+    "routerId" TEXT NOT NULL,
+    "wanInterface" TEXT NOT NULL DEFAULT 'ether1',
+    "lanInterface" TEXT NOT NULL DEFAULT 'ether2',
+    "bridgeName" TEXT NOT NULL DEFAULT 'bridge-lan',
+    "lanSubnet" TEXT NOT NULL DEFAULT '192.168.88.0/24',
+    "lanGateway" TEXT NOT NULL DEFAULT '192.168.88.1',
+    "dhcpPoolStart" TEXT NOT NULL DEFAULT '192.168.88.10',
+    "dhcpPoolEnd" TEXT NOT NULL DEFAULT '192.168.88.254',
+    "dnsServers" TEXT NOT NULL DEFAULT '8.8.8.8,8.8.4.4',
+    "pppoeEnabled" BOOLEAN NOT NULL DEFAULT true,
+    "pppoeInterface" TEXT NOT NULL DEFAULT 'bridge-lan',
+    "pppoeLocalAddress" TEXT NOT NULL DEFAULT '10.10.10.1',
+    "pppoeRemotePool" TEXT NOT NULL DEFAULT 'pppoe-pool',
+    "pppoePoolStart" TEXT NOT NULL DEFAULT '10.10.10.10',
+    "pppoePoolEnd" TEXT NOT NULL DEFAULT '10.10.10.200',
+    "hotspotEnabled" BOOLEAN NOT NULL DEFAULT true,
+    "hotspotInterface" TEXT NOT NULL DEFAULT 'bridge-lan',
+    "hotspotNetwork" TEXT NOT NULL DEFAULT '192.168.88.0/24',
+    "hotspotDnsName" TEXT NOT NULL DEFAULT 'dartbit.login',
+    "staticEnabled" BOOLEAN NOT NULL DEFAULT false,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "RouterProvisioningConfig_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX "RouterProvisioningConfig_routerId_key" ON "RouterProvisioningConfig"("routerId");
+
+-- CreateTable Subscriber
+CREATE TABLE "Subscriber" (
+    "id" TEXT NOT NULL,
+    "username" TEXT NOT NULL,
+    "secret" TEXT NOT NULL,
+    "fullName" TEXT NOT NULL,
+    "phone" TEXT,
+    "email" TEXT,
+    "service" "ServiceType" NOT NULL DEFAULT 'PPPOE',
+    "isActive" BOOLEAN NOT NULL DEFAULT true,
+    "expiresAt" TIMESTAMP(3),
+    "lastOnlineAt" TIMESTAMP(3),
+    "ipAddress" TEXT,
+    "macAddress" TEXT,
+    "packageId" TEXT,
+    "routerId" TEXT,
+    "tenantId" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "Subscriber_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX "Subscriber_username_tenantId_key" ON "Subscriber"("username", "tenantId");
+
+-- CreateTable Package
+CREATE TABLE "Package" (
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "service" "ServiceType" NOT NULL DEFAULT 'PPPOE',
+    "speedUpKbps" INTEGER NOT NULL,
+    "speedDownKbps" INTEGER NOT NULL,
+    "validityMinutes" INTEGER NOT NULL,
+    "price" DOUBLE PRECISION NOT NULL,
+    "isActive" BOOLEAN NOT NULL DEFAULT true,
+    "tenantId" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "Package_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable Payment
+CREATE TABLE "Payment" (
+    "id" TEXT NOT NULL,
+    "amount" DOUBLE PRECISION NOT NULL,
+    "method" TEXT NOT NULL DEFAULT 'MANUAL',
+    "reference" TEXT,
+    "mpesaCode" TEXT,
+    "notes" TEXT,
+    "subscriberId" TEXT NOT NULL,
+    "tenantId" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "Payment_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable Message
+CREATE TABLE "Message" (
+    "id" TEXT NOT NULL,
+    "type" TEXT NOT NULL DEFAULT 'SMS',
+    "recipient" TEXT NOT NULL,
+    "body" TEXT NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'PENDING',
+    "tenantId" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "Message_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable OnlineSession
+CREATE TABLE "OnlineSession" (
+    "id" TEXT NOT NULL,
+    "username" TEXT NOT NULL,
+    "ipAddress" TEXT,
+    "macAddress" TEXT,
+    "uploadSpeed" DOUBLE PRECISION,
+    "downloadSpeed" DOUBLE PRECISION,
+    "uptime" TEXT,
+    "routerId" TEXT NOT NULL,
+    "subscriberId" TEXT,
+    "tenantId" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "OnlineSession_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable TenantSetting
+CREATE TABLE "TenantSetting" (
+    "id" TEXT NOT NULL,
+    "tenantId" TEXT NOT NULL,
+    "smsSenderId" TEXT,
+    "smsApiKey" TEXT,
+    "emailFromAddress" TEXT,
+    "currency" TEXT NOT NULL DEFAULT 'KES',
+    "timezone" TEXT NOT NULL DEFAULT 'Africa/Nairobi',
+    "backendUrl" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "TenantSetting_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX "TenantSetting_tenantId_key" ON "TenantSetting"("tenantId");
+
+-- AddForeignKeys
+ALTER TABLE "User" ADD CONSTRAINT "User_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "MikrotikRouter" ADD CONSTRAINT "MikrotikRouter_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "RouterInterface" ADD CONSTRAINT "RouterInterface_routerId_fkey" FOREIGN KEY ("routerId") REFERENCES "MikrotikRouter"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "RouterProvisioningConfig" ADD CONSTRAINT "RouterProvisioningConfig_routerId_fkey" FOREIGN KEY ("routerId") REFERENCES "MikrotikRouter"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "Subscriber" ADD CONSTRAINT "Subscriber_packageId_fkey" FOREIGN KEY ("packageId") REFERENCES "Package"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "Subscriber" ADD CONSTRAINT "Subscriber_routerId_fkey" FOREIGN KEY ("routerId") REFERENCES "MikrotikRouter"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "Subscriber" ADD CONSTRAINT "Subscriber_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "Package" ADD CONSTRAINT "Package_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "Payment" ADD CONSTRAINT "Payment_subscriberId_fkey" FOREIGN KEY ("subscriberId") REFERENCES "Subscriber"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "Payment" ADD CONSTRAINT "Payment_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "Message" ADD CONSTRAINT "Message_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "OnlineSession" ADD CONSTRAINT "OnlineSession_routerId_fkey" FOREIGN KEY ("routerId") REFERENCES "MikrotikRouter"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "OnlineSession" ADD CONSTRAINT "OnlineSession_subscriberId_fkey" FOREIGN KEY ("subscriberId") REFERENCES "Subscriber"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "TenantSetting" ADD CONSTRAINT "TenantSetting_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
