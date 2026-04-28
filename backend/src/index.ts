@@ -3,6 +3,7 @@ dotenv.config();
 
 import express from 'express';
 import cors from 'cors';
+import { PrismaClient } from '@prisma/client';
 import authRoutes from './routes/auth';
 import subscriberRoutes from './routes/subscribers';
 import packageRoutes from './routes/packages';
@@ -38,24 +39,13 @@ app.use(cors({
 
 app.use(express.json());
 
-// ── Public routes (no auth) ─────────────────────────────────
-app.get('/', (_req, res) => {
-  res.json({
-    service: 'Dartbit API', version: '1.2.0', status: 'running',
-    timestamp: new Date().toISOString(),
-  });
-});
-
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', version: '1.2.0', timestamp: new Date().toISOString() });
-});
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.2.3', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.2.3', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
 app.use('/admin', adminRoutes);
-app.use('/router', routerZtpRoutes); // MikroTik calls this without auth
-
-// ── Authenticated routes ─────────────────────────────────────
+app.use('/router', routerZtpRoutes);
 app.use('/subscribers', subscriberRoutes);
 app.use('/packages', packageRoutes);
 app.use('/payments', paymentRoutes);
@@ -65,13 +55,68 @@ app.use('/online-sessions', onlineSessionRoutes);
 app.use('/tenants', tenantRoutes);
 app.use('/settings', settingsRoutes);
 
-app.use((_req, res) => {
-  res.status(404).json({ success: false, error: 'Route not found' });
+app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
+
+// START SERVER FIRST — then patch DB in background
+const server = app.listen(PORT, () => {
+  console.log(`\n🚀 Dartbit v1.2.3 running on port ${PORT}\n`);
+  // Patch DB after server is already listening
+  patchDatabase();
 });
 
-app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.2.0 running on port ${PORT}`);
-  console.log(`   DB: ${process.env.DATABASE_URL ? '✓ connected' : '✗ DATABASE_URL missing!'}\n`);
+server.on('error', (err) => {
+  console.error('Server error:', err);
+  process.exit(1);
 });
+
+async function patchDatabase() {
+  const prisma = new PrismaClient();
+  try {
+    console.log('🔧 Patching database schema...');
+
+    // Create TenantStatus enum if missing
+    await prisma.$executeRawUnsafe(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'TenantStatus') THEN
+          CREATE TYPE "TenantStatus" AS ENUM ('TRIAL', 'ACTIVE', 'SUSPENDED', 'CANCELLED');
+        END IF;
+      END $$;
+    `);
+
+    // Add missing columns to Tenant
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Tenant" ADD COLUMN IF NOT EXISTS "subdomain" TEXT NOT NULL DEFAULT ''`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Tenant" ADD COLUMN IF NOT EXISTS "phone" TEXT`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Tenant" ADD COLUMN IF NOT EXISTS "trialEndsAt" TIMESTAMP(3)`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Tenant" ADD COLUMN IF NOT EXISTS "status" TEXT NOT NULL DEFAULT 'ACTIVE'`);
+
+    // Fill empty subdomains for existing tenants
+    await prisma.$executeRawUnsafe(`
+      UPDATE "Tenant"
+      SET "subdomain" = LOWER(
+        REGEXP_REPLACE(REGEXP_REPLACE(TRIM(name), '[^a-zA-Z0-9 ]', '', 'g'), ' +', '-', 'g')
+      ) || '-' || SUBSTRING(id, 1, 6)
+      WHERE "subdomain" = '' OR "subdomain" IS NULL
+    `);
+
+    // Add unique constraint on subdomain
+    await prisma.$executeRawUnsafe(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Tenant_subdomain_key') THEN
+          ALTER TABLE "Tenant" ADD CONSTRAINT "Tenant_subdomain_key" UNIQUE ("subdomain");
+        END IF;
+      END $$;
+    `);
+
+    // Add missing columns to Subscriber
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Subscriber" ADD COLUMN IF NOT EXISTS "ipAddress" TEXT`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Subscriber" ADD COLUMN IF NOT EXISTS "macAddress" TEXT`);
+
+    console.log('✅ Database schema patched');
+  } catch (err) {
+    console.error('⚠️  Patch error (non-fatal):', err instanceof Error ? err.message : err);
+  } finally {
+    await prisma.$disconnect();
+  }
+}
 
 export default app;
