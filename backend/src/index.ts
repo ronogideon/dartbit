@@ -39,8 +39,8 @@ app.use(cors({
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.2.3', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.2.3', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.2.5', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.2.5', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -57,10 +57,9 @@ app.use('/settings', settingsRoutes);
 
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
-// START SERVER FIRST — then patch DB in background
+// Start server immediately — patch DB in background
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.2.3 running on port ${PORT}\n`);
-  // Patch DB after server is already listening
+  console.log(`\n🚀 Dartbit v1.2.5 running on port ${PORT}\n`);
   patchDatabase();
 });
 
@@ -74,7 +73,7 @@ async function patchDatabase() {
   try {
     console.log('🔧 Patching database schema...');
 
-    // Create TenantStatus enum if missing
+    // ── Tenant columns ────────────────────────────────────────
     await prisma.$executeRawUnsafe(`
       DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'TenantStatus') THEN
@@ -82,14 +81,12 @@ async function patchDatabase() {
         END IF;
       END $$;
     `);
-
-    // Add missing columns to Tenant
     await prisma.$executeRawUnsafe(`ALTER TABLE "Tenant" ADD COLUMN IF NOT EXISTS "subdomain" TEXT NOT NULL DEFAULT ''`);
     await prisma.$executeRawUnsafe(`ALTER TABLE "Tenant" ADD COLUMN IF NOT EXISTS "phone" TEXT`);
     await prisma.$executeRawUnsafe(`ALTER TABLE "Tenant" ADD COLUMN IF NOT EXISTS "trialEndsAt" TIMESTAMP(3)`);
     await prisma.$executeRawUnsafe(`ALTER TABLE "Tenant" ADD COLUMN IF NOT EXISTS "status" TEXT NOT NULL DEFAULT 'ACTIVE'`);
 
-    // Fill empty subdomains for existing tenants
+    // Fill empty subdomains
     await prisma.$executeRawUnsafe(`
       UPDATE "Tenant"
       SET "subdomain" = LOWER(
@@ -98,7 +95,7 @@ async function patchDatabase() {
       WHERE "subdomain" = '' OR "subdomain" IS NULL
     `);
 
-    // Add unique constraint on subdomain
+    // Subdomain unique constraint
     await prisma.$executeRawUnsafe(`
       DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Tenant_subdomain_key') THEN
@@ -107,13 +104,98 @@ async function patchDatabase() {
       END $$;
     `);
 
-    // Add missing columns to Subscriber
+    // ── Subscriber columns ────────────────────────────────────
     await prisma.$executeRawUnsafe(`ALTER TABLE "Subscriber" ADD COLUMN IF NOT EXISTS "ipAddress" TEXT`);
     await prisma.$executeRawUnsafe(`ALTER TABLE "Subscriber" ADD COLUMN IF NOT EXISTS "macAddress" TEXT`);
 
-    console.log('✅ Database schema patched');
+    // ── RouterProvisioningConfig — THE MISSING TABLE/COLUMNS ──
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "RouterProvisioningConfig" (
+        "id" TEXT NOT NULL,
+        "routerId" TEXT NOT NULL,
+        "wanInterface" TEXT NOT NULL DEFAULT 'ether1',
+        "lanInterface" TEXT NOT NULL DEFAULT 'ether2',
+        "bridgeName" TEXT NOT NULL DEFAULT 'bridge-lan',
+        "lanSubnet" TEXT NOT NULL DEFAULT '192.168.88.0/24',
+        "lanGateway" TEXT NOT NULL DEFAULT '192.168.88.1',
+        "dhcpPoolStart" TEXT NOT NULL DEFAULT '192.168.88.10',
+        "dhcpPoolEnd" TEXT NOT NULL DEFAULT '192.168.88.254',
+        "dnsServers" TEXT NOT NULL DEFAULT '8.8.8.8,8.8.4.4',
+        "pppoeEnabled" BOOLEAN NOT NULL DEFAULT true,
+        "pppoeInterface" TEXT NOT NULL DEFAULT 'bridge-lan',
+        "pppoeLocalAddress" TEXT NOT NULL DEFAULT '10.10.10.1',
+        "pppoeRemotePool" TEXT NOT NULL DEFAULT 'pppoe-pool',
+        "pppoePoolStart" TEXT NOT NULL DEFAULT '10.10.10.10',
+        "pppoePoolEnd" TEXT NOT NULL DEFAULT '10.10.10.200',
+        "hotspotEnabled" BOOLEAN NOT NULL DEFAULT true,
+        "hotspotInterface" TEXT NOT NULL DEFAULT 'bridge-lan',
+        "hotspotNetwork" TEXT NOT NULL DEFAULT '192.168.88.0/24',
+        "hotspotDnsName" TEXT NOT NULL DEFAULT 'dartbit.login',
+        "staticEnabled" BOOLEAN NOT NULL DEFAULT false,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "RouterProvisioningConfig_pkey" PRIMARY KEY ("id")
+      );
+    `);
+
+    // Unique constraint on routerId
+    await prisma.$executeRawUnsafe(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'RouterProvisioningConfig_routerId_key') THEN
+          ALTER TABLE "RouterProvisioningConfig" ADD CONSTRAINT "RouterProvisioningConfig_routerId_key" UNIQUE ("routerId");
+        END IF;
+      END $$;
+    `);
+
+    // Foreign key to MikrotikRouter
+    await prisma.$executeRawUnsafe(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'RouterProvisioningConfig_routerId_fkey') THEN
+          ALTER TABLE "RouterProvisioningConfig"
+            ADD CONSTRAINT "RouterProvisioningConfig_routerId_fkey"
+            FOREIGN KEY ("routerId") REFERENCES "MikrotikRouter"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+        END IF;
+      END $$;
+    `);
+
+    // ── RouterInterface table ─────────────────────────────────
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "RouterInterface" (
+        "id" TEXT NOT NULL,
+        "name" TEXT NOT NULL,
+        "type" TEXT NOT NULL,
+        "macAddr" TEXT,
+        "running" BOOLEAN NOT NULL DEFAULT false,
+        "disabled" BOOLEAN NOT NULL DEFAULT false,
+        "routerId" TEXT NOT NULL,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "RouterInterface_pkey" PRIMARY KEY ("id")
+      );
+    `);
+
+    // ── OnlineSession table ───────────────────────────────────
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "OnlineSession" (
+        "id" TEXT NOT NULL,
+        "username" TEXT NOT NULL,
+        "ipAddress" TEXT,
+        "macAddress" TEXT,
+        "uploadSpeed" DOUBLE PRECISION,
+        "downloadSpeed" DOUBLE PRECISION,
+        "uptime" TEXT,
+        "routerId" TEXT NOT NULL,
+        "subscriberId" TEXT,
+        "tenantId" TEXT NOT NULL,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "OnlineSession_pkey" PRIMARY KEY ("id")
+      );
+    `);
+
+    console.log('✅ Database schema patched successfully');
   } catch (err) {
-    console.error('⚠️  Patch error (non-fatal):', err instanceof Error ? err.message : err);
+    console.error('⚠️  Patch error:', err instanceof Error ? err.message : err);
   } finally {
     await prisma.$disconnect();
   }
