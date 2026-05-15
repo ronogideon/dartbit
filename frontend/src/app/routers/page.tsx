@@ -246,10 +246,9 @@ export default function RoutersPage() {
           <div>
             <label className="label">Router Name</label>
             <input className="input" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Main Gateway" required autoFocus />
-          </div>
-          <div>
-            <label className="label">Host / IP Address</label>
-            <input className="input" value={form.host} onChange={e => setForm(f => ({ ...f, host: e.target.value }))} placeholder="e.g. 192.168.88.1" required />
+            <p className="text-xs text-gray-500 mt-1.5">
+              💡 Just enter a friendly name — the router&apos;s IP is detected automatically once the ZTP script runs.
+            </p>
           </div>
           <div className="flex gap-3 justify-end pt-2">
             <button type="button" onClick={closeModal} className="btn-secondary">Cancel</button>

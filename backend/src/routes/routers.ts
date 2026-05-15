@@ -10,7 +10,7 @@ router.use(authenticate);
 
 const routerSchema = z.object({
   name: z.string().min(2),
-  host: z.string().min(4),
+  host: z.string().optional().default('auto'),
 });
 
 router.get('/', async (req: AuthRequest, res: Response) => {
