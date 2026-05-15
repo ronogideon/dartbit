@@ -22,7 +22,16 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
   const r = await findRouter(apiKey);
   if (!r) return res.status(404).send('# Error: Router not found');
 
-  const backendUrl = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
+  let backendUrl = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
+  // Force HTTPS for Railway URLs and replace localhost with Railway public URL
+  if (backendUrl.startsWith('http://') && backendUrl.includes('railway.app')) {
+    backendUrl = backendUrl.replace('http://', 'https://');
+  }
+  if (backendUrl.includes('localhost') || backendUrl.includes('127.0.0.1')) {
+    backendUrl = 'https://dartbit-production.up.railway.app';
+  }
+  const isHttps = backendUrl.startsWith('https://');
+  const fetchFlags = isHttps ? ' mode=https check-certificate=no' : '';
   const hotspotLoginUrl = backendUrl + '/hotspot';
   const cfg = r.provConfig;
 
@@ -152,7 +161,7 @@ add name="dartbit-heartbeat" interval=15s on-event={
   :local cpu [/system resource get cpu-load]
   :local uptime [/system resource get uptime]
   :local body ("{\"apiKey\":\"${apiKey}\",\"identity\":\"" . $identity . "\",\"cpuLoad\":" . $cpu . ",\"uptime\":\"" . $uptime . "\"}")
-  /tool fetch url="${backendUrl}/router/heartbeat" \\
+  /tool fetch url="${backendUrl}/router/heartbeat"${fetchFlags} \\
     http-method=post \\
     http-header-field="Content-Type: application/json" \\
     http-data=$body \\
@@ -174,7 +183,7 @@ add name="dartbit-ifsync" interval=5m on-event={
     :set ifaces ($ifaces . "{\"name\":\"" . $iname . "\",\"type\":\"" . $itype . "\",\"macAddr\":\"" . $imac . "\",\"running\":" . $irun . ",\"disabled\":" . $idis . "},")
   }
   :local body ("{\"apiKey\":\"${apiKey}\",\"interfaces\":[" . $ifaces . "]}")
-  /tool fetch url="${backendUrl}/router/interfaces" \\
+  /tool fetch url="${backendUrl}/router/interfaces"${fetchFlags} \\
     http-method=post \\
     http-header-field="Content-Type: application/json" \\
     http-data=$body \\
@@ -201,7 +210,7 @@ add name="dartbit-sessions" interval=30s on-event={
     :set hssessions ($hssessions . "{\"username\":\"" . $huname . "\",\"ipAddress\":\"" . $hip . "\",\"macAddress\":\"" . $hmac . "\",\"uptime\":\"" . $huptime . "\"},")
   }
   :local body ("{\"apiKey\":\"${apiKey}\",\"sessions\":[" . $sessions . $hssessions . "]}")
-  /tool fetch url="${backendUrl}/router/sessions" \\
+  /tool fetch url="${backendUrl}/router/sessions"${fetchFlags} \\
     http-method=post \\
     http-header-field="Content-Type: application/json" \\
     http-data=$body \\
