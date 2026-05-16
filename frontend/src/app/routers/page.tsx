@@ -161,7 +161,7 @@ export default function RoutersPage() {
   const [editing, setEditing] = useState<MikrotikRouter | null>(null);
   const [form, setForm] = useState({ name: '', host: '' });
 
-  const { data: routers = [], isPending } = useQuery({ queryKey: ['routers'], queryFn: getRouters, refetchInterval: 10000 });
+  const { data: routers = [], isPending } = useQuery({ queryKey: ['routers'], queryFn: getRouters, refetchInterval: 5000 });
 
   const linkMut = useMutation({
     mutationFn: linkRouter,

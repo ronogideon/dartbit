@@ -57,7 +57,8 @@ export default function SubscribersPage() {
     setForm({
       username: s.username, secret: '', fullName: s.fullName, phone: s.phone || '',
       email: '', service: s.service, packageId: '', routerId: '',
-      expiresAt: s.expiresAt ? s.expiresAt.split('T')[0] : '',
+      // datetime-local needs YYYY-MM-DDTHH:MM format
+      expiresAt: s.expiresAt ? s.expiresAt.substring(0, 16) : '',
     });
     setModalOpen(true);
   };
@@ -134,7 +135,7 @@ export default function SubscribersPage() {
                       </span>
                     </td>
                     <td className="table-td text-gray-500">
-                      {s.expiresAt ? new Date(s.expiresAt).toLocaleDateString() : '-'}
+                      {s.expiresAt ? new Date(s.expiresAt).toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-'}
                     </td>
                     <td className="table-td">
                       <div className="flex items-center gap-2">
@@ -198,8 +199,9 @@ export default function SubscribersPage() {
               </select>
             </div>
             <div>
-              <label className="label">Expires At</label>
-              <input className="input" type="date" value={form.expiresAt} onChange={e => setForm(f => ({ ...f, expiresAt: e.target.value }))} />
+              <label className="label">Expires At (date & time)</label>
+              <input className="input" type="datetime-local" value={form.expiresAt} onChange={e => setForm(f => ({ ...f, expiresAt: e.target.value }))} />
+              <p className="text-xs text-gray-500 mt-1">Leave blank for no expiry</p>
             </div>
           </div>
           <div className="flex gap-3 justify-end pt-2">
