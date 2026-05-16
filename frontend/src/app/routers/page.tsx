@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getRouters, linkRouter, updateRouter, deleteRouter, getProvisionConfig, saveProvisionConfig, rebootRouter, changeRouterIdentity, updateRouterLanPorts } from '@/lib/api';
+import { getRouters, linkRouter, updateRouter, deleteRouter, getProvisionConfig, saveProvisionConfig, rebootRouter, changeRouterIdentity, updateRouterLanPorts, getRouterInterfaces } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
@@ -165,7 +165,9 @@ function RouterOptionsMenu({ router, onReboot, onEdit, onDelete }: {
   const [identityModal, setIdentityModal] = useState(false);
   const [lanPortsModal, setLanPortsModal] = useState(false);
   const [identity, setIdentity] = useState(router.identity || router.name);
-  const [lanPorts, setLanPorts] = useState('ether2');
+  const [selectedPorts, setSelectedPorts] = useState<Set<string>>(new Set());
+  const [availableInterfaces, setAvailableInterfaces] = useState<Array<{ name: string; type: string }>>([]);
+  const [loadingIfaces, setLoadingIfaces] = useState(false);
 
   // Close on outside click
   useEffect(() => {
@@ -175,23 +177,45 @@ function RouterOptionsMenu({ router, onReboot, onEdit, onDelete }: {
     return () => document.removeEventListener('click', onClick);
   }, [open]);
 
-  // Pre-load current LAN ports from provisioning config when opening
   const openLanPorts = async () => {
     setOpen(false);
+    setLoadingIfaces(true);
     try {
-      const cfg = await getProvisionConfig(router.id);
-      setLanPorts(cfg?.lanInterface || 'ether2');
+      const [cfg, ifaces] = await Promise.all([
+        getProvisionConfig(router.id),
+        getRouterInterfaces(router.id),
+      ]);
+      const currentPorts = (cfg?.lanInterface || '').split(',').map((p: string) => p.trim()).filter(Boolean);
+      setSelectedPorts(new Set(currentPorts));
+      // Filter out the bridge itself + the WAN interface from selection
+      const wan = cfg?.wanInterface || 'ether1';
+      const bridgeName = cfg?.bridgeName || 'bridge-lan';
+      const filtered = (ifaces as Array<{ name: string; type: string }>).filter(
+        i => i.name !== bridgeName && i.name !== wan && i.type !== 'bridge'
+      );
+      setAvailableInterfaces(filtered);
     } catch {
-      setLanPorts('ether2');
+      setAvailableInterfaces([]);
+    } finally {
+      setLoadingIfaces(false);
     }
     setLanPortsModal(true);
+  };
+
+  const togglePort = (name: string) => {
+    setSelectedPorts(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
   };
 
   const identityMut = useMutation({
     mutationFn: (newIdentity: string) => changeRouterIdentity(router.id, newIdentity),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['routers'] });
-      toast.success('Identity change queued — will apply within 30s');
+      toast.success('Identity change queued — applies within 30s');
       setIdentityModal(false);
     },
     onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed'),
@@ -264,61 +288,68 @@ function RouterOptionsMenu({ router, onReboot, onEdit, onDelete }: {
 
       {/* Identity change modal */}
       <Modal isOpen={identityModal} onClose={() => setIdentityModal(false)} title="Change router identity">
-        <form
-          onSubmit={e => { e.preventDefault(); identityMut.mutate(identity); }}
-          className="space-y-4"
-        >
+        <form onSubmit={e => { e.preventDefault(); identityMut.mutate(identity); }} className="space-y-4">
           <div>
             <label className="label">New identity</label>
-            <input
-              className="input"
-              value={identity}
-              onChange={e => setIdentity(e.target.value)}
-              placeholder="e.g. Office-Router-01"
-              autoFocus
-              required
-            />
-            <p className="text-xs text-gray-500 mt-1">
-              Sets the RouterOS system identity. Letters, numbers, hyphens, underscores and dots only.
-            </p>
+            <input className="input" value={identity} onChange={e => setIdentity(e.target.value)} placeholder="e.g. Office-Router-01" autoFocus required />
+            <p className="text-xs text-gray-500 mt-1">Sets the RouterOS system identity. Letters, numbers, hyphens, underscores and dots only.</p>
           </div>
           <div className="flex gap-3 justify-end">
             <button type="button" onClick={() => setIdentityModal(false)} className="btn-secondary">Cancel</button>
-            <button type="submit" disabled={identityMut.isPending} className="btn-primary">
-              {identityMut.isPending ? 'Saving...' : 'Apply'}
-            </button>
+            <button type="submit" disabled={identityMut.isPending} className="btn-primary">{identityMut.isPending ? 'Saving...' : 'Apply'}</button>
           </div>
         </form>
       </Modal>
 
-      {/* LAN ports modal */}
+      {/* LAN ports checkbox modal */}
       <Modal isOpen={lanPortsModal} onClose={() => setLanPortsModal(false)} title="Update LAN ports on bridge">
         <form
           onSubmit={e => {
             e.preventDefault();
-            const ports = lanPorts.split(',').map(p => p.trim()).filter(Boolean);
-            lanMut.mutate(ports);
+            lanMut.mutate(Array.from(selectedPorts));
           }}
           className="space-y-4"
         >
-          <div>
-            <label className="label">LAN interfaces on bridge</label>
-            <input
-              className="input"
-              value={lanPorts}
-              onChange={e => setLanPorts(e.target.value)}
-              placeholder="ether2,ether3,ether4,wlan1"
-              autoFocus
-              required
-            />
-            <p className="text-xs text-gray-500 mt-1">
-              Comma-separated list. Ports added here are added to the bridge; ports removed here will be removed from the bridge.
-            </p>
-          </div>
+          {loadingIfaces ? (
+            <div className="text-center py-6 text-gray-500 text-sm">Loading interfaces...</div>
+          ) : availableInterfaces.length === 0 ? (
+            <div className="text-sm text-gray-500 p-3 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg">
+              No interfaces detected yet. The router reports its interface list every 60 seconds — try again shortly after the router comes online.
+            </div>
+          ) : (
+            <div>
+              <p className="text-xs font-medium text-gray-500 mb-2">
+                Check the ports that should be added to the LAN bridge. Unchecked ports will be removed from the bridge.
+              </p>
+              <div className="space-y-1 max-h-72 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-lg p-2">
+                {availableInterfaces.map(iface => (
+                  <label
+                    key={iface.name}
+                    className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedPorts.has(iface.name)}
+                      onChange={() => togglePort(iface.name)}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm font-medium">{iface.name}</span>
+                      <span className="text-xs text-gray-400 ml-2">{iface.type}</span>
+                    </div>
+                  </label>
+                ))}
+              </div>
+              <p className="text-xs text-gray-400 mt-2">
+                {selectedPorts.size} port{selectedPorts.size === 1 ? '' : 's'} selected
+              </p>
+            </div>
+          )}
+
           <div className="flex gap-3 justify-end">
             <button type="button" onClick={() => setLanPortsModal(false)} className="btn-secondary">Cancel</button>
-            <button type="submit" disabled={lanMut.isPending} className="btn-primary">
-              {lanMut.isPending ? 'Saving...' : 'Update'}
+            <button type="submit" disabled={lanMut.isPending || selectedPorts.size === 0} className="btn-primary">
+              {lanMut.isPending ? 'Saving...' : 'Update bridge ports'}
             </button>
           </div>
         </form>

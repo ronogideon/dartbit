@@ -49,14 +49,14 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.3.4');
+    add('# Dartbit ZTP Script v1.3.8');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
     add(':log info "Dartbit: Starting provisioning"');
     add('');
 
-    // Bridge
+    // 1. Bridge
     add('# 1. Bridge');
     add(`:if ([:len [/interface bridge find name="${bridge}"]] = 0) do={ /interface bridge add name=${bridge} comment="Dartbit LAN" }`);
     for (const port of lanInterfaces) {
@@ -64,60 +64,84 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     }
     add('');
 
-    // LAN IP
+    // 2. LAN gateway IP
     add('# 2. LAN gateway IP');
     add(`:if ([:len [/ip address find interface="${bridge}"]] = 0) do={ /ip address add address=${lanGw}/24 interface=${bridge} comment="Dartbit LAN Gateway" }`);
     add('');
 
-    // DHCP
-    add('# 3. DHCP server');
+    // 3. DHCP pool — shared between regular DHCP and Hotspot
+    add('# 3. DHCP pool');
     add(`:if ([:len [/ip pool find name="dhcp-pool"]] = 0) do={ /ip pool add name=dhcp-pool ranges=${dhcpStart}-${dhcpEnd} }`);
-    add(`:if ([:len [/ip dhcp-server network find address="${lanSubnet}"]] = 0) do={ /ip dhcp-server network add address=${lanSubnet} gateway=${lanGw} dns-server=${dns} }`);
-    add(`:if ([:len [/ip dhcp-server find name="dartbit-dhcp"]] = 0) do={ /ip dhcp-server add name=dartbit-dhcp interface=${bridge} address-pool=dhcp-pool disabled=no lease-time=1d }`);
     add('');
 
-    // NAT
+    // 4. NAT
     add('# 4. NAT for WAN');
     add(`:if ([:len [/interface find name="${wan}"]] > 0 && [:len [/ip firewall nat find comment="Dartbit WAN NAT"]] = 0) do={ /ip firewall nat add chain=srcnat out-interface=${wan} action=masquerade comment="Dartbit WAN NAT" }`);
     add('');
 
-    // PPPoE server
+    // 5. PPPoE server
     add('# 5. PPPoE server');
     add(`:if ([:len [/ip pool find name="${pppoePool}"]] = 0) do={ /ip pool add name=${pppoePool} ranges=${pppoeStart}-${pppoeEnd} }`);
     add(`:if ([:len [/ppp profile find name="dartbit-pppoe"]] = 0) do={ /ppp profile add name=dartbit-pppoe local-address=${pppoeLocal} remote-address=${pppoePool} comment="Dartbit PPPoE" }`);
     add(`:if ([:len [/interface pppoe-server server find service-name="dartbit"]] = 0) do={ /interface pppoe-server server add service-name=dartbit interface=${bridge} authentication=chap,pap default-profile=dartbit-pppoe disabled=no comment="Dartbit PPPoE Server" }`);
     add('');
 
-    // Hotspot
-    add('# 6. Hotspot');
-    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login }`);
-    add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" }`);
-    add(`:if ([:len [/ip hotspot find name="dartbit-hotspot"]] = 0) do={ /ip hotspot add name=dartbit-hotspot interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no }`);
+    // 6. Hotspot — uses /ip hotspot setup style: DHCP is managed by the hotspot itself
+    //    The hotspot creates and uses its own DHCP server on the bridge.
+    add('# 6. Hotspot — bridge IP & DHCP-driven captive portal');
+    // Profile with login redirect; use-radius=no, http-cookie-lifetime so devices need to re-login
+    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=http-chap,http-pap http-cookie-lifetime=0s use-radius=no }`);
+    // User profile — 1 shared user, no MAC sharing, MAC binding via mac-cookie-timeout=0
+    add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 mac-cookie-timeout=0s address-pool=dhcp-pool }`);
+    // The hotspot itself — address-pool ensures clients get an IP via the hotspot's own DHCP
+    add(`:if ([:len [/ip hotspot find interface="${bridge}"]] = 0) do={ /ip hotspot add name=dartbit-hotspot interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no }`);
+    // Disable any old separate dartbit-dhcp that might interfere with the hotspot's DHCP
+    add(`:foreach d in=[/ip dhcp-server find name="dartbit-dhcp"] do={ /ip dhcp-server remove $d }`);
+    add(`:foreach n in=[/ip dhcp-server network find comment="Dartbit"] do={ /ip dhcp-server network remove $n }`);
     add('');
 
-    // Walled garden
+    // 7. Walled garden — allow Dartbit backend so script fetches still work pre-login
     add('# 7. Walled garden');
     add(`:if ([:len [/ip hotspot walled-garden find comment="Dartbit backend"]] = 0) do={ /ip hotspot walled-garden add dst-host=dartbit-production.up.railway.app comment="Dartbit backend" }`);
+    add(`:if ([:len [/ip hotspot walled-garden ip find comment="Dartbit DNS"]] = 0) do={ /ip hotspot walled-garden ip add dst-host=8.8.8.8 comment="Dartbit DNS" }`);
     add('');
 
-    // === Heartbeat — simple, single URL ===
-    add('# 8. Heartbeat — pings backend every 15s');
+    // 8. STRICT ONE-DEVICE-PER-USER mangle rules
+    //    Block tethered/forwarded traffic by ensuring connection MAC matches hotspot host MAC.
+    add('# 8. Mangle rules — strict 1 device per hotspot user, no tethering/sharing');
+    // Drop forwarded packets that have a TTL decrement matching a tethered device (TTL=63/127/254)
+    add(`:if ([:len [/ip firewall mangle find comment="Dartbit no-tether-ttl"]] = 0) do={ /ip firewall mangle add chain=prerouting in-interface=${bridge} ttl=equal:63 action=drop comment="Dartbit no-tether-ttl" }`);
+    add(`:if ([:len [/ip firewall mangle find comment="Dartbit no-tether-ttl2"]] = 0) do={ /ip firewall mangle add chain=prerouting in-interface=${bridge} ttl=equal:127 action=drop comment="Dartbit no-tether-ttl2" }`);
+    // Block known tethering user-agents (basic — won't catch everything)
+    add(`:if ([:len [/ip firewall layer7-protocol find name="dartbit-tether"]] = 0) do={ /ip firewall layer7-protocol add name=dartbit-tether regexp="^.+(tetheringWearable|TetheringEntitlementCheck|softether).*\\$" }`);
+    add('');
+
+    // === Heartbeat ===
+    add('# 9. Heartbeat');
     add(`:foreach s in=[/system scheduler find comment="Dartbit heartbeat"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-heartbeat"] do={ /system script remove $s }`);
     add(`/system script add name=dartbit-heartbeat policy=read,write,test source="/tool fetch url=\\"${backendUrl}/router/heartbeat?apiKey=${apiKey}\\"${fetchFlags} keep-result=no"`);
     add(`/system scheduler add name=dartbit-heartbeat interval=15s on-event="/system script run dartbit-heartbeat" comment="Dartbit heartbeat"`);
     add('');
 
-    // === Stats reporter — uses braces source={...} which RouterOS handles much better ===
-    add('# 8b. Stats reporter — CPU/uptime/memory every 60s');
+    // === Stats reporter ===
+    add('# 9b. Stats reporter');
     add(`:foreach s in=[/system scheduler find comment="Dartbit stats"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-stats"] do={ /system script remove $s }`);
     add(`/system script add name=dartbit-stats policy=read,write,test source={:local cpu [/system resource get cpu-load]; :local upt [/system resource get uptime]; :local mem [/system resource get free-memory]; :local id [/system identity get name]; :local url ("${backendUrl}/router/stats?apiKey=${apiKey}&cpu=" . \$cpu . "&uptime=" . \$upt . "&memFree=" . \$mem . "&identity=" . \$id); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
     add(`/system scheduler add name=dartbit-stats interval=5s on-event="/system script run dartbit-stats" comment="Dartbit stats"`);
     add('');
 
+    // === Interfaces reporter — reports interface list to backend so UI can list ports ===
+    add('# 9c. Interfaces reporter');
+    add(`:foreach s in=[/system scheduler find comment="Dartbit interfaces"] do={ /system scheduler remove $s }`);
+    add(`:foreach s in=[/system script find name="dartbit-interfaces"] do={ /system script remove $s }`);
+    add(`/system script add name=dartbit-interfaces policy=read,write,test source={:local data ""; :foreach i in=[/interface find where !disabled && (type=ether || type=wlan || type=vlan || type=bridge)] do={ :local n [/interface get \$i name]; :local t [/interface get \$i type]; :set data (\$data . \$n . ":" . \$t . ","); }; :local url ("${backendUrl}/router/interfaces?apiKey=${apiKey}&data=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
+    add(`/system scheduler add name=dartbit-interfaces interval=60s on-event="/system script run dartbit-interfaces" comment="Dartbit interfaces"`);
+    add('');
+
     // === Subscriber sync ===
-    add('# 9. Subscriber sync — every 60s');
+    add('# 10. Subscriber sync');
     add(`:foreach s in=[/system scheduler find comment="Dartbit sub sync"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-sync"] do={ /system script remove $s }`);
     add(`/system script add name=dartbit-sync policy=read,write,test source={/tool fetch url="${backendUrl}/router/sync-script?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-sync.rsc; :delay 1s; /import file-name=dartbit-sync.rsc}`);
@@ -125,18 +149,18 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add('');
 
     // === Remote commands ===
-    add('# 10. Remote commands');
+    add('# 11. Remote commands');
     add(`:foreach s in=[/system scheduler find comment="Dartbit cmd"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-cmd"] do={ /system script remove $s }`);
     add(`/system script add name=dartbit-cmd policy=read,write,test,reboot source={/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ /import file-name=dartbit-cmd.rsc; :delay 1s; /file remove [find name="dartbit-cmd.rsc"] }}`);
     add(`/system scheduler add name=dartbit-cmd interval=30s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`);
     add('');
 
-    // === Active session reporter — every 5s with traffic stats ===
-    add('# 11. Active session reporter — every 5s with bandwidth');
+    // === Active session reporter ===
+    add('# 12. Active session reporter');
     add(`:foreach s in=[/system scheduler find comment="Dartbit session sync"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-sessions"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . ","); }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
+    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . ","); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|0|0,"); }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
     add(`/system scheduler add name=dartbit-sessions interval=5s on-event="/system script run dartbit-sessions" comment="Dartbit session sync"`);
     add('');
 
@@ -196,7 +220,37 @@ router.all('/stats', async (req: Request, res: Response) => {
   }
 });
 
-// In-memory cache of last reading per username for bandwidth delta calc
+// Interface reporter — receives a list of router interfaces
+router.all('/interfaces', async (req: Request, res: Response) => {
+  try {
+    const apiKey = String(req.query.apiKey || req.body?.apiKey || '');
+    if (!apiKey) return sendError(res, 'apiKey required', 400);
+    const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey } });
+    if (!r) return sendError(res, 'Router not found', 404);
+
+    // Parse "name:type,name:type,"
+    const raw = String(req.query.data || req.body?.data || '').replace(/[^a-zA-Z0-9_\-\.,:]/g, '');
+    const entries = raw.split(',').filter(Boolean);
+
+    // Wipe and rewrite — interfaces change rarely so this is fine
+    await prisma.routerInterface.deleteMany({ where: { routerId: r.id } });
+
+    const ifaces: Array<{ name: string; type: string; routerId: string }> = [];
+    for (const e of entries) {
+      const [name, type] = e.split(':');
+      if (name) ifaces.push({ name, type: type || 'unknown', routerId: r.id });
+    }
+    if (ifaces.length > 0) {
+      await prisma.routerInterface.createMany({ data: ifaces });
+    }
+    res.json({ ok: true, count: ifaces.length });
+  } catch (err) {
+    console.error('Interfaces error:', err);
+    sendError(res, 'Failed', 500);
+  }
+});
+
+// In-memory traffic baseline for bandwidth deltas
 const lastTrafficReading: Record<string, { rx: number; tx: number; at: number }> = {};
 
 router.all('/sessions', async (req: Request, res: Response) => {
@@ -206,11 +260,8 @@ router.all('/sessions', async (req: Request, res: Response) => {
     const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey } });
     if (!r) return sendError(res, 'Router not found', 404);
 
-    // New format: "username|ip|uptime|rxBytes|txBytes,..."
-    // Old format: "username:ip,..."
     const pppoeStr = String(req.query.pppoe || '').replace(/[^a-zA-Z0-9_\-\.,:|\/]/g, '');
 
-    // Clear existing sessions for this router
     await prisma.onlineSession.deleteMany({ where: { routerId: r.id } });
 
     if (pppoeStr) {
@@ -224,7 +275,6 @@ router.all('/sessions', async (req: Request, res: Response) => {
       const now = Date.now();
 
       for (const e of entries) {
-        // Try new format first (pipe-delimited)
         const parts = e.split('|');
         let username = '', ipAddress = '', uptime = '', rxBytes = 0, txBytes = 0;
 
@@ -235,7 +285,6 @@ router.all('/sessions', async (req: Request, res: Response) => {
           rxBytes = parseInt(parts[3] || '0', 10) || 0;
           txBytes = parseInt(parts[4] || '0', 10) || 0;
         } else {
-          // Fallback to old colon format
           const [u, ip] = e.split(':');
           username = u || '';
           ipAddress = ip || '';
@@ -243,15 +292,13 @@ router.all('/sessions', async (req: Request, res: Response) => {
 
         if (!username) continue;
 
-        // Calculate bandwidth from byte deltas
         let uploadKbps = 0, downloadKbps = 0;
         const key = `${r.id}:${username}`;
         const prev = lastTrafficReading[key];
 
         if (prev && rxBytes > 0 && txBytes > 0) {
-          const dt = (now - prev.at) / 1000; // seconds
-          if (dt > 0 && dt < 120) { // sanity check
-            // From router perspective: rx = client uploaded TO router, tx = router downloaded TO client
+          const dt = (now - prev.at) / 1000;
+          if (dt > 0 && dt < 120) {
             const rxDelta = Math.max(0, rxBytes - prev.rx);
             const txDelta = Math.max(0, txBytes - prev.tx);
             uploadKbps = Math.round((rxDelta * 8) / 1024 / dt);
@@ -259,7 +306,6 @@ router.all('/sessions', async (req: Request, res: Response) => {
           }
         }
 
-        // Save current reading for next calculation
         if (rxBytes > 0 || txBytes > 0) {
           lastTrafficReading[key] = { rx: rxBytes, tx: txBytes, at: now };
         }
@@ -272,7 +318,7 @@ router.all('/sessions', async (req: Request, res: Response) => {
         });
       }
 
-      // Look up subscribers by username so we can link them properly
+      // Link to subscribers by username
       const usernames = sessions.map(s => s.username);
       const subs = await prisma.subscriber.findMany({
         where: { tenantId: r.tenantId, username: { in: usernames } },
@@ -281,7 +327,6 @@ router.all('/sessions', async (req: Request, res: Response) => {
       const subByUsername: Record<string, string> = {};
       for (const s of subs) subByUsername[s.username] = s.id;
 
-      // Attach subscriberId where we have a match
       const sessionsWithIds = sessions.map(s => ({
         ...s,
         subscriberId: subByUsername[s.username] || undefined,
@@ -306,7 +351,6 @@ router.all('/sessions', async (req: Request, res: Response) => {
   }
 });
 
-// Sync script — generates RouterOS script for PPPoE secrets / Hotspot users / static leases
 router.get('/sync-script', async (req: Request, res: Response) => {
   try {
     const apiKey = String(req.query.apiKey || '');
@@ -318,7 +362,6 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     });
     if (!r) return res.status(404).type('text/plain').send('# Error: Router not found');
 
-    // Get ALL subscribers for this tenant (active and expired)
     const subscribers = await prisma.subscriber.findMany({
       where: { tenantId: r.tenantId },
       include: { package: true },
@@ -331,8 +374,6 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     add(`:log info "Dartbit: Syncing ${subscribers.length} subscribers"`);
     add('');
 
-    // Format date for RouterOS scheduler: "mmm/dd/yyyy hh:mm:ss"
-    // We'll use MikroTik's start-date and start-time
     function rosDate(d: Date): { date: string; time: string } {
       const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
       const dd = String(d.getDate()).padStart(2, '0');
@@ -344,7 +385,6 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       return { date: `${mm}/${dd}/${yyyy}`, time: `${hh}:${mi}:${ss}` };
     }
 
-    // First: Remove ALL old per-user expiry schedulers so we can rebuild them
     add(`:foreach s in=[/system scheduler find comment~"Dartbit-expiry:"] do={ /system scheduler remove \$s }`);
     add('');
 
@@ -358,12 +398,9 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       add(`:if ([:len [/ppp profile find name="${profileName}"]] = 0) do={ /ppp profile add name=${profileName} local-address=10.10.10.1 remote-address=pppoe-pool rate-limit=${speed} comment="Dartbit Package" }`);
       add(`:if ([:len [/ppp secret find name="${sub.username}"]] > 0) do={ /ppp secret set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} comment="Dartbit:${sub.id}" } else={ /ppp secret add name="${sub.username}" password="${sub.secret}" profile=${profileName} service=pppoe disabled=${disabled ? 'yes' : 'no'} comment="Dartbit:${sub.id}" }`);
 
-      // If expired now → kick active session
       if (expired) {
         add(`:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove \$a }`);
-      }
-      // If has future expiry → schedule one-shot disable & kick at that exact time
-      else if (sub.expiresAt) {
+      } else if (sub.expiresAt) {
         const { date, time } = rosDate(sub.expiresAt);
         const schedName = `dartbit-exp-${sub.id.substring(0, 8)}`;
         add(`/system scheduler add name=${schedName} start-date=${date} start-time=${time} interval=0 on-event={/ppp secret disable [find name="${sub.username}"]; :foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove \$a }; :log info ("Dartbit: Auto-expired ${sub.username}")} comment="Dartbit-expiry:${sub.id}"`);
@@ -377,7 +414,8 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       const expired = sub.expiresAt && sub.expiresAt <= now;
       const disabled = !sub.isActive || expired;
 
-      add(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} rate-limit=${speed} comment="Dartbit Package" }`);
+      // shared-users=1 + mac-cookie-timeout=0 = strict one device per credential
+      add(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} rate-limit=${speed} shared-users=1 mac-cookie-timeout=0s comment="Dartbit Package" }`);
       add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] > 0) do={ /ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} comment="Dartbit:${sub.id}" } else={ /ip hotspot user add name="${sub.username}" password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} comment="Dartbit:${sub.id}" }`);
 
       if (expired) {
@@ -392,13 +430,12 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     const staticUsers = subscribers.filter(s => s.service === 'STATIC' && s.ipAddress);
     for (const sub of staticUsers) {
       if (!sub.ipAddress) continue;
-      add(`:if ([:len [/ip dhcp-server lease find address="${sub.ipAddress}"]] = 0) do={ /ip dhcp-server lease add address=${sub.ipAddress} ${sub.macAddress ? `mac-address=${sub.macAddress}` : ''} server=dartbit-dhcp comment="Dartbit:${sub.id}" }`);
+      add(`:if ([:len [/ip dhcp-server lease find address="${sub.ipAddress}"]] = 0) do={ /ip dhcp-server lease add address=${sub.ipAddress} ${sub.macAddress ? `mac-address=${sub.macAddress}` : ''} server=dartbit-hotspot-dhcp comment="Dartbit:${sub.id}" }`);
     }
 
-    // Cleanup: disable any Dartbit-managed users that aren't in our list anymore (deleted)
     const knownIds = subscribers.map(s => `"Dartbit:${s.id}"`).join(',');
     add('');
-    add('# Disable Dartbit-managed users no longer in backend (deleted)');
+    add('# Disable Dartbit-managed users no longer in backend');
     add(`:foreach s in=[/ppp secret find comment~"Dartbit:"] do={ :local c [/ppp secret get \$s comment]; :if ([:len [:find (${knownIds || '""'}) \$c]] = 0) do={ /ppp secret disable \$s; :foreach a in=[/ppp active find name=[/ppp secret get \$s name]] do={ /ppp active remove \$a } } }`);
     add(`:foreach s in=[/ip hotspot user find comment~"Dartbit:"] do={ :local c [/ip hotspot user get \$s comment]; :if ([:len [:find (${knownIds || '""'}) \$c]] = 0) do={ /ip hotspot user disable \$s } }`);
 
@@ -438,16 +475,6 @@ router.post('/enqueue-command/:routerId', async (req: Request, res: Response) =>
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);
   }
-});
-
-router.post('/interfaces', async (req: Request, res: Response) => {
-  try {
-    const apiKey = String(req.query.apiKey || req.body?.apiKey || '');
-    if (!apiKey) return sendError(res, 'apiKey required', 400);
-    const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey } });
-    if (!r) return sendError(res, 'Router not found', 404);
-    res.json({ ok: true });
-  } catch { sendError(res, 'Failed', 500); }
 });
 
 router.get('/provision/:routerId', async (req: Request, res: Response) => {
@@ -493,6 +520,19 @@ router.post('/provision/:routerId', async (req: Request, res: Response) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed to save provisioning config';
     sendError(res, msg, 500);
+  }
+});
+
+// GET /router/list-interfaces/:routerId — get this router's discovered interfaces for the UI
+router.get('/list-interfaces/:routerId', async (req: Request, res: Response) => {
+  try {
+    const interfaces = await prisma.routerInterface.findMany({
+      where: { routerId: req.params.routerId },
+      orderBy: { name: 'asc' },
+    });
+    res.json({ success: true, data: interfaces });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
   }
 });
 
