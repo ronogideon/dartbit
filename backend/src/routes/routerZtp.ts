@@ -105,8 +105,8 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add('# 9. Heartbeat — runs every 15s via scheduler');
     add(`:foreach s in=[/system scheduler find comment="Dartbit heartbeat"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-heartbeat"] do={ /system script remove $s }`);
-    // Define the script — single-line, RouterOS handles quoting inside source= cleanly
-    add(`/system script add name=dartbit-heartbeat policy=read,write,test source="/tool fetch url=\\"${backendUrl}/router/heartbeat?apiKey=${apiKey}\\"${fetchFlags} output=none keep-result=no"`);
+    // /tool fetch with keep-result=no doesn't need output=none
+    add(`/system script add name=dartbit-heartbeat policy=read,write,test source="/tool fetch url=\\"${backendUrl}/router/heartbeat?apiKey=${apiKey}\\"${fetchFlags} keep-result=no"`);
     add(`/system scheduler add name=dartbit-heartbeat interval=15s on-event="/system script run dartbit-heartbeat" comment="Dartbit heartbeat"`);
     add('');
 
