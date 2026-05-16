@@ -60,7 +60,8 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add('# 1. Bridge');
     add(`:if ([:len [/interface bridge find name="${bridge}"]] = 0) do={ /interface bridge add name=${bridge} comment="Dartbit LAN" }`);
     for (const port of lanInterfaces) {
-      add(`:if ([:len [/interface bridge port find bridge="${bridge}" interface="${port}"]] = 0) do={ /interface bridge port add bridge=${bridge} interface=${port} comment="Dartbit LAN port" }`);
+      // Only add if the interface is not already a port of ANY bridge
+      add(`:if ([:len [/interface bridge port find interface="${port}"]] = 0) do={ /interface bridge port add bridge=${bridge} interface=${port} comment="Dartbit LAN port" }`);
     }
     add('');
 
