@@ -49,7 +49,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.3.8');
+    add('# Dartbit ZTP Script v1.3.9');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -106,21 +106,17 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add(`:if ([:len [/ip hotspot walled-garden ip find comment="Dartbit DNS"]] = 0) do={ /ip hotspot walled-garden ip add dst-host=8.8.8.8 comment="Dartbit DNS" }`);
     add('');
 
-    // 8. STRICT ONE-DEVICE-PER-USER mangle rules
-    //    Block tethered/forwarded traffic by ensuring connection MAC matches hotspot host MAC.
-    add('# 8. Mangle rules — strict 1 device per hotspot user, no tethering/sharing');
-    // Drop forwarded packets that have a TTL decrement matching a tethered device (TTL=63/127/254)
-    add(`:if ([:len [/ip firewall mangle find comment="Dartbit no-tether-ttl"]] = 0) do={ /ip firewall mangle add chain=prerouting in-interface=${bridge} ttl=equal:63 action=drop comment="Dartbit no-tether-ttl" }`);
-    add(`:if ([:len [/ip firewall mangle find comment="Dartbit no-tether-ttl2"]] = 0) do={ /ip firewall mangle add chain=prerouting in-interface=${bridge} ttl=equal:127 action=drop comment="Dartbit no-tether-ttl2" }`);
-    // Block known tethering user-agents (basic — won't catch everything)
-    add(`:if ([:len [/ip firewall layer7-protocol find name="dartbit-tether"]] = 0) do={ /ip firewall layer7-protocol add name=dartbit-tether regexp="^.+(tetheringWearable|TetheringEntitlementCheck|softether).*\\$" }`);
+    // 8. STRICT ONE-DEVICE-PER-USER — enforced at hotspot level (shared-users=1, mac-cookie-timeout=0s)
+    //    Set in user profile in section 6. No mangle rules needed — the hotspot itself
+    //    blocks 2nd device login per credential.
+    add('# 8. Strict one-device-per-user is enforced by hotspot user profile (shared-users=1)');
     add('');
 
     // === Heartbeat ===
     add('# 9. Heartbeat');
     add(`:foreach s in=[/system scheduler find comment="Dartbit heartbeat"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-heartbeat"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-heartbeat policy=read,write,test source="/tool fetch url=\\"${backendUrl}/router/heartbeat?apiKey=${apiKey}\\"${fetchFlags} keep-result=no"`);
+    add(`/system script add name=dartbit-heartbeat policy=read,write,test source={/tool fetch url="${backendUrl}/router/heartbeat?apiKey=${apiKey}"${fetchFlags} keep-result=no}`);
     add(`/system scheduler add name=dartbit-heartbeat interval=15s on-event="/system script run dartbit-heartbeat" comment="Dartbit heartbeat"`);
     add('');
 
