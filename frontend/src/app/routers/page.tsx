@@ -1,12 +1,12 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getRouters, linkRouter, updateRouter, deleteRouter, getProvisionConfig, saveProvisionConfig, rebootRouter, changeRouterIdentity, updateRouterLanPorts, getRouterInterfaces } from '@/lib/api';
+import { getRouters, linkRouter, updateRouter, deleteRouter, getProvisionConfig, saveProvisionConfig, rebootRouter, changeRouterIdentity, updateRouterLanPorts, getRouterInterfaces, reprovisionRouter, getRouterZtpCommand } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import toast from 'react-hot-toast';
-import { Plus, Edit2, Trash2, Copy, Terminal, Settings2, ChevronDown, ChevronUp, RotateCw, MoreVertical, Tag, Network } from 'lucide-react';
+import { Plus, Edit2, Trash2, Copy, Terminal, Settings2, ChevronDown, ChevronUp, RotateCw, MoreVertical, Tag, Network, DownloadCloud } from 'lucide-react';
 
 interface ProvConfig {
   wanInterface: string; lanInterface: string; bridgeName: string;
@@ -164,6 +164,7 @@ function RouterOptionsMenu({ router, onReboot, onEdit, onDelete }: {
   const [open, setOpen] = useState(false);
   const [identityModal, setIdentityModal] = useState(false);
   const [lanPortsModal, setLanPortsModal] = useState(false);
+  const [reprovisionModal, setReprovisionModal] = useState<{ command: string } | null>(null);
   const [identity, setIdentity] = useState(router.identity || router.name);
   const [selectedPorts, setSelectedPorts] = useState<Set<string>>(new Set());
   const [availableInterfaces, setAvailableInterfaces] = useState<Array<{ name: string; type: string }>>([]);
@@ -231,6 +232,26 @@ function RouterOptionsMenu({ router, onReboot, onEdit, onDelete }: {
     onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed'),
   });
 
+  const reprovisionMut = useMutation({
+    mutationFn: () => reprovisionRouter(router.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['routers'] });
+      toast.success('Reprovision queued — router will re-run the script within 30s');
+    },
+    onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed'),
+  });
+
+  // For offline routers: get the manual fetch command
+  const showManualReprovision = async () => {
+    setOpen(false);
+    try {
+      const data = await getRouterZtpCommand(router.id);
+      setReprovisionModal({ command: data.command });
+    } catch (e: unknown) {
+      toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed to fetch command');
+    }
+  };
+
   const isOnline = router.status === 'ONLINE';
 
   return (
@@ -261,6 +282,21 @@ function RouterOptionsMenu({ router, onReboot, onEdit, onDelete }: {
               className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-800 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Network size={14} className="text-cyan-600" /> Update LAN ports
+            </button>
+            <button
+              onClick={() => {
+                if (isOnline) {
+                  setOpen(false);
+                  reprovisionMut.mutate();
+                } else {
+                  showManualReprovision();
+                }
+              }}
+              disabled={reprovisionMut.isPending}
+              className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-800 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              title={isOnline ? 'Re-run provisioning script (updates existing setup)' : 'Get manual reprovision command'}
+            >
+              <DownloadCloud size={14} className="text-green-600" /> Reprovision router
             </button>
             <button
               onClick={() => { setOpen(false); onReboot(); }}
@@ -353,6 +389,40 @@ function RouterOptionsMenu({ router, onReboot, onEdit, onDelete }: {
             </button>
           </div>
         </form>
+      </Modal>
+
+      {/* Reprovision modal — shown when router is offline so user can paste command manually */}
+      <Modal isOpen={!!reprovisionModal} onClose={() => setReprovisionModal(null)} title="Reprovision router (offline)">
+        <div className="space-y-4">
+          <div className="p-3 bg-blue-900/20 border border-blue-800 rounded-lg">
+            <p className="text-sm text-blue-300">
+              The router isn&apos;t online so we can&apos;t push the update automatically. Copy this command and run it on the MikroTik terminal to re-apply the latest provisioning script:
+            </p>
+          </div>
+          <div className="relative">
+            <pre className="p-3 pr-12 bg-gray-950 border border-gray-700 rounded-lg text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap break-all">
+              {reprovisionModal?.command}
+            </pre>
+            <button
+              onClick={() => {
+                if (reprovisionModal) {
+                  navigator.clipboard.writeText(reprovisionModal.command);
+                  toast.success('Copied to clipboard');
+                }
+              }}
+              className="absolute top-2 right-2 p-1.5 text-gray-400 hover:text-white"
+              title="Copy"
+            >
+              <Copy size={14} />
+            </button>
+          </div>
+          <p className="text-xs text-gray-500">
+            This uses the existing API key for this router — it will UPDATE the setup, not create a duplicate.
+          </p>
+          <div className="flex justify-end">
+            <button onClick={() => setReprovisionModal(null)} className="btn-primary">Done</button>
+          </div>
+        </div>
       </Modal>
     </>
   );

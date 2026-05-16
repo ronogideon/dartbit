@@ -49,7 +49,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.3.9');
+    add('# Dartbit ZTP Script v1.4.0');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -88,9 +88,9 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
 
     // 6. Hotspot — uses /ip hotspot setup style: DHCP is managed by the hotspot itself
     //    The hotspot creates and uses its own DHCP server on the bridge.
-    add('# 6. Hotspot — bridge IP & DHCP-driven captive portal');
-    // Profile with login redirect; use-radius=no, http-cookie-lifetime so devices need to re-login
-    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=http-chap,http-pap http-cookie-lifetime=0s use-radius=no }`);
+    add('# 6. Hotspot — captive portal with strict address-list enforcement');
+    // Profile: on login add client IP to address list, on logout remove. This drives the forward filter above.
+    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=http-chap,http-pap http-cookie-lifetime=0s use-radius=no on-login=":/ip firewall address-list add list=hotspot-active address=\\$address timeout=1d comment=\\"hs-\\$user\\"" on-logout=":/ip firewall address-list remove [find list=hotspot-active comment=\\"hs-\\$user\\"]" }`);
     // User profile — 1 shared user, no MAC sharing, MAC binding via mac-cookie-timeout=0
     add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 mac-cookie-timeout=0s address-pool=dhcp-pool }`);
     // The hotspot itself — address-pool ensures clients get an IP via the hotspot's own DHCP
@@ -98,18 +98,32 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     // Disable any old separate dartbit-dhcp that might interfere with the hotspot's DHCP
     add(`:foreach d in=[/ip dhcp-server find name="dartbit-dhcp"] do={ /ip dhcp-server remove $d }`);
     add(`:foreach n in=[/ip dhcp-server network find comment="Dartbit"] do={ /ip dhcp-server network remove $n }`);
+    // Pre-create the address list so the forward filter doesn't fail before first login
+    add(`:if ([:len [/ip firewall address-list find list="hotspot-active"]] = 0) do={ /ip firewall address-list add list=hotspot-active address=0.0.0.0 timeout=10s comment="placeholder" }`);
     add('');
 
     // 7. Walled garden — allow Dartbit backend so script fetches still work pre-login
     add('# 7. Walled garden');
     add(`:if ([:len [/ip hotspot walled-garden find comment="Dartbit backend"]] = 0) do={ /ip hotspot walled-garden add dst-host=dartbit-production.up.railway.app comment="Dartbit backend" }`);
-    add(`:if ([:len [/ip hotspot walled-garden ip find comment="Dartbit DNS"]] = 0) do={ /ip hotspot walled-garden ip add dst-host=8.8.8.8 comment="Dartbit DNS" }`);
     add('');
 
-    // 8. STRICT ONE-DEVICE-PER-USER — enforced at hotspot level (shared-users=1, mac-cookie-timeout=0s)
-    //    Set in user profile in section 6. No mangle rules needed — the hotspot itself
-    //    blocks 2nd device login per credential.
-    add('# 8. Strict one-device-per-user is enforced by hotspot user profile (shared-users=1)');
+    // 8. Cleanup any old custom filter rules from previous versions that might conflict
+    add('# 8. Clean up old conflicting filter rules');
+    add(`:foreach f in=[/ip firewall filter find comment~"Dartbit allow router"] do={ /ip firewall filter remove $f }`);
+    add(`:foreach f in=[/ip firewall filter find comment~"Dartbit allow auth"] do={ /ip firewall filter remove $f }`);
+    add(`:foreach f in=[/ip firewall filter find comment~"Dartbit block unauth"] do={ /ip firewall filter remove $f }`);
+    add('');
+
+    // 8b. TTL mangle — block phone tethering (TTL=63 means client decremented TTL once)
+    add('# 8b. TTL filter — blocks phone-tethered devices');
+    add(`:if ([:len [/ip firewall mangle find comment="Dartbit no-tether"]] = 0) do={ /ip firewall mangle add chain=prerouting in-interface=${bridge} ttl=equal:63 action=drop comment="Dartbit no-tether" }`);
+    add(`:if ([:len [/ip firewall mangle find comment="Dartbit no-tether2"]] = 0) do={ /ip firewall mangle add chain=prerouting in-interface=${bridge} ttl=equal:127 action=drop comment="Dartbit no-tether2" }`);
+    add('');
+
+    // 8c. AP bridge-mode enforcement — disable hotspot's mac-cookie so devices
+    //     can't auto-relogin from another spot, and force the hotspot to re-evaluate
+    add('# 8c. Force hotspot to re-bind to bridge (picks up newly added ports)');
+    add(`:foreach h in=[/ip hotspot find name="dartbit-hotspot"] do={ /ip hotspot set $h address-pool=dhcp-pool profile=hsprof-dartbit; /ip hotspot disable $h; :delay 500ms; /ip hotspot enable $h }`);
     add('');
 
     // === Heartbeat ===
