@@ -60,9 +60,9 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add(`:if ([:len [/interface bridge port find interface="${lan}"]] = 0) do={ /interface bridge port add bridge=${bridge} interface=${lan} comment="Dartbit LAN port" }`);
     add('');
 
-    // LAN IP
-    add('# 2. LAN gateway IP');
-    add(`:if ([:len [/ip address find address="${lanGw}/24"]] = 0) do={ /ip address add address=${lanGw}/24 interface=${bridge} comment="Dartbit LAN Gateway" }`);
+    // LAN IP — only if no IP on the bridge yet
+    add('# 2. LAN gateway IP (only added if bridge has no IP)');
+    add(`:if ([:len [/ip address find interface="${bridge}"]] = 0) do={ /ip address add address=${lanGw}/24 interface=${bridge} comment="Dartbit LAN Gateway" }`);
     add('');
 
     // DHCP
@@ -72,9 +72,9 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add(`:if ([:len [/ip dhcp-server find name="dartbit-dhcp"]] = 0) do={ /ip dhcp-server add name=dartbit-dhcp interface=${bridge} address-pool=dhcp-pool disabled=no lease-time=1d }`);
     add('');
 
-    // NAT
-    add('# 4. NAT for WAN');
-    add(`:if ([:len [/ip firewall nat find comment="Dartbit WAN NAT"]] = 0) do={ /ip firewall nat add chain=srcnat out-interface=${wan} action=masquerade comment="Dartbit WAN NAT" }`);
+    // NAT — only add if WAN interface exists (don't fail silently if user has wrong wan name)
+    add('# 4. NAT for WAN (only if WAN interface exists)');
+    add(`:if ([:len [/interface find name="${wan}"]] > 0 && [:len [/ip firewall nat find comment="Dartbit WAN NAT"]] = 0) do={ /ip firewall nat add chain=srcnat out-interface=${wan} action=masquerade comment="Dartbit WAN NAT" }`);
     add('');
 
     // PPPoE
@@ -96,9 +96,9 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add(`:if ([:len [/ip hotspot walled-garden find comment="Dartbit backend"]] = 0) do={ /ip hotspot walled-garden add dst-host=dartbit-production.up.railway.app comment="Dartbit backend" }`);
     add('');
 
-    // Default route
-    add('# 8. Default route');
-    add(`:if ([:len [/ip route find comment="Dartbit Default Route"]] = 0) do={ /ip route add dst-address=0.0.0.0/0 gateway=${wan} comment="Dartbit Default Route" }`);
+    // Default route — REMOVED. Router should already have its own default route
+    // via DHCP client, PPPoE client, or static config. Don't overwrite it.
+    add('# 8. Default route — skipped (router uses its existing WAN route)');
     add('');
 
     // Heartbeat — use a script object instead of inline on-event to avoid escaping issues
