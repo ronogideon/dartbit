@@ -15,6 +15,26 @@ interface Subscriber {
   lastOnlineAt?: string;
   package?: { id: string; name: string }; router?: { id: string; name: string };
 }
+
+// Convert ISO UTC string to "YYYY-MM-DDTHH:MM" in user's LOCAL time for datetime-local input
+function isoToLocalInput(iso?: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// Convert datetime-local input "2024-12-31T14:30" to ISO string preserving local time.
+// We interpret the input as LOCAL time and produce a proper ISO with timezone offset
+// so the backend stores the exact local moment the user picked.
+function localInputToIso(local: string): string {
+  if (!local) return '';
+  // new Date("2024-12-31T14:30") is interpreted as local time by JS
+  const d = new Date(local);
+  if (isNaN(d.getTime())) return '';
+  return d.toISOString();
+}
 interface Package { id: string; name: string; service: string; }
 interface Router { id: string; name: string; }
 
@@ -65,7 +85,8 @@ export default function SubscribersPage() {
       service: s.service,
       packageId: s.package?.id || s.packageId || '',
       routerId: s.router?.id || s.routerId || '',
-      expiresAt: s.expiresAt ? s.expiresAt.substring(0, 16) : '',
+      // datetime-local needs YYYY-MM-DDTHH:MM in LOCAL time (not UTC)
+      expiresAt: isoToLocalInput(s.expiresAt),
     });
     setModalOpen(true);
   };
@@ -85,8 +106,11 @@ export default function SubscribersPage() {
       if (form.service !== editing.service) payload.service = form.service;
       if (form.packageId !== (editing.package?.id || editing.packageId || '')) payload.packageId = form.packageId;
       if (form.routerId !== (editing.router?.id || editing.routerId || '')) payload.routerId = form.routerId;
-      const currentExpiry = editing.expiresAt ? editing.expiresAt.substring(0, 16) : '';
-      if (form.expiresAt !== currentExpiry) payload.expiresAt = form.expiresAt;
+      const currentExpiry = isoToLocalInput(editing.expiresAt);
+      if (form.expiresAt !== currentExpiry) {
+        // Send as full ISO with timezone so backend stores the exact local moment
+        payload.expiresAt = form.expiresAt ? localInputToIso(form.expiresAt) : '';
+      }
 
       // If user didn't actually change anything, still send the changed ones (could be empty if everything same)
       if (Object.keys(payload).length === 0) {
@@ -102,7 +126,7 @@ export default function SubscribersPage() {
         ...form,
         packageId: form.packageId || undefined,
         routerId: form.routerId || undefined,
-        expiresAt: form.expiresAt || undefined,
+        expiresAt: form.expiresAt ? localInputToIso(form.expiresAt) : undefined,
         phone: form.phone || undefined,
         email: form.email || undefined,
       };

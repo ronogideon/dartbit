@@ -303,37 +303,75 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     });
     if (!r) return res.status(404).type('text/plain').send('# Error: Router not found');
 
+    // Get ALL subscribers for this tenant (active and expired)
     const subscribers = await prisma.subscriber.findMany({
-      where: {
-        tenantId: r.tenantId,
-        isActive: true,
-        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-      },
+      where: { tenantId: r.tenantId },
       include: { package: true },
     });
 
+    const now = new Date();
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
     add(`:log info "Dartbit: Syncing ${subscribers.length} subscribers"`);
     add('');
 
+    // Format date for RouterOS scheduler: "mmm/dd/yyyy hh:mm:ss"
+    // We'll use MikroTik's start-date and start-time
+    function rosDate(d: Date): { date: string; time: string } {
+      const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+      const dd = String(d.getDate()).padStart(2, '0');
+      const mm = months[d.getMonth()];
+      const yyyy = d.getFullYear();
+      const hh = String(d.getHours()).padStart(2, '0');
+      const mi = String(d.getMinutes()).padStart(2, '0');
+      const ss = String(d.getSeconds()).padStart(2, '0');
+      return { date: `${mm}/${dd}/${yyyy}`, time: `${hh}:${mi}:${ss}` };
+    }
+
+    // First: Remove ALL old per-user expiry schedulers so we can rebuild them
+    add(`:foreach s in=[/system scheduler find comment~"Dartbit-expiry:"] do={ /system scheduler remove \$s }`);
+    add('');
+
     const pppoeUsers = subscribers.filter(s => s.service === 'PPPOE');
     for (const sub of pppoeUsers) {
       const speed = sub.package ? `${sub.package.speedUpKbps}k/${sub.package.speedDownKbps}k` : '10M/10M';
       const profileName = sub.package ? `dartbit-pkg-${sub.package.id.substring(0, 8)}` : 'dartbit-pppoe';
+      const expired = sub.expiresAt && sub.expiresAt <= now;
+      const disabled = !sub.isActive || expired;
 
       add(`:if ([:len [/ppp profile find name="${profileName}"]] = 0) do={ /ppp profile add name=${profileName} local-address=10.10.10.1 remote-address=pppoe-pool rate-limit=${speed} comment="Dartbit Package" }`);
-      add(`:if ([:len [/ppp secret find name="${sub.username}"]] > 0) do={ /ppp secret set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=no comment="Dartbit:${sub.id}" } else={ /ppp secret add name="${sub.username}" password="${sub.secret}" profile=${profileName} service=pppoe disabled=no comment="Dartbit:${sub.id}" }`);
+      add(`:if ([:len [/ppp secret find name="${sub.username}"]] > 0) do={ /ppp secret set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} comment="Dartbit:${sub.id}" } else={ /ppp secret add name="${sub.username}" password="${sub.secret}" profile=${profileName} service=pppoe disabled=${disabled ? 'yes' : 'no'} comment="Dartbit:${sub.id}" }`);
+
+      // If expired now → kick active session
+      if (expired) {
+        add(`:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove \$a }`);
+      }
+      // If has future expiry → schedule one-shot disable & kick at that exact time
+      else if (sub.expiresAt) {
+        const { date, time } = rosDate(sub.expiresAt);
+        const schedName = `dartbit-exp-${sub.id.substring(0, 8)}`;
+        add(`/system scheduler add name=${schedName} start-date=${date} start-time=${time} interval=0 on-event={/ppp secret disable [find name="${sub.username}"]; :foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove \$a }; :log info ("Dartbit: Auto-expired ${sub.username}")} comment="Dartbit-expiry:${sub.id}"`);
+      }
     }
 
     const hsUsers = subscribers.filter(s => s.service === 'HOTSPOT');
     for (const sub of hsUsers) {
       const speed = sub.package ? `${sub.package.speedUpKbps}k/${sub.package.speedDownKbps}k` : '5M/5M';
       const profileName = sub.package ? `dartbit-hspkg-${sub.package.id.substring(0, 8)}` : 'dartbit-default';
+      const expired = sub.expiresAt && sub.expiresAt <= now;
+      const disabled = !sub.isActive || expired;
 
       add(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} rate-limit=${speed} comment="Dartbit Package" }`);
-      add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] > 0) do={ /ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=no comment="Dartbit:${sub.id}" } else={ /ip hotspot user add name="${sub.username}" password="${sub.secret}" profile=${profileName} disabled=no comment="Dartbit:${sub.id}" }`);
+      add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] > 0) do={ /ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} comment="Dartbit:${sub.id}" } else={ /ip hotspot user add name="${sub.username}" password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} comment="Dartbit:${sub.id}" }`);
+
+      if (expired) {
+        add(`:foreach a in=[/ip hotspot active find user="${sub.username}"] do={ /ip hotspot active remove \$a }`);
+      } else if (sub.expiresAt) {
+        const { date, time } = rosDate(sub.expiresAt);
+        const schedName = `dartbit-exp-${sub.id.substring(0, 8)}`;
+        add(`/system scheduler add name=${schedName} start-date=${date} start-time=${time} interval=0 on-event={/ip hotspot user disable [find name="${sub.username}"]; :foreach a in=[/ip hotspot active find user="${sub.username}"] do={ /ip hotspot active remove \$a }; :log info ("Dartbit: Auto-expired ${sub.username}")} comment="Dartbit-expiry:${sub.id}"`);
+      }
     }
 
     const staticUsers = subscribers.filter(s => s.service === 'STATIC' && s.ipAddress);
@@ -342,13 +380,12 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       add(`:if ([:len [/ip dhcp-server lease find address="${sub.ipAddress}"]] = 0) do={ /ip dhcp-server lease add address=${sub.ipAddress} ${sub.macAddress ? `mac-address=${sub.macAddress}` : ''} server=dartbit-dhcp comment="Dartbit:${sub.id}" }`);
     }
 
-    // Cleanup disabled users
-    const activeUsernames = subscribers.map(s => `"${s.username}"`).join(',');
+    // Cleanup: disable any Dartbit-managed users that aren't in our list anymore (deleted)
+    const knownIds = subscribers.map(s => `"Dartbit:${s.id}"`).join(',');
     add('');
-    add('# Disable removed/expired users');
-    add(`:foreach s in=[/ppp secret find comment~"Dartbit:"] do={ :local n [/ppp secret get \$s name]; :if ([:len [:find (${activeUsernames || '""'}) \$n]] = 0) do={ /ppp secret disable \$s } }`);
-    add(`:foreach s in=[/ip hotspot user find comment~"Dartbit:"] do={ :local n [/ip hotspot user get \$s name]; :if ([:len [:find (${activeUsernames || '""'}) \$n]] = 0) do={ /ip hotspot user disable \$s } }`);
-    add(`:foreach a in=[/ppp active find] do={ :local n [/ppp active get \$a name]; :local sec [/ppp secret find name=\$n]; :if ([:len \$sec] > 0 && [/ppp secret get \$sec disabled] = true) do={ /ppp active remove \$a } }`);
+    add('# Disable Dartbit-managed users no longer in backend (deleted)');
+    add(`:foreach s in=[/ppp secret find comment~"Dartbit:"] do={ :local c [/ppp secret get \$s comment]; :if ([:len [:find (${knownIds || '""'}) \$c]] = 0) do={ /ppp secret disable \$s; :foreach a in=[/ppp active find name=[/ppp secret get \$s name]] do={ /ppp active remove \$a } } }`);
+    add(`:foreach s in=[/ip hotspot user find comment~"Dartbit:"] do={ :local c [/ip hotspot user get \$s comment]; :if ([:len [:find (${knownIds || '""'}) \$c]] = 0) do={ /ip hotspot user disable \$s } }`);
 
     res.type('text/plain').send(lines.join('\n'));
   } catch (err) {
