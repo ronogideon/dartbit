@@ -272,10 +272,25 @@ router.all('/sessions', async (req: Request, res: Response) => {
         });
       }
 
-      if (sessions.length > 0) {
-        await prisma.onlineSession.createMany({ data: sessions });
+      // Look up subscribers by username so we can link them properly
+      const usernames = sessions.map(s => s.username);
+      const subs = await prisma.subscriber.findMany({
+        where: { tenantId: r.tenantId, username: { in: usernames } },
+        select: { id: true, username: true },
+      });
+      const subByUsername: Record<string, string> = {};
+      for (const s of subs) subByUsername[s.username] = s.id;
 
-        for (const s of sessions) {
+      // Attach subscriberId where we have a match
+      const sessionsWithIds = sessions.map(s => ({
+        ...s,
+        subscriberId: subByUsername[s.username] || undefined,
+      }));
+
+      if (sessionsWithIds.length > 0) {
+        await prisma.onlineSession.createMany({ data: sessionsWithIds });
+
+        for (const s of sessionsWithIds) {
           await prisma.subscriber.updateMany({
             where: { tenantId: r.tenantId, username: s.username },
             data: { lastOnlineAt: new Date(), ipAddress: s.ipAddress || undefined, routerId: r.id },

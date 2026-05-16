@@ -146,4 +146,87 @@ router.post('/:id/command', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// POST /mikrotiks/:id/identity — change router identity (the system name on RouterOS)
+router.post('/:id/identity', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const { identity } = req.body;
+
+    // Sanitize: RouterOS identity is alphanumeric with -_.
+    if (!identity || typeof identity !== 'string') return sendError(res, 'identity required', 400);
+    const clean = identity.replace(/[^a-zA-Z0-9\-_\.]/g, '').substring(0, 50);
+    if (!clean) return sendError(res, 'Invalid identity (use letters, numbers, -_.)', 400);
+
+    const r = await prisma.mikrotikRouter.findUnique({ where: { id: req.params.id } });
+    if (!r) return sendError(res, 'Router not found', 404);
+    if (tenantId && r.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
+
+    const { enqueueCommand } = await import('../utils/commandQueue');
+    enqueueCommand(r.id, `/system identity set name="${clean}"`);
+
+    // Save to DB so it persists in the UI; the stats reporter will also pick it up
+    await prisma.mikrotikRouter.update({
+      where: { id: r.id },
+      data: { identity: clean },
+    });
+
+    sendSuccess(res, { queued: true, identity: clean });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
+// POST /mikrotiks/:id/lan-ports — update LAN ports on the bridge
+router.post('/:id/lan-ports', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const { ports } = req.body;
+
+    if (!Array.isArray(ports)) return sendError(res, 'ports must be an array', 400);
+    const cleanPorts: string[] = ports
+      .filter((p): p is string => typeof p === 'string')
+      .map(p => p.trim().replace(/[^a-zA-Z0-9\-_]/g, ''))
+      .filter(Boolean);
+
+    if (cleanPorts.length === 0) return sendError(res, 'At least one port required', 400);
+
+    const r = await prisma.mikrotikRouter.findUnique({
+      where: { id: req.params.id },
+      include: { provConfig: true },
+    });
+    if (!r) return sendError(res, 'Router not found', 404);
+    if (tenantId && r.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
+
+    const lanCsv = cleanPorts.join(',');
+    const bridge = r.provConfig?.bridgeName || 'bridge-lan';
+
+    // Update saved config
+    await prisma.routerProvisioningConfig.upsert({
+      where: { routerId: r.id },
+      create: { routerId: r.id, lanInterface: lanCsv },
+      update: { lanInterface: lanCsv },
+    });
+
+    // Build a command that:
+    // 1. Removes any port from this bridge that isn't in the new list
+    // 2. Adds any new ports that aren't already on this bridge
+    const desiredQuoted = cleanPorts.map(p => `"${p}"`).join(',');
+    const cmd = [
+      `# Update LAN ports on bridge ${bridge}`,
+      `:foreach p in=[/interface bridge port find bridge="${bridge}"] do={ :local iname [/interface bridge port get $p interface]; :if ([:len [:find (${desiredQuoted}) $iname]] = 0) do={ /interface bridge port remove $p } }`,
+      ...cleanPorts.map(port =>
+        `:if ([:len [/interface bridge port find interface="${port}"]] = 0 && [:len [/interface find name="${port}"]] > 0) do={ /interface bridge port add bridge=${bridge} interface=${port} comment="Dartbit LAN port" }`
+      ),
+      `:log info "Dartbit: LAN ports updated"`,
+    ].join('\n');
+
+    const { enqueueCommand } = await import('../utils/commandQueue');
+    enqueueCommand(r.id, cmd);
+
+    sendSuccess(res, { queued: true, ports: cleanPorts });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
 export default router;

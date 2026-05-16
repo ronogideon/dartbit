@@ -73,3 +73,5 @@ export const getTenantInfo = () => api.get('/tenants/my').then(r => r.data.data)
 // Router actions
 export const rebootRouter = (id: string) => api.post(`/mikrotiks/${id}/reboot`).then(r => r.data.data);
 export const runRouterCommand = (id: string, command: string) => api.post(`/mikrotiks/${id}/command`, { command }).then(r => r.data.data);
+export const changeRouterIdentity = (id: string, identity: string) => api.post(`/mikrotiks/${id}/identity`, { identity }).then(r => r.data.data);
+export const updateRouterLanPorts = (id: string, ports: string[]) => api.post(`/mikrotiks/${id}/lan-ports`, { ports }).then(r => r.data.data);

@@ -1,12 +1,12 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getRouters, linkRouter, updateRouter, deleteRouter, getProvisionConfig, saveProvisionConfig, rebootRouter } from '@/lib/api';
+import { getRouters, linkRouter, updateRouter, deleteRouter, getProvisionConfig, saveProvisionConfig, rebootRouter, changeRouterIdentity, updateRouterLanPorts } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import toast from 'react-hot-toast';
-import { Plus, Edit2, Trash2, Copy, Terminal, Settings2, ChevronDown, ChevronUp, RotateCw } from 'lucide-react';
+import { Plus, Edit2, Trash2, Copy, Terminal, Settings2, ChevronDown, ChevronUp, RotateCw, MoreVertical, Tag, Network } from 'lucide-react';
 
 interface ProvConfig {
   wanInterface: string; lanInterface: string; bridgeName: string;
@@ -153,6 +153,180 @@ function ProvisionPanel({ routerId }: { routerId: string }) {
   );
 }
 
+// Options menu — identity change & LAN port update
+function RouterOptionsMenu({ router, onReboot, onEdit, onDelete }: {
+  router: MikrotikRouter;
+  onReboot: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [identityModal, setIdentityModal] = useState(false);
+  const [lanPortsModal, setLanPortsModal] = useState(false);
+  const [identity, setIdentity] = useState(router.identity || router.name);
+  const [lanPorts, setLanPorts] = useState('ether2');
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    const onClick = () => setOpen(false);
+    document.addEventListener('click', onClick);
+    return () => document.removeEventListener('click', onClick);
+  }, [open]);
+
+  // Pre-load current LAN ports from provisioning config when opening
+  const openLanPorts = async () => {
+    setOpen(false);
+    try {
+      const cfg = await getProvisionConfig(router.id);
+      setLanPorts(cfg?.lanInterface || 'ether2');
+    } catch {
+      setLanPorts('ether2');
+    }
+    setLanPortsModal(true);
+  };
+
+  const identityMut = useMutation({
+    mutationFn: (newIdentity: string) => changeRouterIdentity(router.id, newIdentity),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['routers'] });
+      toast.success('Identity change queued — will apply within 30s');
+      setIdentityModal(false);
+    },
+    onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed'),
+  });
+
+  const lanMut = useMutation({
+    mutationFn: (ports: string[]) => updateRouterLanPorts(router.id, ports),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['routers'] });
+      toast.success('LAN ports update queued — applies within 30s');
+      setLanPortsModal(false);
+    },
+    onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed'),
+  });
+
+  const isOnline = router.status === 'ONLINE';
+
+  return (
+    <>
+      <div className="relative">
+        <button
+          onClick={e => { e.stopPropagation(); setOpen(v => !v); }}
+          className="p-1.5 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+          title="More options"
+        >
+          <MoreVertical size={15} />
+        </button>
+        {open && (
+          <div
+            onClick={e => e.stopPropagation()}
+            className="absolute right-0 top-full mt-1 w-56 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-20 py-1"
+          >
+            <button
+              onClick={() => { setOpen(false); setIdentity(router.identity || router.name); setIdentityModal(true); }}
+              disabled={!isOnline}
+              className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-800 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Tag size={14} className="text-purple-600" /> Change identity
+            </button>
+            <button
+              onClick={openLanPorts}
+              disabled={!isOnline}
+              className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-800 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Network size={14} className="text-cyan-600" /> Update LAN ports
+            </button>
+            <button
+              onClick={() => { setOpen(false); onReboot(); }}
+              disabled={!isOnline}
+              className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-800 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <RotateCw size={14} className="text-orange-600" /> Reboot router
+            </button>
+            <div className="border-t border-gray-200 dark:border-gray-700 my-1" />
+            <button
+              onClick={() => { setOpen(false); onEdit(); }}
+              className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-800 flex items-center gap-2"
+            >
+              <Edit2 size={14} className="text-blue-600" /> Edit name
+            </button>
+            <button
+              onClick={() => { setOpen(false); onDelete(); }}
+              className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-800 flex items-center gap-2 text-red-600"
+            >
+              <Trash2 size={14} /> Delete router
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Identity change modal */}
+      <Modal isOpen={identityModal} onClose={() => setIdentityModal(false)} title="Change router identity">
+        <form
+          onSubmit={e => { e.preventDefault(); identityMut.mutate(identity); }}
+          className="space-y-4"
+        >
+          <div>
+            <label className="label">New identity</label>
+            <input
+              className="input"
+              value={identity}
+              onChange={e => setIdentity(e.target.value)}
+              placeholder="e.g. Office-Router-01"
+              autoFocus
+              required
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Sets the RouterOS system identity. Letters, numbers, hyphens, underscores and dots only.
+            </p>
+          </div>
+          <div className="flex gap-3 justify-end">
+            <button type="button" onClick={() => setIdentityModal(false)} className="btn-secondary">Cancel</button>
+            <button type="submit" disabled={identityMut.isPending} className="btn-primary">
+              {identityMut.isPending ? 'Saving...' : 'Apply'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* LAN ports modal */}
+      <Modal isOpen={lanPortsModal} onClose={() => setLanPortsModal(false)} title="Update LAN ports on bridge">
+        <form
+          onSubmit={e => {
+            e.preventDefault();
+            const ports = lanPorts.split(',').map(p => p.trim()).filter(Boolean);
+            lanMut.mutate(ports);
+          }}
+          className="space-y-4"
+        >
+          <div>
+            <label className="label">LAN interfaces on bridge</label>
+            <input
+              className="input"
+              value={lanPorts}
+              onChange={e => setLanPorts(e.target.value)}
+              placeholder="ether2,ether3,ether4,wlan1"
+              autoFocus
+              required
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Comma-separated list. Ports added here are added to the bridge; ports removed here will be removed from the bridge.
+            </p>
+          </div>
+          <div className="flex gap-3 justify-end">
+            <button type="button" onClick={() => setLanPortsModal(false)} className="btn-secondary">Cancel</button>
+            <button type="submit" disabled={lanMut.isPending} className="btn-primary">
+              {lanMut.isPending ? 'Saving...' : 'Update'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+    </>
+  );
+}
+
 export default function RoutersPage() {
   const qc = useQueryClient();
   const [modalOpen, setModalOpen] = useState(false);
@@ -233,16 +407,12 @@ export default function RoutersPage() {
                 </div>
                 <div className="flex items-center gap-2 ml-2 shrink-0">
                   <span className={r.status === 'ONLINE' ? 'badge-green' : r.status === 'OFFLINE' ? 'badge-red' : 'badge-yellow'}>{r.status}</span>
-                  <button
-                    onClick={() => rebootMut.mutate(r.id)}
-                    disabled={r.status !== 'ONLINE' || rebootMut.isPending}
-                    className="p-1.5 text-gray-400 hover:text-orange-600 disabled:opacity-40 disabled:cursor-not-allowed"
-                    title={r.status === 'ONLINE' ? 'Reboot router' : 'Router must be online to reboot'}
-                  >
-                    <RotateCw size={15} />
-                  </button>
-                  <button onClick={() => openEdit(r)} className="p-1.5 text-gray-400 hover:text-blue-600"><Edit2 size={15} /></button>
-                  <button onClick={() => setDeleteId(r.id)} className="p-1.5 text-gray-400 hover:text-red-600"><Trash2 size={15} /></button>
+                  <RouterOptionsMenu
+                    router={r}
+                    onReboot={() => rebootMut.mutate(r.id)}
+                    onEdit={() => openEdit(r)}
+                    onDelete={() => setDeleteId(r.id)}
+                  />
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-2 mb-2">
