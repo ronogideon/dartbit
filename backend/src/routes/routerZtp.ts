@@ -49,7 +49,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.4.0');
+    add('# Dartbit ZTP Script v1.4.1');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -86,20 +86,13 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add(`:if ([:len [/interface pppoe-server server find service-name="dartbit"]] = 0) do={ /interface pppoe-server server add service-name=dartbit interface=${bridge} authentication=chap,pap default-profile=dartbit-pppoe disabled=no comment="Dartbit PPPoE Server" }`);
     add('');
 
-    // 6. Hotspot — uses /ip hotspot setup style: DHCP is managed by the hotspot itself
-    //    The hotspot creates and uses its own DHCP server on the bridge.
-    add('# 6. Hotspot — captive portal with strict address-list enforcement');
-    // Profile: on login add client IP to address list, on logout remove. This drives the forward filter above.
-    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=http-chap,http-pap http-cookie-lifetime=0s use-radius=no on-login=":/ip firewall address-list add list=hotspot-active address=\\$address timeout=1d comment=\\"hs-\\$user\\"" on-logout=":/ip firewall address-list remove [find list=hotspot-active comment=\\"hs-\\$user\\"]" }`);
-    // User profile — 1 shared user, no MAC sharing, MAC binding via mac-cookie-timeout=0
+    // 6. Hotspot — captive portal with DHCP managed by the hotspot itself
+    add('# 6. Hotspot — captive portal');
+    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=http-chap,http-pap http-cookie-lifetime=0s use-radius=no }`);
     add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 mac-cookie-timeout=0s address-pool=dhcp-pool }`);
-    // The hotspot itself — address-pool ensures clients get an IP via the hotspot's own DHCP
     add(`:if ([:len [/ip hotspot find interface="${bridge}"]] = 0) do={ /ip hotspot add name=dartbit-hotspot interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no }`);
-    // Disable any old separate dartbit-dhcp that might interfere with the hotspot's DHCP
     add(`:foreach d in=[/ip dhcp-server find name="dartbit-dhcp"] do={ /ip dhcp-server remove $d }`);
     add(`:foreach n in=[/ip dhcp-server network find comment="Dartbit"] do={ /ip dhcp-server network remove $n }`);
-    // Pre-create the address list so the forward filter doesn't fail before first login
-    add(`:if ([:len [/ip firewall address-list find list="hotspot-active"]] = 0) do={ /ip firewall address-list add list=hotspot-active address=0.0.0.0 timeout=10s comment="placeholder" }`);
     add('');
 
     // 7. Walled garden — allow Dartbit backend so script fetches still work pre-login
