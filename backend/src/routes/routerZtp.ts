@@ -101,12 +101,20 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add(`:if ([:len [/ip hotspot walled-garden find comment="Dartbit backend"]] = 0) do={ /ip hotspot walled-garden add dst-host=dartbit-production.up.railway.app comment="Dartbit backend" }`);
     add('');
 
-    // Heartbeat — sends full router stats via query params
-    add('# 8. Heartbeat — runs every 15s, sends router stats');
+    // Heartbeat — simple single-URL fetch (no string concatenation in RouterOS)
+    add('# 8. Heartbeat — pings backend every 15s');
     add(`:foreach s in=[/system scheduler find comment="Dartbit heartbeat"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-heartbeat"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-heartbeat policy=read,write,test source=":local id [/system identity get name]; :local cpu [/system resource get cpu-load]; :local upt [/system resource get uptime]; :local mem [/system resource get free-memory]; :local tmem [/system resource get total-memory]; /tool fetch url=(\\"${backendUrl}/router/heartbeat?apiKey=${apiKey}&identity=\\" . \$id . \\"&cpu=\\" . \$cpu . \\"&uptime=\\" . \$upt . \\"&memFree=\\" . \$mem . \\"&memTotal=\\" . \$tmem)${fetchFlags} keep-result=no"`);
+    add(`/system script add name=dartbit-heartbeat policy=read,write,test source="/tool fetch url=\\"${backendUrl}/router/heartbeat?apiKey=${apiKey}\\"${fetchFlags} keep-result=no"`);
     add(`/system scheduler add name=dartbit-heartbeat interval=15s on-event="/system script run dartbit-heartbeat" comment="Dartbit heartbeat"`);
+    add('');
+
+    // Stats reporter — separate script that sends CPU/uptime/memory using stable approach
+    add('# 8b. Stats reporter — sends router resource info every 60s');
+    add(`:foreach s in=[/system scheduler find comment="Dartbit stats"] do={ /system scheduler remove $s }`);
+    add(`:foreach s in=[/system script find name="dartbit-stats"] do={ /system script remove $s }`);
+    add(`/system script add name=dartbit-stats policy=read,write,test source={:local cpu [/system resource get cpu-load]; :local upt [/system resource get uptime]; :local mem [/system resource get free-memory]; :local id [/system identity get name]; :local url ("${backendUrl}/router/stats?apiKey=${apiKey}&cpu=" . \$cpu . "&uptime=" . \$upt . "&memFree=" . \$mem . "&identity=" . \$id); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
+    add(`/system scheduler add name=dartbit-stats interval=60s on-event="/system script run dartbit-stats" comment="Dartbit stats"`);
     add('');
 
     // Sync subscribers — pulls PPPoE secrets and hotspot users from backend
@@ -150,11 +158,28 @@ router.all('/heartbeat', async (req: Request, res: Response) => {
     const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey } });
     if (!r) return sendError(res, 'Router not found', 404);
 
+    await prisma.mikrotikRouter.update({
+      where: { id: r.id },
+      data: { status: 'ONLINE', lastSeenAt: new Date() },
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Heartbeat error:', err);
+    sendError(res, 'Heartbeat failed', 500);
+  }
+});
+
+// Stats reporter — receives CPU/uptime/memory from router
+router.all('/stats', async (req: Request, res: Response) => {
+  try {
+    const apiKey = String(req.query.apiKey || req.body?.apiKey || '');
+    if (!apiKey) return sendError(res, 'apiKey required', 400);
+    const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey } });
+    if (!r) return sendError(res, 'Router not found', 404);
+
     const identity = String(req.query.identity || '').replace(/[^\w\-\.]/g, '').substring(0, 50);
-    const cpu = parseFloat(String(req.query.cpu || '')) || null;
+    const cpu = parseFloat(String(req.query.cpu || ''));
     const uptime = String(req.query.uptime || '').substring(0, 50);
-    const memFree = parseInt(String(req.query.memFree || ''), 10) || 0;
-    const memTotal = parseInt(String(req.query.memTotal || ''), 10) || 0;
 
     await prisma.mikrotikRouter.update({
       where: { id: r.id },
@@ -162,14 +187,14 @@ router.all('/heartbeat', async (req: Request, res: Response) => {
         status: 'ONLINE',
         lastSeenAt: new Date(),
         identity: identity || r.identity,
-        cpuLoad: cpu ?? r.cpuLoad,
+        cpuLoad: !isNaN(cpu) ? cpu : r.cpuLoad,
         uptime: uptime || r.uptime,
       },
     });
-    res.json({ ok: true, memFree, memTotal });
+    res.json({ ok: true });
   } catch (err) {
-    console.error('Heartbeat error:', err);
-    sendError(res, 'Heartbeat failed', 500);
+    console.error('Stats error:', err);
+    sendError(res, 'Stats failed', 500);
   }
 });
 
