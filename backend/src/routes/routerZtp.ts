@@ -132,12 +132,12 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add(`/system scheduler add name=dartbit-cmd interval=30s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`);
     add('');
 
-    // === Active session reporter — uses braces for safe string building ===
-    add('# 11. Active session reporter — every 30s');
+    // === Active session reporter — every 5s with traffic stats ===
+    add('# 11. Active session reporter — every 5s with bandwidth');
     add(`:foreach s in=[/system scheduler find comment="Dartbit session sync"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-sessions"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :set data (\$data . \$u . ":" . \$ip . ",") }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
-    add(`/system scheduler add name=dartbit-sessions interval=30s on-event="/system script run dartbit-sessions" comment="Dartbit session sync"`);
+    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . ","); }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
+    add(`/system scheduler add name=dartbit-sessions interval=5s on-event="/system script run dartbit-sessions" comment="Dartbit session sync"`);
     add('');
 
     add(':log info "Dartbit: Provisioning complete"');
@@ -196,7 +196,9 @@ router.all('/stats', async (req: Request, res: Response) => {
   }
 });
 
-// Active sessions report from router
+// In-memory cache of last reading per username for bandwidth delta calc
+const lastTrafficReading: Record<string, { rx: number; tx: number; at: number }> = {};
+
 router.all('/sessions', async (req: Request, res: Response) => {
   try {
     const apiKey = String(req.query.apiKey || req.body?.apiKey || '');
@@ -204,28 +206,75 @@ router.all('/sessions', async (req: Request, res: Response) => {
     const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey } });
     if (!r) return sendError(res, 'Router not found', 404);
 
-    // Sanitize but allow IP characters
-    const pppoeStr = String(req.query.pppoe || '').replace(/[^a-zA-Z0-9_\-\.,:\/]/g, '');
-    console.log(`[sessions] router=${r.name} pppoeStr="${pppoeStr}"`);
+    // New format: "username|ip|uptime|rxBytes|txBytes,..."
+    // Old format: "username:ip,..."
+    const pppoeStr = String(req.query.pppoe || '').replace(/[^a-zA-Z0-9_\-\.,:|\/]/g, '');
 
     // Clear existing sessions for this router
     await prisma.onlineSession.deleteMany({ where: { routerId: r.id } });
 
     if (pppoeStr) {
       const entries = pppoeStr.split(',').filter(Boolean);
-      const sessions: Array<{ username: string; ipAddress: string; routerId: string; tenantId: string }> = [];
+      const sessions: Array<{
+        username: string; ipAddress: string; uptime?: string;
+        uploadSpeed?: number; downloadSpeed?: number;
+        routerId: string; tenantId: string;
+      }> = [];
+
+      const now = Date.now();
+
       for (const e of entries) {
-        const [username, ipAddress] = e.split(':');
-        if (username && username.length > 0) {
-          sessions.push({ username, ipAddress: ipAddress || '', routerId: r.id, tenantId: r.tenantId });
+        // Try new format first (pipe-delimited)
+        const parts = e.split('|');
+        let username = '', ipAddress = '', uptime = '', rxBytes = 0, txBytes = 0;
+
+        if (parts.length >= 2) {
+          username = parts[0] || '';
+          ipAddress = parts[1] || '';
+          uptime = parts[2] || '';
+          rxBytes = parseInt(parts[3] || '0', 10) || 0;
+          txBytes = parseInt(parts[4] || '0', 10) || 0;
+        } else {
+          // Fallback to old colon format
+          const [u, ip] = e.split(':');
+          username = u || '';
+          ipAddress = ip || '';
         }
+
+        if (!username) continue;
+
+        // Calculate bandwidth from byte deltas
+        let uploadKbps = 0, downloadKbps = 0;
+        const key = `${r.id}:${username}`;
+        const prev = lastTrafficReading[key];
+
+        if (prev && rxBytes > 0 && txBytes > 0) {
+          const dt = (now - prev.at) / 1000; // seconds
+          if (dt > 0 && dt < 120) { // sanity check
+            // From router perspective: rx = client uploaded TO router, tx = router downloaded TO client
+            const rxDelta = Math.max(0, rxBytes - prev.rx);
+            const txDelta = Math.max(0, txBytes - prev.tx);
+            uploadKbps = Math.round((rxDelta * 8) / 1024 / dt);
+            downloadKbps = Math.round((txDelta * 8) / 1024 / dt);
+          }
+        }
+
+        // Save current reading for next calculation
+        if (rxBytes > 0 || txBytes > 0) {
+          lastTrafficReading[key] = { rx: rxBytes, tx: txBytes, at: now };
+        }
+
+        sessions.push({
+          username, ipAddress, uptime,
+          uploadSpeed: uploadKbps,
+          downloadSpeed: downloadKbps,
+          routerId: r.id, tenantId: r.tenantId,
+        });
       }
 
       if (sessions.length > 0) {
         await prisma.onlineSession.createMany({ data: sessions });
-        console.log(`[sessions] saved ${sessions.length} sessions for ${r.name}`);
 
-        // Also update Subscriber.lastOnlineAt for these usernames
         for (const s of sessions) {
           await prisma.subscriber.updateMany({
             where: { tenantId: r.tenantId, username: s.username },

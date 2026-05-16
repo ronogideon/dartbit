@@ -9,9 +9,11 @@ import toast from 'react-hot-toast';
 import { Plus, Edit2, Trash2, Search } from 'lucide-react';
 
 interface Subscriber {
-  id: string; username: string; fullName: string; phone?: string;
+  id: string; username: string; fullName: string; phone?: string; email?: string;
   service: string; isActive: boolean; expiresAt?: string;
-  package?: { name: string }; router?: { name: string };
+  packageId?: string; routerId?: string; ipAddress?: string; macAddress?: string;
+  lastOnlineAt?: string;
+  package?: { id: string; name: string }; router?: { id: string; name: string };
 }
 interface Package { id: string; name: string; service: string; }
 interface Router { id: string; name: string; }
@@ -55,9 +57,14 @@ export default function SubscribersPage() {
   const openEdit = (s: Subscriber) => {
     setEditing(s);
     setForm({
-      username: s.username, secret: '', fullName: s.fullName, phone: s.phone || '',
-      email: '', service: s.service, packageId: '', routerId: '',
-      // datetime-local needs YYYY-MM-DDTHH:MM format
+      username: s.username,
+      secret: '', // never pre-fill password
+      fullName: s.fullName,
+      phone: s.phone || '',
+      email: s.email || '',
+      service: s.service,
+      packageId: s.package?.id || s.packageId || '',
+      routerId: s.router?.id || s.routerId || '',
       expiresAt: s.expiresAt ? s.expiresAt.substring(0, 16) : '',
     });
     setModalOpen(true);
@@ -66,16 +73,41 @@ export default function SubscribersPage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const payload = {
-      ...form,
-      packageId: form.packageId || undefined,
-      routerId: form.routerId || undefined,
-      expiresAt: form.expiresAt || undefined,
-      phone: form.phone || undefined,
-      email: form.email || undefined,
-    };
-    if (editing) updateMut.mutate({ id: editing.id, data: payload });
-    else createMut.mutate(payload);
+
+    if (editing) {
+      // For edit: only send fields that have values (preserves existing data on backend)
+      const payload: Record<string, unknown> = {};
+      if (form.username && form.username !== editing.username) payload.username = form.username;
+      if (form.secret) payload.secret = form.secret; // only if password changed
+      if (form.fullName && form.fullName !== editing.fullName) payload.fullName = form.fullName;
+      if (form.phone !== (editing.phone || '')) payload.phone = form.phone;
+      if (form.email !== (editing.email || '')) payload.email = form.email;
+      if (form.service !== editing.service) payload.service = form.service;
+      if (form.packageId !== (editing.package?.id || editing.packageId || '')) payload.packageId = form.packageId;
+      if (form.routerId !== (editing.router?.id || editing.routerId || '')) payload.routerId = form.routerId;
+      const currentExpiry = editing.expiresAt ? editing.expiresAt.substring(0, 16) : '';
+      if (form.expiresAt !== currentExpiry) payload.expiresAt = form.expiresAt;
+
+      // If user didn't actually change anything, still send the changed ones (could be empty if everything same)
+      if (Object.keys(payload).length === 0) {
+        toast.success('No changes to save');
+        closeModal();
+        return;
+      }
+
+      updateMut.mutate({ id: editing.id, data: payload });
+    } else {
+      // For create: send everything, convert empty to undefined
+      const payload = {
+        ...form,
+        packageId: form.packageId || undefined,
+        routerId: form.routerId || undefined,
+        expiresAt: form.expiresAt || undefined,
+        phone: form.phone || undefined,
+        email: form.email || undefined,
+      };
+      createMut.mutate(payload);
+    }
   };
 
   const filtered = (subscribers as Subscriber[]).filter(s =>

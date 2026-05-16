@@ -11,13 +11,26 @@ const subscriberSchema = z.object({
   username: z.string().min(2),
   secret: z.string().min(4),
   fullName: z.string().min(2),
-  phone: z.string().optional(),
-  email: z.string().email().optional(),
+  phone: z.string().optional().or(z.literal('')),
+  email: z.string().email().optional().or(z.literal('')),
   service: z.enum(['PPPOE', 'HOTSPOT', 'STATIC']).default('PPPOE'),
-  packageId: z.string().optional(),
-  routerId: z.string().optional(),
-  expiresAt: z.string().optional(),
+  packageId: z.string().optional().or(z.literal('')),
+  routerId: z.string().optional().or(z.literal('')),
+  expiresAt: z.string().optional().or(z.literal('')),
+  isActive: z.boolean().optional(),
+  ipAddress: z.string().optional().or(z.literal('')),
+  macAddress: z.string().optional().or(z.literal('')),
 });
+
+// Strip empty strings - converts "" to undefined so they're treated as "don't update"
+function cleanForUpdate<T extends Record<string, unknown>>(data: T): Partial<T> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (v === '' || v === undefined || v === null) continue;
+    out[k] = v;
+  }
+  return out as Partial<T>;
+}
 
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
@@ -75,22 +88,36 @@ router.post('/', async (req: AuthRequest, res: Response) => {
 
 router.put('/:id', async (req: AuthRequest, res: Response) => {
   try {
-    const parsed = subscriberSchema.partial().safeParse(req.body);
-    if (!parsed.success) return sendError(res, parsed.error.message, 400);
+    const tenantId = req.user?.tenantId;
+
+    // Strip empty strings BEFORE validation so they're treated as "don't change"
+    const cleanedBody = cleanForUpdate(req.body || {});
+
+    const parsed = subscriberSchema.partial().safeParse(cleanedBody);
+    if (!parsed.success) return sendError(res, parsed.error.errors[0].message, 400);
+
+    // Verify ownership
+    const existing = await prisma.subscriber.findUnique({ where: { id: req.params.id } });
+    if (!existing) return sendError(res, 'Subscriber not found', 404);
+    if (tenantId && existing.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
 
     const { expiresAt, ...rest } = parsed.data;
+    const updateData: Record<string, unknown> = { ...rest };
+    if (expiresAt !== undefined) {
+      updateData.expiresAt = expiresAt ? new Date(expiresAt) : null;
+    }
+
     const subscriber = await prisma.subscriber.update({
       where: { id: req.params.id },
-      data: {
-        ...rest,
-        expiresAt: expiresAt ? new Date(expiresAt) : undefined,
-      },
-      include: { package: true },
+      data: updateData,
+      include: { package: true, router: true },
     });
 
     sendSuccess(res, subscriber);
-  } catch {
-    sendError(res, 'Failed to update subscriber', 500);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to update subscriber';
+    console.error('Update subscriber error:', msg);
+    sendError(res, msg, 500);
   }
 });
 
