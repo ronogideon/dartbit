@@ -11,7 +11,6 @@ async function findRouter(apiKey: string) {
   });
 }
 
-// GET /router/ztp-script?apiKey=...
 router.get('/ztp-script', async (req: Request, res: Response) => {
   try {
     const apiKey = String(req.query.apiKey || '');
@@ -44,80 +43,70 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const pppoeStart = cfg?.pppoePoolStart   ?? '10.10.10.10';
     const pppoeEnd   = cfg?.pppoePoolEnd     ?? '10.10.10.200';
 
-    // Build script using array join — avoids any template-literal escaping ambiguity
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
     add('# ============================================================');
-    add(`# Dartbit ZTP Script v1.2.7`);
+    add(`# Dartbit ZTP Script v1.2.9`);
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add(`# Backend : ${backendUrl}`);
-    add(`# Generated: ${new Date().toISOString()}`);
     add('# ============================================================');
     add('');
     add(':log info "Dartbit: Starting ZTP provisioning"');
     add('');
 
-    add('# Bridge');
-    add('/interface bridge');
-    add(`add name=${bridge} comment="Dartbit LAN"`);
-    add('/interface bridge port');
-    add(`add bridge=${bridge} interface=${lan} comment="Dartbit LAN port"`);
+    // ── Bridge (idempotent) ──────────────────────────────────
+    add('# 1. Bridge');
+    add(`:if ([:len [/interface bridge find name="${bridge}"]] = 0) do={ /interface bridge add name=${bridge} comment="Dartbit LAN" }`);
+    add(`:if ([:len [/interface bridge port find interface="${lan}"]] = 0) do={ /interface bridge port add bridge=${bridge} interface=${lan} comment="Dartbit LAN port" }`);
     add('');
 
-    add('# LAN gateway IP');
-    add('/ip address');
-    add(`add address=${lanGw}/24 interface=${bridge} comment="Dartbit LAN Gateway"`);
+    // ── LAN IP (idempotent) ─────────────────────────────────
+    add('# 2. LAN gateway IP');
+    add(`:if ([:len [/ip address find address="${lanGw}/24"]] = 0) do={ /ip address add address=${lanGw}/24 interface=${bridge} comment="Dartbit LAN Gateway" }`);
     add('');
 
-    add('# DHCP server');
-    add('/ip pool');
-    add(`add name=dhcp-pool ranges=${dhcpStart}-${dhcpEnd}`);
-    add('/ip dhcp-server network');
-    add(`add address=${lanSubnet} gateway=${lanGw} dns-server=${dns}`);
-    add('/ip dhcp-server');
-    add(`add name=dartbit-dhcp interface=${bridge} address-pool=dhcp-pool disabled=no lease-time=1d`);
+    // ── DHCP pool ───────────────────────────────────────────
+    add('# 3. DHCP server');
+    add(`:if ([:len [/ip pool find name="dhcp-pool"]] = 0) do={ /ip pool add name=dhcp-pool ranges=${dhcpStart}-${dhcpEnd} }`);
+    add(`:if ([:len [/ip dhcp-server network find address="${lanSubnet}"]] = 0) do={ /ip dhcp-server network add address=${lanSubnet} gateway=${lanGw} dns-server=${dns} }`);
+    add(`:if ([:len [/ip dhcp-server find name="dartbit-dhcp"]] = 0) do={ /ip dhcp-server add name=dartbit-dhcp interface=${bridge} address-pool=dhcp-pool disabled=no lease-time=1d }`);
     add('');
 
-    add('# NAT for WAN');
-    add('/ip firewall nat');
-    add(`add chain=srcnat out-interface=${wan} action=masquerade comment="Dartbit WAN NAT"`);
+    // ── NAT ─────────────────────────────────────────────────
+    add('# 4. NAT for WAN');
+    add(`:if ([:len [/ip firewall nat find comment="Dartbit WAN NAT"]] = 0) do={ /ip firewall nat add chain=srcnat out-interface=${wan} action=masquerade comment="Dartbit WAN NAT" }`);
     add('');
 
-    add('# PPPoE pool and profile');
-    add('/ip pool');
-    add(`add name=${pppoePool} ranges=${pppoeStart}-${pppoeEnd}`);
-    add('/ppp profile');
-    add(`add name=dartbit-pppoe local-address=${pppoeLocal} remote-address=${pppoePool} comment="Dartbit PPPoE"`);
-    add('/interface pppoe-server server');
-    add(`add service-name=dartbit interface=${bridge} authentication=chap,pap default-profile=dartbit-pppoe disabled=no comment="Dartbit PPPoE Server"`);
+    // ── PPPoE ───────────────────────────────────────────────
+    add('# 5. PPPoE server');
+    add(`:if ([:len [/ip pool find name="${pppoePool}"]] = 0) do={ /ip pool add name=${pppoePool} ranges=${pppoeStart}-${pppoeEnd} }`);
+    add(`:if ([:len [/ppp profile find name="dartbit-pppoe"]] = 0) do={ /ppp profile add name=dartbit-pppoe local-address=${pppoeLocal} remote-address=${pppoePool} comment="Dartbit PPPoE" }`);
+    add(`:if ([:len [/interface pppoe-server server find service-name="dartbit"]] = 0) do={ /interface pppoe-server server add service-name=dartbit interface=${bridge} authentication=chap,pap default-profile=dartbit-pppoe disabled=no comment="Dartbit PPPoE Server" }`);
     add('');
 
-    add('# Hotspot');
-    add('/ip hotspot profile');
-    add(`add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login html-directory=hotspot`);
-    add('/ip hotspot user profile');
-    add(`add name=dartbit-default rate-limit="10M/10M" shared-users=1 comment="Dartbit Default"`);
-    add('/ip hotspot');
-    add(`add name=dartbit-hotspot interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no`);
+    // ── Hotspot ─────────────────────────────────────────────
+    add('# 6. Hotspot');
+    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login html-directory=hotspot }`);
+    add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 comment="Dartbit Default" }`);
+    add(`:if ([:len [/ip hotspot find name="dartbit-hotspot"]] = 0) do={ /ip hotspot add name=dartbit-hotspot interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no }`);
     add('');
 
-    add('# Walled garden — allow Dartbit backend');
-    add('/ip hotspot walled-garden');
-    add(`add dst-host=dartbit-production.up.railway.app comment="Dartbit backend"`);
+    // ── Walled garden ───────────────────────────────────────
+    add('# 7. Walled garden — allow Dartbit backend');
+    add(`:if ([:len [/ip hotspot walled-garden find comment="Dartbit backend"]] = 0) do={ /ip hotspot walled-garden add dst-host=dartbit-production.up.railway.app comment="Dartbit backend" }`);
     add('');
 
-    add('# Default route');
-    add('/ip route');
-    add(`add dst-address=0.0.0.0/0 gateway=${wan} comment="Dartbit Default Route"`);
+    // ── Default route ───────────────────────────────────────
+    add('# 8. Default route');
+    add(`:if ([:len [/ip route find comment="Dartbit Default Route"]] = 0) do={ /ip route add dst-address=0.0.0.0/0 gateway=${wan} comment="Dartbit Default Route" }`);
     add('');
 
-    // Heartbeat — keep it single-line
-    add('# Heartbeat scheduler — sends router status every 15s');
-    add('/system scheduler');
-    add(`remove [find comment="Dartbit heartbeat"]`);
-    add(`add name=dartbit-heartbeat interval=15s comment="Dartbit heartbeat" on-event=":local id [/system identity get name]; :local cpu [/system resource get cpu-load]; :local upt [/system resource get uptime]; /tool fetch url=\\"${backendUrl}/router/heartbeat?apiKey=${apiKey}&identity=\$id&cpu=\$cpu&uptime=\$upt\\"${fetchFlags} output=none keep-result=no"`);
+    // ── Heartbeat scheduler ─────────────────────────────────
+    add('# 9. Heartbeat — pings backend every 15s');
+    add(`:foreach s in=[/system scheduler find comment="Dartbit heartbeat"] do={ /system scheduler remove $s }`);
+    add(`/system scheduler add name=dartbit-heartbeat interval=15s comment="Dartbit heartbeat" on-event="/tool fetch url=\\"${backendUrl}/router/heartbeat?apiKey=${apiKey}\\"${fetchFlags} output=none keep-result=no"`);
     add('');
 
     add(':log info "Dartbit: ZTP provisioning complete"');
@@ -130,28 +119,15 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
   }
 });
 
-// POST /router/heartbeat — accepts GET as well for simpler MikroTik fetch
 router.all('/heartbeat', async (req: Request, res: Response) => {
   try {
     const apiKey = String(req.query.apiKey || req.body?.apiKey || '');
     if (!apiKey) return sendError(res, 'apiKey required', 400);
-
-    const identity = String(req.query.identity || req.body?.identity || '');
-    const cpu = parseFloat(String(req.query.cpu || req.body?.cpuLoad || '0'));
-    const uptime = String(req.query.uptime || req.body?.uptime || '');
-
     const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey } });
     if (!r) return sendError(res, 'Router not found', 404);
-
     await prisma.mikrotikRouter.update({
       where: { id: r.id },
-      data: {
-        identity: identity || r.identity,
-        cpuLoad: isNaN(cpu) ? r.cpuLoad : cpu,
-        uptime: uptime || r.uptime,
-        status: 'ONLINE',
-        lastSeenAt: new Date(),
-      },
+      data: { status: 'ONLINE', lastSeenAt: new Date() },
     });
     res.json({ ok: true });
   } catch (err) {
@@ -160,7 +136,6 @@ router.all('/heartbeat', async (req: Request, res: Response) => {
   }
 });
 
-// POST /router/interfaces
 router.post('/interfaces', async (req: Request, res: Response) => {
   try {
     const apiKey = String(req.query.apiKey || req.body?.apiKey || '');
@@ -168,12 +143,9 @@ router.post('/interfaces', async (req: Request, res: Response) => {
     const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey } });
     if (!r) return sendError(res, 'Router not found', 404);
     res.json({ ok: true });
-  } catch {
-    sendError(res, 'Failed', 500);
-  }
+  } catch { sendError(res, 'Failed', 500); }
 });
 
-// POST /router/sessions
 router.post('/sessions', async (req: Request, res: Response) => {
   try {
     const apiKey = String(req.query.apiKey || req.body?.apiKey || '');
@@ -181,9 +153,7 @@ router.post('/sessions', async (req: Request, res: Response) => {
     const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey } });
     if (!r) return sendError(res, 'Router not found', 404);
     res.json({ ok: true });
-  } catch {
-    sendError(res, 'Failed', 500);
-  }
+  } catch { sendError(res, 'Failed', 500); }
 });
 
 export default router;

@@ -88,10 +88,23 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
 
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
-    await prisma.mikrotikRouter.delete({ where: { id: req.params.id } });
+    const routerId = req.params.id;
+
+    // Delete related records first (no schema cascade is set on Subscriber/OnlineSession FKs)
+    await prisma.$transaction([
+      prisma.onlineSession.deleteMany({ where: { routerId } }),
+      prisma.routerInterface.deleteMany({ where: { routerId } }),
+      prisma.routerProvisioningConfig.deleteMany({ where: { routerId } }),
+      // Unlink subscribers (don't delete them — just remove the router link)
+      prisma.subscriber.updateMany({ where: { routerId }, data: { routerId: null } }),
+      prisma.mikrotikRouter.delete({ where: { id: routerId } }),
+    ]);
+
     sendSuccess(res, { deleted: true });
-  } catch {
-    sendError(res, 'Failed to delete router', 500);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to delete router';
+    console.error('Delete router error:', msg);
+    sendError(res, msg, 500);
   }
 });
 
