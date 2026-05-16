@@ -69,3 +69,7 @@ export const checkSubdomain = (name: string) => api.get(`/signup/check-subdomain
 
 // Tenant info
 export const getTenantInfo = () => api.get('/tenants/my').then(r => r.data.data);
+
+// Router actions
+export const rebootRouter = (id: string) => api.post(`/mikrotiks/${id}/reboot`).then(r => r.data.data);
+export const runRouterCommand = (id: string, command: string) => api.post(`/mikrotiks/${id}/command`, { command }).then(r => r.data.data);

@@ -1,12 +1,12 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getRouters, linkRouter, updateRouter, deleteRouter, getProvisionConfig, saveProvisionConfig } from '@/lib/api';
+import { getRouters, linkRouter, updateRouter, deleteRouter, getProvisionConfig, saveProvisionConfig, rebootRouter } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import toast from 'react-hot-toast';
-import { Plus, Edit2, Trash2, Copy, Terminal, Settings2, ChevronDown, ChevronUp } from 'lucide-react';
+import { Plus, Edit2, Trash2, Copy, Terminal, Settings2, ChevronDown, ChevronUp, RotateCw } from 'lucide-react';
 
 interface ProvConfig {
   wanInterface: string; lanInterface: string; bridgeName: string;
@@ -82,7 +82,7 @@ function ProvisionPanel({ routerId }: { routerId: string }) {
             <p className="text-xs font-bold text-gray-400 uppercase mb-2">Network</p>
             <div className="grid grid-cols-2 gap-2">
               {([
-                ['WAN Interface', 'wanInterface'], ['LAN Interface', 'lanInterface'],
+                ['WAN Interface', 'wanInterface'],
                 ['Bridge Name', 'bridgeName'], ['LAN Subnet', 'lanSubnet'],
                 ['LAN Gateway', 'lanGateway'], ['DNS Servers', 'dnsServers'],
                 ['DHCP Start', 'dhcpPoolStart'], ['DHCP End', 'dhcpPoolEnd'],
@@ -92,6 +92,11 @@ function ProvisionPanel({ routerId }: { routerId: string }) {
                   <input className="input text-xs" value={String(form[key])} onChange={set(key)} />
                 </div>
               ))}
+              <div className="col-span-2">
+                <label className="label text-xs">LAN Interfaces (one or more, comma-separated)</label>
+                <input className="input text-xs" value={String(form.lanInterface)} onChange={set('lanInterface')} placeholder="e.g. ether2,ether3,ether4,wlan1" />
+                <p className="text-[10px] text-gray-500 mt-1">All listed ports will be added to the bridge as LAN ports</p>
+              </div>
             </div>
           </div>
 
@@ -180,6 +185,12 @@ export default function RoutersPage() {
     onError: () => toast.error('Failed to delete'),
   });
 
+  const rebootMut = useMutation({
+    mutationFn: rebootRouter,
+    onSuccess: () => toast.success('Reboot scheduled — will execute within 30 seconds'),
+    onError: () => toast.error('Failed to schedule reboot'),
+  });
+
   const openEdit = (r: MikrotikRouter) => { setEditing(r); setForm({ name: r.name, host: r.host }); setModalOpen(true); };
   const closeModal = () => { setModalOpen(false); setEditing(null); setForm({ name: '', host: '' }); };
   const handleSubmit = (e: React.FormEvent) => { e.preventDefault(); editing ? updateMut.mutate({ id: editing.id, data: form }) : linkMut.mutate(form); };
@@ -217,11 +228,19 @@ export default function RoutersPage() {
               <div className="flex items-start justify-between mb-3">
                 <div className="min-w-0 flex-1">
                   <h3 className="font-semibold">{r.name}</h3>
-                  <p className="text-sm text-gray-500">{r.host}</p>
+                  {r.host && r.host !== 'auto' && <p className="text-sm text-gray-500">{r.host}</p>}
                   {r.identity && <p className="text-xs text-gray-400 mt-0.5">Identity: {r.identity}</p>}
                 </div>
                 <div className="flex items-center gap-2 ml-2 shrink-0">
                   <span className={r.status === 'ONLINE' ? 'badge-green' : r.status === 'OFFLINE' ? 'badge-red' : 'badge-yellow'}>{r.status}</span>
+                  <button
+                    onClick={() => rebootMut.mutate(r.id)}
+                    disabled={r.status !== 'ONLINE' || rebootMut.isPending}
+                    className="p-1.5 text-gray-400 hover:text-orange-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                    title={r.status === 'ONLINE' ? 'Reboot router' : 'Router must be online to reboot'}
+                  >
+                    <RotateCw size={15} />
+                  </button>
                   <button onClick={() => openEdit(r)} className="p-1.5 text-gray-400 hover:text-blue-600"><Edit2 size={15} /></button>
                   <button onClick={() => setDeleteId(r.id)} className="p-1.5 text-gray-400 hover:text-red-600"><Trash2 size={15} /></button>
                 </div>

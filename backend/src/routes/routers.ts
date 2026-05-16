@@ -108,4 +108,42 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// POST /mikrotiks/:id/reboot — queue a reboot command for the router
+router.post('/:id/reboot', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const r = await prisma.mikrotikRouter.findUnique({ where: { id: req.params.id } });
+    if (!r) return sendError(res, 'Router not found', 404);
+    if (tenantId && r.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
+
+    const { enqueueCommand } = await import('../utils/commandQueue');
+    enqueueCommand(r.id, ':log info "Dartbit: Remote reboot in 5s"; :delay 5s; /system reboot');
+
+    sendSuccess(res, { queued: true, message: 'Reboot scheduled (executes within 30 seconds)' });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to queue reboot';
+    sendError(res, msg, 500);
+  }
+});
+
+// POST /mikrotiks/:id/command — run arbitrary RouterOS command
+router.post('/:id/command', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const { command } = req.body;
+    if (!command) return sendError(res, 'command required', 400);
+
+    const r = await prisma.mikrotikRouter.findUnique({ where: { id: req.params.id } });
+    if (!r) return sendError(res, 'Router not found', 404);
+    if (tenantId && r.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
+
+    const { enqueueCommand } = await import('../utils/commandQueue');
+    enqueueCommand(r.id, command);
+
+    sendSuccess(res, { queued: true });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
 export default router;
