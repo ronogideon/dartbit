@@ -109,11 +109,11 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
 
     // 7. Walled garden — allow Dartbit backend AND the portal page so unauth users can reach it
     add('# 7. Walled garden — allow Dartbit portal & backend');
-    add(`:foreach w in=[/ip hotspot walled-garden find comment~"Dartbit"] do={ /ip hotspot walled-garden remove $w }`);
+    add(`:foreach w in=[/ip hotspot walled-garden find comment~"Dartbit" !dynamic] do={ /ip hotspot walled-garden remove $w }`);
     add(`/ip hotspot walled-garden add dst-host=dartbit-production.up.railway.app comment="Dartbit backend"`);
     add(`/ip hotspot walled-garden add dst-host=*.dartbit-production.up.railway.app comment="Dartbit backend wildcard"`);
     // Pre-resolve DNS for unauth clients (8.8.8.8 / 1.1.1.1)
-    add(`:foreach w in=[/ip hotspot walled-garden ip find comment~"Dartbit DNS"] do={ /ip hotspot walled-garden ip remove $w }`);
+    add(`:foreach w in=[/ip hotspot walled-garden ip find comment~"Dartbit DNS" !dynamic] do={ /ip hotspot walled-garden ip remove $w }`);
     add(`/ip hotspot walled-garden ip add dst-address=8.8.8.8 comment="Dartbit DNS"`);
     add(`/ip hotspot walled-garden ip add dst-address=1.1.1.1 comment="Dartbit DNS"`);
     add('');
