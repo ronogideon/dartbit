@@ -66,7 +66,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.3');
+    add('# Dartbit ZTP Script v1.5.4');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -182,21 +182,31 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     //     We add a NAT redirect that catches ALL outbound HTTP/HTTPS from unauth
     //     hotspot clients (regardless of destination IP) and sends them to the
     //     captive portal. This forces the redirect to work universally.
-    add('# 6b. Force captive portal redirect for ALL unauth HTTP traffic');
+    // Resolve backend hostname to IPs now — we use them both for walled garden AND
+    // to exclude from the force-redirect rules below.
+    const backendHost = backendUrl.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    const backendIps = await resolveBackendIps(backendHost);
+
+    // 6c. CRITICAL: pre-seed DNS static and walled garden by IP FIRST so AJAX from
+    //     captive portal can reach Dartbit without being caught by the force-redirect.
+    add('# 6c. Backend whitelisting (must come before force-redirect rules)');
+    // Add backend IPs to a firewall address list — used by the force-redirect rules below
+    add(`:foreach a in=[/ip firewall address-list find list="dartbit-backend"] do={ /ip firewall address-list remove $a }`);
+    for (const ip of backendIps) {
+      add(`/ip firewall address-list add list=dartbit-backend address=${ip} comment="Dartbit backend"`);
+    }
+    add('');
+
+    add('# 6d. Force captive portal redirect for ALL unauth HTTP traffic EXCEPT backend');
     // Remove old Dartbit redirect rules so this is idempotent
     add(`:foreach n in=[/ip firewall nat find comment~"Dartbit redirect"] do={ /ip firewall nat remove $n }`);
-    // Add the rules WITHOUT place-before first, then move them to the top safely.
-    // Using place-before=0 fails if the chain is empty before the dynamic rules append.
-    add(`/ip firewall nat add chain=dstnat protocol=tcp dst-port=80 in-interface=${bridge} hotspot=from-client,!auth action=redirect to-ports=64873 comment="Dartbit redirect http"`);
-    add(`/ip firewall nat add chain=dstnat protocol=tcp dst-port=443 in-interface=${bridge} hotspot=from-client,!auth action=redirect to-ports=64875 comment="Dartbit redirect https"`);
-    // Move them to position 0 (so they fire before the dynamic hotspot rules)
+    // Use !dst-address-list=dartbit-backend so Dartbit AJAX traffic passes through unobstructed.
+    add(`/ip firewall nat add chain=dstnat protocol=tcp dst-port=80 in-interface=${bridge} hotspot=from-client,!auth dst-address-list=!dartbit-backend action=redirect to-ports=64873 comment="Dartbit redirect http"`);
+    add(`/ip firewall nat add chain=dstnat protocol=tcp dst-port=443 in-interface=${bridge} hotspot=from-client,!auth dst-address-list=!dartbit-backend action=redirect to-ports=64875 comment="Dartbit redirect https"`);
+    // Move to top
     add(`:local firstRule [:pick [/ip firewall nat find] 0]`);
     add(`:foreach n in=[/ip firewall nat find comment~"Dartbit redirect"] do={ :do { /ip firewall nat move $n destination=$firstRule } on-error={} }`);
     add('');
-
-    // Resolve backend hostname to IPs now so we can whitelist them by IP too
-    const backendHost = backendUrl.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-    const backendIps = await resolveBackendIps(backendHost);
 
     // 7. Walled garden — allow Dartbit backend AND the portal page so unauth users can reach it
     add('# 7. Walled garden — allow Dartbit portal & backend');
@@ -204,7 +214,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add(`/ip hotspot walled-garden add dst-host=${backendHost} comment="Dartbit backend"`);
     add(`/ip hotspot walled-garden add dst-host=*.${backendHost} comment="Dartbit backend wildcard"`);
     add(`:foreach w in=[/ip hotspot walled-garden ip find comment~"Dartbit" !dynamic] do={ /ip hotspot walled-garden ip remove $w }`);
-    // Also add resolved backend IPs by /ip walled-garden so HTTPS connections pass even if SNI check fails
+    // Walled-garden IP list lets unauthenticated traffic to these IPs pass through MikroTik's hotspot rejection
     for (const ip of backendIps) {
       add(`/ip hotspot walled-garden ip add dst-address=${ip} comment="Dartbit backend IP"`);
     }
@@ -213,6 +223,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     for (const ip of backendIps) {
       add(`/ip dns static add name=${backendHost} address=${ip} ttl=5m comment="Dartbit backend"`);
     }
+    add('');
     add('');
 
     // 7b. The login page rewrite is NOT done from the script (RouterOS file edits
