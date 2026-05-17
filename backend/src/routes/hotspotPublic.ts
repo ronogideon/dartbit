@@ -90,6 +90,97 @@ router.post('/redeem', async (req: Request, res: Response) => {
   }
 });
 
+// Public — list HOTSPOT packages available at this router (for the buy flow)
+// GET /hotspot/packages?apiKey=xxx
+router.get('/packages', async (req: Request, res: Response) => {
+  try {
+    const apiKey = String(req.query.apiKey || '');
+    if (!apiKey) return res.status(400).json({ success: false, error: 'apiKey required' });
+    const r = await prisma.mikrotikRouter.findUnique({
+      where: { apiKey },
+      include: { tenant: true },
+    });
+    if (!r) return res.status(404).json({ success: false, error: 'Router not found' });
+
+    const packages = await prisma.package.findMany({
+      where: { tenantId: r.tenantId, service: 'HOTSPOT', isActive: true },
+      select: { id: true, name: true, speedUpKbps: true, speedDownKbps: true, validityMinutes: true, price: true },
+      orderBy: { price: 'asc' },
+    });
+    res.json({
+      success: true,
+      tenantName: r.tenant.name,
+      packages,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : 'Failed' });
+  }
+});
+
+// Public — purchase a package (creates a one-off voucher and returns the code)
+// POST /hotspot/purchase { packageId, routerApiKey, phone?, mac?, ip? }
+// In a real deployment this would integrate with M-Pesa STK push or other payment.
+// For now it just creates a voucher immediately and returns the code (treat as "pay later" or test mode).
+router.post('/purchase', async (req: Request, res: Response) => {
+  try {
+    const { packageId, routerApiKey, phone, mac, ip } = req.body || {};
+    if (!packageId || !routerApiKey) {
+      return res.status(400).json({ success: false, error: 'packageId and routerApiKey required' });
+    }
+
+    const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey: String(routerApiKey) } });
+    if (!r) return res.status(404).json({ success: false, error: 'Router not found' });
+
+    const pkg = await prisma.package.findUnique({ where: { id: String(packageId) } });
+    if (!pkg) return res.status(404).json({ success: false, error: 'Package not found' });
+    if (pkg.tenantId !== r.tenantId) return res.status(403).json({ success: false, error: 'Package not available here' });
+    if (pkg.service !== 'HOTSPOT') return res.status(400).json({ success: false, error: 'Only hotspot packages can be purchased here' });
+
+    // Generate a single voucher
+    const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 8; i++) code += chars[Math.floor(Math.random() * chars.length)];
+
+    const voucher = await prisma.voucher.create({
+      data: {
+        code,
+        tenantId: r.tenantId,
+        packageId: pkg.id,
+        routerId: r.id,
+        durationMinutes: pkg.validityMinutes,
+        notes: `Purchased via portal${phone ? ` (${String(phone).substring(0, 20)})` : ''}`,
+      },
+    });
+
+    // Note: We don't create a Payment record here because the Payment model
+    // requires a subscriberId. Voucher itself tracks the transaction (with notes).
+    // In a real deployment, M-Pesa STK push integration would create a payment first
+    // and only generate the voucher after confirmation.
+
+    // Push the voucher onto the router immediately
+    const profileName = `dartbit-hspkg-${pkg.id.substring(0, 8)}`;
+    const speed = `${pkg.speedUpKbps}k/${pkg.speedDownKbps}k`;
+    const sessionSec = pkg.validityMinutes * 60;
+    const commands = [
+      `:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} rate-limit=${speed} shared-users=1 mac-cookie-timeout=0s comment="Dartbit voucher profile" }`,
+      `:if ([:len [/ip hotspot user find name="${code}"]] = 0) do={ /ip hotspot user add name=${code} password=${code} profile=${profileName} limit-uptime=${sessionSec}s comment="Dartbit-voucher:${voucher.id}" }`,
+      `:log info "Dartbit: purchased voucher ${code} for package ${pkg.name}"`,
+    ];
+    enqueueCommand(r.id, commands.join('\n'));
+
+    res.json({
+      success: true,
+      code,
+      packageName: pkg.name,
+      durationMinutes: pkg.validityMinutes,
+      price: pkg.price,
+      message: 'Voucher created. It will be active on the router within 30 seconds. Use the code to log in.',
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : 'Failed' });
+  }
+});
+
 // Public — verify a subscriber username/password
 // POST /hotspot/verify { username, password, routerApiKey, mac, ip }
 router.post('/verify', async (req: Request, res: Response) => {

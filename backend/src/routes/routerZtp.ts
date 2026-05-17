@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { promises as dns } from 'dns';
 import prisma from '../utils/prisma';
 import { sendError } from '../utils/response';
 import { enqueueCommand, dequeueAll } from '../utils/commandQueue';
@@ -10,6 +11,22 @@ async function findRouter(apiKey: string) {
     where: { apiKey },
     include: { tenant: true, provConfig: true },
   });
+}
+
+// Resolve backend hostname to IPs so we can whitelist them in walled garden.
+// Cached briefly to avoid hitting DNS on every ZTP request.
+let backendIpCache: { ips: string[]; at: number } | null = null;
+async function resolveBackendIps(hostname: string): Promise<string[]> {
+  if (backendIpCache && Date.now() - backendIpCache.at < 5 * 60 * 1000) {
+    return backendIpCache.ips;
+  }
+  try {
+    const ips = await dns.resolve4(hostname);
+    backendIpCache = { ips, at: Date.now() };
+    return ips;
+  } catch {
+    return [];
+  }
 }
 
 router.get('/ztp-script', async (req: Request, res: Response) => {
@@ -49,7 +66,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.2');
+    add('# Dartbit ZTP Script v1.5.3');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -177,17 +194,25 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add(`:foreach n in=[/ip firewall nat find comment~"Dartbit redirect"] do={ :do { /ip firewall nat move $n destination=$firstRule } on-error={} }`);
     add('');
 
+    // Resolve backend hostname to IPs now so we can whitelist them by IP too
+    const backendHost = backendUrl.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    const backendIps = await resolveBackendIps(backendHost);
+
     // 7. Walled garden — allow Dartbit backend AND the portal page so unauth users can reach it
     add('# 7. Walled garden — allow Dartbit portal & backend');
     add(`:foreach w in=[/ip hotspot walled-garden find comment~"Dartbit" !dynamic] do={ /ip hotspot walled-garden remove $w }`);
-    add(`/ip hotspot walled-garden add dst-host=dartbit-production.up.railway.app comment="Dartbit backend"`);
-    add(`/ip hotspot walled-garden add dst-host=*.dartbit-production.up.railway.app comment="Dartbit backend wildcard"`);
-    // CRITICAL: do NOT add 8.8.8.8/1.1.1.1 to walled-garden!
-    // Doing so allows unauthenticated DNS queries to reach real DNS servers, which return
-    // real IPs for hostnames. The captive portal redirect mechanism relies on MikroTik
-    // intercepting DNS and returning the gateway IP for unauthenticated clients.
-    // Remove any old DNS walled-garden entries from prior versions:
-    add(`:foreach w in=[/ip hotspot walled-garden ip find comment~"Dartbit DNS" !dynamic] do={ /ip hotspot walled-garden ip remove $w }`);
+    add(`/ip hotspot walled-garden add dst-host=${backendHost} comment="Dartbit backend"`);
+    add(`/ip hotspot walled-garden add dst-host=*.${backendHost} comment="Dartbit backend wildcard"`);
+    add(`:foreach w in=[/ip hotspot walled-garden ip find comment~"Dartbit" !dynamic] do={ /ip hotspot walled-garden ip remove $w }`);
+    // Also add resolved backend IPs by /ip walled-garden so HTTPS connections pass even if SNI check fails
+    for (const ip of backendIps) {
+      add(`/ip hotspot walled-garden ip add dst-address=${ip} comment="Dartbit backend IP"`);
+    }
+    // Pre-seed the router's DNS cache so it resolves the backend hostname for clients
+    add(`:foreach s in=[/ip dns static find name="${backendHost}" comment~"Dartbit"] do={ /ip dns static remove $s }`);
+    for (const ip of backendIps) {
+      add(`/ip dns static add name=${backendHost} address=${ip} ttl=5m comment="Dartbit backend"`);
+    }
     add('');
 
     // 7b. The login page rewrite is NOT done from the script (RouterOS file edits
