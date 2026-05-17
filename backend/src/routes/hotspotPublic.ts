@@ -90,8 +90,48 @@ router.post('/redeem', async (req: Request, res: Response) => {
   }
 });
 
-// GET /hotspot/portal — public captive portal page (renders a voucher login form)
-// MikroTik's login.html redirects browsers here when they're caught by the captive portal.
+// Public — verify a subscriber username/password
+// POST /hotspot/verify { username, password, routerApiKey, mac, ip }
+router.post('/verify', async (req: Request, res: Response) => {
+  try {
+    const { username, password, routerApiKey, mac, ip } = req.body || {};
+    if (!username || !password) return res.status(400).json({ success: false, error: 'username and password required' });
+    if (!routerApiKey) return res.status(400).json({ success: false, error: 'routerApiKey required' });
+
+    const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey: String(routerApiKey) } });
+    if (!r) return res.status(404).json({ success: false, error: 'Router not found' });
+
+    // Look up subscriber. Service must be HOTSPOT.
+    const sub = await prisma.subscriber.findFirst({
+      where: { tenantId: r.tenantId, username: String(username), service: 'HOTSPOT' },
+    });
+    if (!sub) return res.status(401).json({ success: false, error: 'Invalid username or password' });
+    if (sub.secret !== String(password)) return res.status(401).json({ success: false, error: 'Invalid username or password' });
+    if (!sub.isActive) return res.status(403).json({ success: false, error: 'Account inactive' });
+    if (sub.expiresAt && sub.expiresAt < new Date()) return res.status(403).json({ success: false, error: 'Account expired' });
+
+    // Update last seen
+    await prisma.subscriber.update({
+      where: { id: sub.id },
+      data: {
+        lastOnlineAt: new Date(),
+        ipAddress: typeof ip === 'string' ? ip.replace(/[^0-9.]/g, '').substring(0, 16) : undefined,
+        macAddress: typeof mac === 'string' ? mac.replace(/[^A-Fa-f0-9:.\-]/g, '').substring(0, 20) : undefined,
+        routerId: r.id,
+      },
+    });
+
+    return res.json({
+      success: true,
+      username: sub.username,
+      password: sub.secret,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : 'Failed' });
+  }
+});
+
+// GET /hotspot/portal — kept for backward compat but no longer used by MikroTik
 router.get('/portal', async (req: Request, res: Response) => {
   const routerApiKey = String(req.query.apiKey || '');
   const linkLogin = String(req.query['link-login'] || '');

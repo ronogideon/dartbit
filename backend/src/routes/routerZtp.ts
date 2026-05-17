@@ -49,7 +49,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.1');
+    add('# Dartbit ZTP Script v1.5.2');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
