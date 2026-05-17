@@ -4,7 +4,7 @@ import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import {
   LayoutDashboard, Users, Package, CreditCard, MessageSquare,
-  Router, Settings, Activity, LogOut, Zap, Building2,
+  Router, Settings, Activity, LogOut, Zap, Building2, Ticket,
   ChevronLeft, ChevronRight, Menu
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -15,6 +15,7 @@ const navItems = [
   { href: '/active-users', label: 'Active Users', icon: Activity },
   { href: '/subscribers', label: 'Subscribers', icon: Users },
   { href: '/packages', label: 'Packages', icon: Package },
+  { href: '/vouchers', label: 'Vouchers', icon: Ticket },
   { href: '/payments', label: 'Payments', icon: CreditCard },
   { href: '/messages', label: 'Messages', icon: MessageSquare },
   { href: '/routers', label: 'Routers', icon: Router },

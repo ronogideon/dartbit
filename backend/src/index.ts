@@ -16,6 +16,8 @@ import tenantRoutes from './routes/tenants';
 import settingsRoutes from './routes/settings';
 import signupRoutes from './routes/signup';
 import adminRoutes from './routes/admin';
+import voucherRoutes from './routes/vouchers';
+import hotspotPublicRoutes from './routes/hotspotPublic';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -39,8 +41,8 @@ app.use(cors({
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.4.1', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.4.1', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.4.2', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.4.2', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -54,11 +56,13 @@ app.use('/mikrotiks', routerRoutes);
 app.use('/online-sessions', onlineSessionRoutes);
 app.use('/tenants', tenantRoutes);
 app.use('/settings', settingsRoutes);
+app.use('/vouchers', voucherRoutes);
+app.use('/hotspot', hotspotPublicRoutes);
 
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.4.1 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.4.2 running on port ${PORT}\n`);
   patchDatabase();
 });
 
@@ -207,6 +211,30 @@ async function patchDatabase() {
     // Make host optional on MikrotikRouter
     await safeExec(prisma, 'MikrotikRouter.host nullable',
       `ALTER TABLE "MikrotikRouter" ALTER COLUMN "host" DROP NOT NULL`);
+
+    // Voucher table
+    await safeExec(prisma, 'Voucher table',
+      `CREATE TABLE IF NOT EXISTS "Voucher" (
+        "id" TEXT NOT NULL,
+        "tenantId" TEXT NOT NULL,
+        "code" TEXT NOT NULL,
+        "packageId" TEXT,
+        "routerId" TEXT,
+        "durationMinutes" INTEGER NOT NULL DEFAULT 60,
+        "isUsed" BOOLEAN NOT NULL DEFAULT false,
+        "usedAt" TIMESTAMP(3),
+        "usedByMac" TEXT,
+        "usedByIp" TEXT,
+        "expiresAt" TIMESTAMP(3),
+        "batchId" TEXT,
+        "notes" TEXT,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "Voucher_pkey" PRIMARY KEY ("id")
+      )`);
+    await safeExec(prisma, 'Voucher.code unique', `CREATE UNIQUE INDEX IF NOT EXISTS "Voucher_code_key" ON "Voucher"("code")`);
+    await safeExec(prisma, 'Voucher tenant idx', `CREATE INDEX IF NOT EXISTS "Voucher_tenantId_isUsed_idx" ON "Voucher"("tenantId","isUsed")`);
+    await safeExec(prisma, 'Voucher batch idx', `CREATE INDEX IF NOT EXISTS "Voucher_batchId_idx" ON "Voucher"("batchId")`);
 
     console.log('✅ Database patch complete');
   } catch (err) {

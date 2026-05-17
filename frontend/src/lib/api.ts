@@ -78,3 +78,11 @@ export const changeRouterIdentity = (id: string, identity: string) => api.post(`
 export const updateRouterLanPorts = (id: string, ports: string[]) => api.post(`/mikrotiks/${id}/lan-ports`, { ports }).then(r => r.data.data);
 export const getRouterInterfaces = (id: string) => api.get(`/router/list-interfaces/${id}`).then(r => r.data.data);
 export const getRouterZtpCommand = (id: string) => api.get(`/mikrotiks/${id}/ztp-command`).then(r => r.data.data);
+
+// Vouchers
+export const getVouchers = () => api.get('/vouchers').then(r => r.data.data);
+export const getVoucherBatches = () => api.get('/vouchers/batches').then(r => r.data.data);
+export const generateVouchers = (data: { count: number; packageId?: string; routerId?: string; durationMinutes: number; codeLength?: number; notes?: string }) =>
+  api.post('/vouchers/generate', data).then(r => r.data.data);
+export const deleteVoucher = (id: string) => api.delete(`/vouchers/${id}`).then(r => r.data.data);
+export const deleteVoucherBatch = (batchId: string) => api.delete(`/vouchers/batch/${batchId}`).then(r => r.data.data);

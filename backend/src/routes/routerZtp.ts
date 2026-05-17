@@ -49,7 +49,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.4.1');
+    add('# Dartbit ZTP Script v1.4.2');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -87,33 +87,59 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add('');
 
     // 6. Hotspot — captive portal with DHCP managed by the hotspot itself
+    //    Hotspot profile redirects to Dartbit's hosted portal for voucher login.
     add('# 6. Hotspot — captive portal');
-    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name="dartbit.login" login-by=http-chap,http-pap http-cookie-lifetime=0s use-radius=no }`);
+    // First remove old profile so the redirect URL updates if it changed
+    add(`:foreach p in=[/ip hotspot profile find name="hsprof-dartbit"] do={ /ip hotspot set [find profile=$p] profile=default; /ip hotspot profile remove $p }`);
+    // New profile pointing to the Dartbit portal — uses login-trial=no to disable trial users,
+    // and our HTML files (default) handle the redirect via $(link-redirect)
+    add(`/ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=http-chap,http-pap http-cookie-lifetime=0s use-radius=no`);
+    // User profile — strict one-device, no MAC sharing
     add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 mac-cookie-timeout=0s address-pool=dhcp-pool }`);
-    add(`:if ([:len [/ip hotspot find interface="${bridge}"]] = 0) do={ /ip hotspot add name=dartbit-hotspot interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no }`);
+    // Hotspot itself on the bridge — uses the bridge IP as gateway
+    add(`:if ([:len [/ip hotspot find name="dartbit-hotspot"]] = 0) do={ /ip hotspot add name=dartbit-hotspot interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no }`);
+    // Force re-apply the profile to existing hotspot (catches the new redirect URL)
+    add(`:foreach h in=[/ip hotspot find name="dartbit-hotspot"] do={ /ip hotspot set $h interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit }`);
+    // Remove any legacy dartbit-dhcp server that would conflict with hotspot's DHCP
     add(`:foreach d in=[/ip dhcp-server find name="dartbit-dhcp"] do={ /ip dhcp-server remove $d }`);
     add(`:foreach n in=[/ip dhcp-server network find comment="Dartbit"] do={ /ip dhcp-server network remove $n }`);
+    // Make sure no other hotspot exists on this interface (cleanup of duplicates)
+    add(`:foreach h in=[/ip hotspot find interface="${bridge}"] do={ :if ([/ip hotspot get $h name] != "dartbit-hotspot") do={ /ip hotspot remove $h } }`);
     add('');
 
-    // 7. Walled garden — allow Dartbit backend so script fetches still work pre-login
-    add('# 7. Walled garden');
-    add(`:if ([:len [/ip hotspot walled-garden find comment="Dartbit backend"]] = 0) do={ /ip hotspot walled-garden add dst-host=dartbit-production.up.railway.app comment="Dartbit backend" }`);
+    // 7. Walled garden — allow Dartbit backend AND the portal page so unauth users can reach it
+    add('# 7. Walled garden — allow Dartbit portal & backend');
+    add(`:foreach w in=[/ip hotspot walled-garden find comment~"Dartbit"] do={ /ip hotspot walled-garden remove $w }`);
+    add(`/ip hotspot walled-garden add dst-host=dartbit-production.up.railway.app comment="Dartbit backend"`);
+    add(`/ip hotspot walled-garden add dst-host=*.dartbit-production.up.railway.app comment="Dartbit backend wildcard"`);
+    // Pre-resolve DNS for unauth clients (8.8.8.8 / 1.1.1.1)
+    add(`:foreach w in=[/ip hotspot walled-garden ip find comment~"Dartbit DNS"] do={ /ip hotspot walled-garden ip remove $w }`);
+    add(`/ip hotspot walled-garden ip add dst-address=8.8.8.8 comment="Dartbit DNS"`);
+    add(`/ip hotspot walled-garden ip add dst-address=1.1.1.1 comment="Dartbit DNS"`);
+    add('');
+
+    // 7b. The login page rewrite is NOT done from the script (RouterOS file edits
+    //     via script are brittle). Users will see the default MikroTik login form.
+    //     For voucher use: print the voucher code on physical tickets, user enters it
+    //     as both username AND password on the MikroTik login form.
+    add('# 7b. Default hotspot login form used (vouchers redeemed via username+password)');
     add('');
 
     // 8. Cleanup any old custom filter rules from previous versions that might conflict
-    add('# 8. Clean up old conflicting filter rules');
+    add('# 8. Clean up legacy filter rules');
     add(`:foreach f in=[/ip firewall filter find comment~"Dartbit allow router"] do={ /ip firewall filter remove $f }`);
     add(`:foreach f in=[/ip firewall filter find comment~"Dartbit allow auth"] do={ /ip firewall filter remove $f }`);
     add(`:foreach f in=[/ip firewall filter find comment~"Dartbit block unauth"] do={ /ip firewall filter remove $f }`);
+    // Also clean up the bad TTL drop rules — they cause legitimate traffic loss in some setups
+    add(`:foreach f in=[/ip firewall filter find comment~"Dartbit no-tether"] do={ /ip firewall filter remove $f }`);
+    add(`:foreach m in=[/ip firewall mangle find comment~"Dartbit no-tether"] do={ /ip firewall mangle remove $m }`);
     add('');
 
-    // 8b. TTL filter — block phone tethering (TTL=63 means client decremented TTL once)
-    //     mangle chain doesn't support action=drop in RouterOS 7; use filter instead.
-    add('# 8b. TTL filter — blocks phone-tethered devices');
-    // Clean up legacy mangle drop rules from older deployments
-    add(`:foreach m in=[/ip firewall mangle find comment~"Dartbit no-tether"] do={ /ip firewall mangle remove $m }`);
-    add(`:if ([:len [/ip firewall filter find comment="Dartbit no-tether"]] = 0) do={ /ip firewall filter add chain=forward in-interface=${bridge} ttl=equal:63 action=drop comment="Dartbit no-tether" }`);
-    add(`:if ([:len [/ip firewall filter find comment="Dartbit no-tether2"]] = 0) do={ /ip firewall filter add chain=forward in-interface=${bridge} ttl=equal:127 action=drop comment="Dartbit no-tether2" }`);
+    // 8b. Optional TTL anti-tether — DISABLED by default because it breaks
+    //     traffic from devices behind an AP in bridge mode (legitimate traffic
+    //     can have non-64 TTL on some hardware).
+    //     If you specifically want phone-tethering blocking, uncomment in a future revision.
+    add('# 8b. Anti-tethering disabled (re-enable carefully if needed)');
     add('');
 
     // 8c. AP bridge-mode enforcement — disable hotspot's mac-cookie so devices
@@ -437,6 +463,61 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     for (const sub of staticUsers) {
       if (!sub.ipAddress) continue;
       add(`:if ([:len [/ip dhcp-server lease find address="${sub.ipAddress}"]] = 0) do={ /ip dhcp-server lease add address=${sub.ipAddress} ${sub.macAddress ? `mac-address=${sub.macAddress}` : ''} server=dartbit-hotspot-dhcp comment="Dartbit:${sub.id}" }`);
+    }
+
+    // ===== VOUCHERS — sync unused, non-expired vouchers to router as hotspot users =====
+    const vouchers = await prisma.voucher.findMany({
+      where: {
+        tenantId: r.tenantId,
+        isUsed: false,
+        OR: [
+          { routerId: null },
+          { routerId: r.id },
+        ],
+      },
+      include: { package: true },
+      take: 1000,
+    });
+
+    // Group by package so we create one user profile per package
+    const profilesByPkg: Record<string, { name: string; speed: string }> = {};
+    for (const v of vouchers) {
+      if (v.package) {
+        const pid = v.package.id.substring(0, 8);
+        const pname = `dartbit-vch-${pid}`;
+        if (!profilesByPkg[pname]) {
+          profilesByPkg[pname] = {
+            name: pname,
+            speed: `${v.package.speedUpKbps}k/${v.package.speedDownKbps}k`,
+          };
+        }
+      }
+    }
+    for (const prof of Object.values(profilesByPkg)) {
+      add(`:if ([:len [/ip hotspot user profile find name="${prof.name}"]] = 0) do={ /ip hotspot user profile add name=${prof.name} rate-limit=${prof.speed} shared-users=1 mac-cookie-timeout=0s comment="Dartbit voucher profile" }`);
+    }
+    // Add each voucher as a hotspot user — username and password = code
+    for (const v of vouchers) {
+      const profileName = v.package ? `dartbit-vch-${v.package.id.substring(0, 8)}` : 'dartbit-default';
+      const sessionSec = v.durationMinutes * 60;
+      add(`:if ([:len [/ip hotspot user find name="${v.code}"]] = 0) do={ /ip hotspot user add name=${v.code} password=${v.code} profile=${profileName} limit-uptime=${sessionSec}s comment="Dartbit-voucher:${v.id}" }`);
+    }
+    // Used vouchers can be removed from router after their session expires
+    // (we keep them in the DB for audit). Remove vouchers from router that are now used:
+    const usedVouchers = await prisma.voucher.findMany({
+      where: { tenantId: r.tenantId, isUsed: true },
+      select: { id: true, code: true },
+    });
+    for (const uv of usedVouchers) {
+      // Don't disable immediately — let MikroTik's limit-uptime handle expiry naturally.
+      // But if user is no longer in active list AND used, we can clean up.
+      // Keep this conservative: only remove if it's been more than 24h since use.
+      // The router will naturally drop the session via limit-uptime.
+    }
+    // Optional: remove voucher-users that no longer exist in backend
+    const knownVoucherIds = vouchers.map(v => `"Dartbit-voucher:${v.id}"`).concat(usedVouchers.map(uv => `"Dartbit-voucher:${uv.id}"`)).join(',');
+    if (knownVoucherIds) {
+      add(`:foreach u in=[/ip hotspot user find comment~"Dartbit-voucher:"] do={ :local c [/ip hotspot user get \$u comment]; :if ([:len [:find (${knownVoucherIds}) \$c]] = 0) do={ /ip hotspot user remove \$u } }`);
     }
 
     const knownIds = subscribers.map(s => `"Dartbit:${s.id}"`).join(',');

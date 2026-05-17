@@ -61,6 +61,7 @@ model Tenant {
   payments      Payment[]
   messages      Message[]
   settings      TenantSetting?
+  vouchers      Voucher[]
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 }
@@ -81,6 +82,7 @@ model MikrotikRouter {
   subscribers    Subscriber[]
   provConfig     RouterProvisioningConfig?
   onlineSessions OnlineSession[]
+  vouchers       Voucher[]
   createdAt      DateTime                  @default(now())
   updatedAt      DateTime                  @updatedAt
 }
@@ -164,6 +166,7 @@ model Package {
   tenantId        String
   tenant          Tenant       @relation(fields: [tenantId], references: [id])
   subscribers     Subscriber[]
+  vouchers        Voucher[]
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 }
@@ -224,4 +227,29 @@ model TenantSetting {
   backendUrl       String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
+}
+
+model Voucher {
+  id            String    @id @default(cuid())
+  tenantId      String
+  tenant        Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  code          String    @unique
+  packageId     String?
+  package       Package?  @relation(fields: [packageId], references: [id])
+  routerId      String?
+  router        MikrotikRouter? @relation(fields: [routerId], references: [id])
+  durationMinutes Int     @default(60)
+  isUsed        Boolean   @default(false)
+  usedAt        DateTime?
+  usedByMac     String?
+  usedByIp      String?
+  expiresAt     DateTime?
+  batchId       String?
+  notes         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([tenantId, isUsed])
+  @@index([code])
+  @@index([batchId])
 }
