@@ -49,7 +49,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.4.7');
+    add('# Dartbit ZTP Script v1.4.8');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -129,6 +129,25 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     //     This is the #1 reason hotspots "give DHCP but no captive portal".
     add('# 6b. Disable fasttrack — required for hotspot interception to work');
     add(`:foreach f in=[/ip firewall filter find action=fasttrack-connection] do={ /ip firewall filter disable $f; :log info "Dartbit: disabled fasttrack-connection rule" }`);
+    add('');
+
+    // 6b. CRITICAL fix for MikroTik hotspot DNS-hijack bypass:
+    //     MikroTik's auto-generated hotspot rules only redirect HTTP/HTTPS where
+    //     hotspot=local-dst (destination is the router itself). This works IF the
+    //     router's DNS server lies to unauth clients and returns the gateway IP.
+    //     BUT, RouterOS 7 doesn't do that DNS hijack reliably — clients get the
+    //     real IP and try connecting directly, which gets rejected by hs-unauth.
+    //
+    //     We add a NAT redirect that catches ALL outbound HTTP/HTTPS from unauth
+    //     hotspot clients (regardless of destination IP) and sends them to the
+    //     captive portal. This forces the redirect to work universally.
+    add('# 6b. Force captive portal redirect for ALL unauth HTTP traffic');
+    // Remove old Dartbit redirect rules so this is idempotent
+    add(`:foreach n in=[/ip firewall nat find comment~"Dartbit redirect"] do={ /ip firewall nat remove $n }`);
+    // Redirect any HTTP request from unauth hotspot clients to MikroTik's captive portal
+    add(`/ip firewall nat add chain=dstnat protocol=tcp dst-port=80 in-interface=${bridge} hotspot=from-client,!auth action=redirect to-ports=64873 place-before=0 comment="Dartbit redirect http"`);
+    // Same for HTTPS — note this will trigger a cert warning on the client (expected)
+    add(`/ip firewall nat add chain=dstnat protocol=tcp dst-port=443 in-interface=${bridge} hotspot=from-client,!auth action=redirect to-ports=64875 place-before=0 comment="Dartbit redirect https"`);
     add('');
 
     // 7. Walled garden — allow Dartbit backend AND the portal page so unauth users can reach it
