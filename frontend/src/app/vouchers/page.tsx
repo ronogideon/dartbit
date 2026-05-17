@@ -332,14 +332,14 @@ export default function VouchersPage() {
         title="Delete voucher?"
         message="This will permanently delete this unused voucher."
         onConfirm={() => deleteId && deleteMut.mutate(deleteId)}
-        onCancel={() => setDeleteId(null)}
+        onClose={() => setDeleteId(null)}
       />
       <ConfirmDialog
         isOpen={!!deleteBatchId}
         title="Delete unused vouchers in batch?"
         message="This will permanently delete all UNUSED vouchers in this batch. Used vouchers will be kept for audit."
         onConfirm={() => deleteBatchId && deleteBatchMut.mutate(deleteBatchId)}
-        onCancel={() => setDeleteBatchId(null)}
+        onClose={() => setDeleteBatchId(null)}
       />
     </AppLayout>
   );
