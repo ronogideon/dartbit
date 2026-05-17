@@ -34,10 +34,10 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const wan        = cfg?.wanInterface     ?? 'ether1';
     const lan        = cfg?.lanInterface     ?? 'ether2';
     const bridge     = cfg?.bridgeName       ?? 'bridge-lan';
-    const lanGw      = cfg?.lanGateway       ?? '192.168.88.1';
-    const dhcpStart  = cfg?.dhcpPoolStart    ?? '192.168.88.10';
-    const dhcpEnd    = cfg?.dhcpPoolEnd      ?? '192.168.88.254';
-    const lanSubnet  = cfg?.lanSubnet        ?? '192.168.88.0/24';
+    const lanGw      = cfg?.lanGateway       ?? '40.40.88.1';
+    const dhcpStart  = cfg?.dhcpPoolStart    ?? '40.40.88.10';
+    const dhcpEnd    = cfg?.dhcpPoolEnd      ?? '40.40.88.254';
+    const lanSubnet  = cfg?.lanSubnet        ?? '40.40.88.0/24';
     const dns        = cfg?.dnsServers       ?? '8.8.8.8,8.8.4.4';
     const pppoeLocal = cfg?.pppoeLocalAddress ?? '10.10.10.1';
     const pppoePool  = cfg?.pppoeRemotePool  ?? 'pppoe-pool';
@@ -49,7 +49,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.4.9');
+    add('# Dartbit ZTP Script v1.5.0');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -153,10 +153,13 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add('# 6b. Force captive portal redirect for ALL unauth HTTP traffic');
     // Remove old Dartbit redirect rules so this is idempotent
     add(`:foreach n in=[/ip firewall nat find comment~"Dartbit redirect"] do={ /ip firewall nat remove $n }`);
-    // Redirect any HTTP request from unauth hotspot clients to MikroTik's captive portal
-    add(`/ip firewall nat add chain=dstnat protocol=tcp dst-port=80 in-interface=${bridge} hotspot=from-client,!auth action=redirect to-ports=64873 place-before=0 comment="Dartbit redirect http"`);
-    // Same for HTTPS — note this will trigger a cert warning on the client (expected)
-    add(`/ip firewall nat add chain=dstnat protocol=tcp dst-port=443 in-interface=${bridge} hotspot=from-client,!auth action=redirect to-ports=64875 place-before=0 comment="Dartbit redirect https"`);
+    // Add the rules WITHOUT place-before first, then move them to the top safely.
+    // Using place-before=0 fails if the chain is empty before the dynamic rules append.
+    add(`/ip firewall nat add chain=dstnat protocol=tcp dst-port=80 in-interface=${bridge} hotspot=from-client,!auth action=redirect to-ports=64873 comment="Dartbit redirect http"`);
+    add(`/ip firewall nat add chain=dstnat protocol=tcp dst-port=443 in-interface=${bridge} hotspot=from-client,!auth action=redirect to-ports=64875 comment="Dartbit redirect https"`);
+    // Move them to position 0 (so they fire before the dynamic hotspot rules)
+    add(`:local firstRule [:pick [/ip firewall nat find] 0]`);
+    add(`:foreach n in=[/ip firewall nat find comment~"Dartbit redirect"] do={ :do { /ip firewall nat move $n destination=$firstRule } on-error={} }`);
     add('');
 
     // 7. Walled garden — allow Dartbit backend AND the portal page so unauth users can reach it

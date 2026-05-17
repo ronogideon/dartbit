@@ -41,8 +41,8 @@ app.use(cors({
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.4.9', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.4.9', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.5.0', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.5.0', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -62,7 +62,7 @@ app.use('/hotspot', hotspotPublicRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.4.9 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.5.0 running on port ${PORT}\n`);
   patchDatabase();
 });
 
