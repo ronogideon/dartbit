@@ -49,7 +49,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.4.2');
+    add('# Dartbit ZTP Script v1.4.3');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -60,7 +60,10 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add('# 1. Bridge');
     add(`:if ([:len [/interface bridge find name="${bridge}"]] = 0) do={ /interface bridge add name=${bridge} comment="Dartbit LAN" }`);
     for (const port of lanInterfaces) {
-      add(`:if ([:len [/interface bridge port find interface="${port}"]] = 0) do={ /interface bridge port add bridge=${bridge} interface=${port} comment="Dartbit LAN port" }`);
+      // First remove the port from ANY other bridge it might be on (this is the fix —
+      // RouterOS silently rejects adding a port that's already on another bridge).
+      add(`:foreach p in=[/interface bridge port find interface="${port}"] do={ :local b [/interface bridge port get $p bridge]; :if ($b != "${bridge}") do={ /interface bridge port remove $p; :log info ("Dartbit: moved ${port} from " . $b . " to ${bridge}") } }`);
+      add(`:if ([:len [/interface bridge port find interface="${port}" bridge="${bridge}"]] = 0) do={ /interface bridge port add bridge=${bridge} interface=${port} comment="Dartbit LAN port" }`);
     }
     add('');
 
@@ -98,8 +101,8 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 mac-cookie-timeout=0s address-pool=dhcp-pool }`);
     // Hotspot itself on the bridge — uses the bridge IP as gateway
     add(`:if ([:len [/ip hotspot find name="dartbit-hotspot"]] = 0) do={ /ip hotspot add name=dartbit-hotspot interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no }`);
-    // Force re-apply the profile to existing hotspot (catches the new redirect URL)
-    add(`:foreach h in=[/ip hotspot find name="dartbit-hotspot"] do={ /ip hotspot set $h interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit }`);
+    // Force re-apply the profile to existing hotspot AND re-bind it so interception works
+    add(`:foreach h in=[/ip hotspot find name="dartbit-hotspot"] do={ /ip hotspot set $h interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit; /ip hotspot disable $h; :delay 500ms; /ip hotspot enable $h }`);
     // Remove any legacy dartbit-dhcp server that would conflict with hotspot's DHCP
     add(`:foreach d in=[/ip dhcp-server find name="dartbit-dhcp"] do={ /ip dhcp-server remove $d }`);
     add(`:foreach n in=[/ip dhcp-server network find comment="Dartbit"] do={ /ip dhcp-server network remove $n }`);

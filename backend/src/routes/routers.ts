@@ -299,15 +299,18 @@ router.post('/:id/lan-ports', async (req: AuthRequest, res: Response) => {
 
     // Build a command that:
     // 1. Removes any port from this bridge that isn't in the new list
-    // 2. Adds any new ports that aren't already on this bridge
+    // 2. For each desired port: if it's on a DIFFERENT bridge, move it; if not on any, add it
     // 3. Bumps the hotspot interface so it picks up the new bridge membership
     const desiredQuoted = cleanPorts.map(p => `"${p}"`).join(',');
     const cmd = [
       `# Update LAN ports on bridge ${bridge}`,
+      // Remove ports from THIS bridge that aren't in the new list
       `:foreach p in=[/interface bridge port find bridge="${bridge}"] do={ :local iname [/interface bridge port get $p interface]; :if ([:len [:find (${desiredQuoted}) $iname]] = 0) do={ /interface bridge port remove $p } }`,
-      ...cleanPorts.map(port =>
-        `:if ([:len [/interface bridge port find interface="${port}"]] = 0 && [:len [/interface find name="${port}"]] > 0) do={ /interface bridge port add bridge=${bridge} interface=${port} comment="Dartbit LAN port" }`
-      ),
+      // For each desired port: move it from whatever bridge it's on (if any) to ours
+      ...cleanPorts.flatMap(port => [
+        `:foreach p in=[/interface bridge port find interface="${port}"] do={ :local b [/interface bridge port get $p bridge]; :if ($b != "${bridge}") do={ /interface bridge port remove $p; :log info ("Dartbit: moved ${port} from " . $b . " to ${bridge}") } }`,
+        `:if ([:len [/interface bridge port find interface="${port}" bridge="${bridge}"]] = 0 && [:len [/interface find name="${port}"]] > 0) do={ /interface bridge port add bridge=${bridge} interface=${port} comment="Dartbit LAN port" }`,
+      ]),
       // Bump hotspot so it re-binds and intercepts traffic from the new port
       `:foreach h in=[/ip hotspot find interface="${bridge}"] do={ /ip hotspot disable $h; :delay 500ms; /ip hotspot enable $h }`,
       `:log info "Dartbit: LAN ports updated, hotspot re-bound"`,
