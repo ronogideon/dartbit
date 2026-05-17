@@ -49,7 +49,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.0');
+    add('# Dartbit ZTP Script v1.5.1');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -129,6 +129,21 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add(`:foreach h in=[/ip hotspot find interface="${bridge}"] do={ :if ([/ip hotspot get $h name] != "dartbit-hotspot") do={ /ip hotspot remove $h } }`);
     // Diagnostic logging
     add(`:log info ("Dartbit hotspot: " . [/ip hotspot get [find name="dartbit-hotspot"] disabled] . "; DHCP: " . [/ip dhcp-server get [find name="dartbit-dhcp"] disabled])`);
+    add('');
+
+    // 6a. Replace MikroTik's default login.html with one that redirects to Dartbit's portal
+    //     RouterOS hotspot serves files from /hotspot/ directory (created automatically).
+    //     We download our redirect HTML and overwrite the default login page.
+    add('# 6a. Install Dartbit captive portal HTML');
+    // Make sure the hotspot/ directory exists by triggering hotspot to create defaults
+    add(`:do { /ip hotspot profile set [find name="hsprof-dartbit"] html-directory=hotspot } on-error={}`);
+    // Download our login.html — it's a tiny redirect page to the Dartbit-hosted portal
+    add(`/tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=hotspot/login.html${fetchFlags}`);
+    add(`:delay 1s`);
+    // Also overwrite alogin.html which is shown on successful login
+    add(`/tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=hotspot/alogin.html${fetchFlags}`);
+    add(`:delay 1s`);
+    add(`:log info "Dartbit: portal HTML installed"`);
     add('');
 
     // 6b. CRITICAL: disable fasttrack-connection. RouterOS's default firewall has a

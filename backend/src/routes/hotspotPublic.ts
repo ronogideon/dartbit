@@ -91,15 +91,17 @@ router.post('/redeem', async (req: Request, res: Response) => {
 });
 
 // GET /hotspot/portal — public captive portal page (renders a voucher login form)
-// This is what the user sees when MikroTik redirects them. The page is served
-// from Dartbit (whitelisted in walled garden).
+// MikroTik's login.html redirects browsers here when they're caught by the captive portal.
 router.get('/portal', async (req: Request, res: Response) => {
-  const tenantSubdomain = String(req.query.tenant || '');
   const routerApiKey = String(req.query.apiKey || '');
+  const linkLogin = String(req.query['link-login'] || '');
+  const userMac = String(req.query.mac || '');
+  const userIp = String(req.query.ip || '');
+  const linkOrig = String(req.query['link-orig'] || '/');
 
-  // Build a minimal HTML captive portal page
-  // The MikroTik hotspot redirects: http://<gateway>/login?...
-  // We're serving the portal at the backend so we don't need html-directory on MikroTik
+  const backendUrl = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
+
+  // Build a clean portal page
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -107,106 +109,155 @@ router.get('/portal', async (req: Request, res: Response) => {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>WiFi Login</title>
 <style>
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #667eea, #764ba2); padding: 20px; }
-  .card { background: white; border-radius: 16px; padding: 32px; max-width: 400px; width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,0.2); }
-  h1 { margin: 0 0 8px; color: #333; font-size: 28px; }
-  p { color: #666; margin: 0 0 24px; font-size: 14px; }
-  input { width: 100%; padding: 14px 16px; border: 2px solid #e5e7eb; border-radius: 10px; font-size: 18px; letter-spacing: 4px; text-transform: uppercase; text-align: center; outline: none; transition: border 0.2s; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; }
+  .card { background: white; border-radius: 20px; padding: 36px 28px; max-width: 420px; width: 100%; box-shadow: 0 25px 70px rgba(0,0,0,0.25); }
+  .logo { text-align: center; font-size: 26px; font-weight: 900; color: #667eea; letter-spacing: 2px; margin-bottom: 4px; }
+  .tagline { text-align: center; font-size: 13px; color: #999; margin-bottom: 28px; }
+  h2 { font-size: 18px; color: #222; margin-bottom: 8px; }
+  p.help { font-size: 14px; color: #666; margin-bottom: 20px; line-height: 1.5; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; background: #f3f4f6; padding: 4px; border-radius: 10px; }
+  .tab { flex: 1; padding: 10px; text-align: center; font-size: 14px; font-weight: 600; color: #888; cursor: pointer; border-radius: 8px; transition: all 0.2s; }
+  .tab.active { background: white; color: #667eea; box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  label { display: block; font-size: 12px; font-weight: 600; color: #555; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+  input { width: 100%; padding: 14px 16px; border: 2px solid #e5e7eb; border-radius: 12px; font-size: 16px; outline: none; transition: border 0.2s; margin-bottom: 12px; }
+  input.code { letter-spacing: 4px; text-transform: uppercase; text-align: center; font-weight: 700; font-size: 22px; }
   input:focus { border-color: #667eea; }
-  button { width: 100%; margin-top: 16px; padding: 14px; background: linear-gradient(135deg, #667eea, #764ba2); color: white; border: none; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; transition: opacity 0.2s; }
-  button:hover { opacity: 0.9; }
+  button { width: 100%; padding: 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer; transition: opacity 0.2s, transform 0.05s; }
+  button:hover { opacity: 0.95; }
+  button:active { transform: translateY(1px); }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
-  .status { margin-top: 16px; padding: 12px; border-radius: 8px; font-size: 14px; display: none; }
-  .status.error { background: #fee; color: #c00; display: block; }
-  .status.success { background: #efe; color: #060; display: block; }
-  .logo { text-align: center; font-size: 24px; font-weight: 800; color: #667eea; margin-bottom: 8px; }
+  .status { margin-top: 16px; padding: 12px 16px; border-radius: 10px; font-size: 14px; line-height: 1.4; display: none; }
+  .status.error { background: #fef2f2; color: #b91c1c; border: 1px solid #fee2e2; display: block; }
+  .status.success { background: #f0fdf4; color: #166534; border: 1px solid #dcfce7; display: block; }
+  .status.info { background: #eff6ff; color: #1e40af; border: 1px solid #dbeafe; display: block; }
+  .small { font-size: 11px; color: #aaa; text-align: center; margin-top: 18px; }
 </style>
 </head>
 <body>
 <div class="card">
-  <div class="logo">DARTBIT WIFI</div>
-  <h1>Enter Voucher Code</h1>
-  <p>Type the code printed on your voucher to access the internet.</p>
-  <form id="f">
-    <input id="code" name="code" placeholder="XXXXXXXX" maxlength="16" autocomplete="off" autocapitalize="characters" required>
-    <button type="submit" id="btn">Connect to Internet</button>
-  </form>
+  <div class="logo">DARTBIT</div>
+  <div class="tagline">WiFi Login Portal</div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="voucher">Voucher Code</div>
+    <div class="tab" data-tab="account">Username</div>
+  </div>
+
+  <div class="panel active" id="panel-voucher">
+    <h2>Enter your voucher code</h2>
+    <p class="help">Type the code printed on your ticket to access the WiFi.</p>
+    <form id="voucher-form">
+      <label>Voucher code</label>
+      <input class="code" id="voucher-code" placeholder="XXXXXXXX" maxlength="16" autocomplete="off" autocapitalize="characters" required>
+      <button type="submit" id="voucher-btn">Connect</button>
+    </form>
+  </div>
+
+  <div class="panel" id="panel-account">
+    <h2>Sign in with your account</h2>
+    <p class="help">If you have an existing account, log in below.</p>
+    <form id="account-form">
+      <label>Username</label>
+      <input id="account-username" placeholder="Your username" autocomplete="username" required>
+      <label>Password</label>
+      <input id="account-password" type="password" placeholder="Your password" autocomplete="current-password" required>
+      <button type="submit" id="account-btn">Sign in</button>
+    </form>
+  </div>
+
   <div id="status" class="status"></div>
+  <div class="small">Powered by Dartbit</div>
 </div>
+
 <script>
-  const f = document.getElementById('f');
-  const btn = document.getElementById('btn');
-  const status = document.getElementById('status');
-  const input = document.getElementById('code');
-
-  // MikroTik passes these via the redirect URL — when running on the actual hotspot
+(function() {
   const params = new URLSearchParams(window.location.search);
-  const mac = params.get('mac') || '';
-  const ip = params.get('ip') || '';
-  const linkLogin = params.get('link-login') || params.get('link-login-only') || '';
-  const apiKey = ${JSON.stringify(routerApiKey)} || params.get('apiKey') || '';
+  const apiKey = ${JSON.stringify(routerApiKey)};
+  const linkLogin = ${JSON.stringify(linkLogin)} || params.get('link-login') || '';
+  const mac = ${JSON.stringify(userMac)} || params.get('mac') || '';
+  const ip = ${JSON.stringify(userIp)} || params.get('ip') || '';
+  const backendUrl = ${JSON.stringify(backendUrl)};
 
-  f.addEventListener('submit', async (e) => {
+  const status = document.getElementById('status');
+  function showStatus(type, text) { status.className = 'status ' + type; status.textContent = text; }
+  function clearStatus() { status.className = 'status'; status.textContent = ''; }
+
+  document.querySelectorAll('.tab').forEach(t => {
+    t.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+      document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
+      t.classList.add('active');
+      document.getElementById('panel-' + t.dataset.tab).classList.add('active');
+      clearStatus();
+    });
+  });
+
+  // Submit form to MikroTik's link-login endpoint to actually authenticate the session.
+  // This must be a form POST (not fetch) because MikroTik responds with redirects.
+  function submitToMikrotik(username, password) {
+    if (!linkLogin) {
+      showStatus('error', 'No login URL provided. Try refreshing the page.');
+      return;
+    }
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = linkLogin;
+    [['username', username], ['password', password], ['dst', '/'], ['popup', 'true']].forEach(([n, v]) => {
+      const inp = document.createElement('input');
+      inp.type = 'hidden'; inp.name = n; inp.value = v;
+      form.appendChild(inp);
+    });
+    document.body.appendChild(form);
+    form.submit();
+  }
+
+  // === Voucher flow ===
+  document.getElementById('voucher-form').addEventListener('submit', async function(e) {
     e.preventDefault();
-    btn.disabled = true;
-    btn.textContent = 'Connecting...';
-    status.className = 'status'; status.textContent = '';
-    const code = input.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const btn = document.getElementById('voucher-btn');
+    const code = document.getElementById('voucher-code').value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    btn.disabled = true; btn.textContent = 'Checking...';
+    clearStatus();
 
     try {
-      const r = await fetch('${process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app'}/hotspot/redeem', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const r = await fetch(backendUrl + '/hotspot/redeem', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code, routerApiKey: apiKey, mac, ip })
       });
       const data = await r.json();
       if (!data.success) {
-        status.className = 'status error'; status.textContent = data.error || 'Failed';
-        btn.disabled = false; btn.textContent = 'Try again';
+        showStatus('error', data.error || 'Invalid voucher');
+        btn.disabled = false; btn.textContent = 'Connect';
         return;
       }
-      status.className = 'status success';
-      status.textContent = 'Voucher accepted! Activating session...';
-
-      // Wait for MikroTik to pick up the command (~30s), then submit hotspot login form
-      let waited = 0;
-      const tryLogin = () => {
-        if (waited >= 35) {
-          status.textContent = 'Setup complete. Click below to log in.';
-          btn.disabled = false; btn.textContent = 'Log in now';
-          btn.onclick = doLogin;
-          return;
-        }
-        status.textContent = 'Activating... ' + (35 - waited) + 's';
-        waited += 2;
-        setTimeout(tryLogin, 2000);
-      };
-      tryLogin();
-
-      function doLogin() {
-        if (linkLogin) {
-          // Build hotspot login form submission
-          const form = document.createElement('form');
-          form.method = 'POST';
-          form.action = linkLogin;
-          [['username', data.username], ['password', data.password], ['dst', '/'], ['popup', 'true']].forEach(([n,v]) => {
-            const inp = document.createElement('input'); inp.type = 'hidden'; inp.name = n; inp.value = v; form.appendChild(inp);
-          });
-          document.body.appendChild(form);
-          form.submit();
-        } else {
-          status.textContent = 'Username: ' + data.username + '. Use this on the hotspot login page.';
-        }
-      }
+      showStatus('success', 'Voucher accepted! Logging you in...');
+      // The voucher username/password are already on the router (synced).
+      // Submit to MikroTik's hotspot login endpoint.
+      setTimeout(() => submitToMikrotik(data.username, data.password), 800);
     } catch (err) {
-      status.className = 'status error'; status.textContent = 'Network error — try again';
-      btn.disabled = false; btn.textContent = 'Try again';
+      showStatus('error', 'Network error: ' + (err.message || 'unknown'));
+      btn.disabled = false; btn.textContent = 'Connect';
     }
   });
+
+  // === Account (subscriber) flow ===
+  document.getElementById('account-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    const username = document.getElementById('account-username').value;
+    const password = document.getElementById('account-password').value;
+    showStatus('info', 'Signing in...');
+    // For existing hotspot subscribers, credentials are already on the router via subscriber sync.
+    // Just submit directly to MikroTik.
+    submitToMikrotik(username, password);
+  });
+})();
 </script>
 </body>
 </html>`;
-
   res.type('text/html').send(html);
 });
 
