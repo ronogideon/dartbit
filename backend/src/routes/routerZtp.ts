@@ -49,7 +49,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.4.5');
+    add('# Dartbit ZTP Script v1.4.7');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -78,13 +78,18 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     // Always update the pool range in case it changed
     add(`/ip pool set [find name="dhcp-pool"] ranges=${dhcpStart}-${dhcpEnd}`);
     // DHCP network entry — tells DHCP clients their gateway/DNS
-    add(`:if ([:len [/ip dhcp-server network find address="${lanSubnet}"]] = 0) do={ /ip dhcp-server network add address=${lanSubnet} gateway=${lanGw} dns-server=${dns} comment="Dartbit LAN" }`);
-    add(`/ip dhcp-server network set [find address="${lanSubnet}"] gateway=${lanGw} dns-server=${dns}`);
+    // CRITICAL: dns-server is the ROUTER's bridge IP, not 8.8.8.8. This way clients
+    // send DNS queries to the router, which can hijack them and return the gateway IP
+    // for unauthenticated users (this drives the captive portal redirect).
+    add(`:if ([:len [/ip dhcp-server network find address="${lanSubnet}"]] = 0) do={ /ip dhcp-server network add address=${lanSubnet} gateway=${lanGw} dns-server=${lanGw} comment="Dartbit LAN" }`);
+    add(`/ip dhcp-server network set [find address="${lanSubnet}"] gateway=${lanGw} dns-server=${lanGw}`);
     // The DHCP server bound to the bridge — this is what actually hands out IPs
     add(`:if ([:len [/ip dhcp-server find name="dartbit-dhcp"]] = 0) do={ /ip dhcp-server add name=dartbit-dhcp interface=${bridge} address-pool=dhcp-pool lease-time=1d disabled=no }`);
     add(`/ip dhcp-server set [find name="dartbit-dhcp"] interface=${bridge} address-pool=dhcp-pool disabled=no`);
     // CRITICAL: remove any OTHER DHCP server on this bridge that would conflict
     add(`:foreach d in=[/ip dhcp-server find interface="${bridge}"] do={ :if ([/ip dhcp-server get $d name] != "dartbit-dhcp") do={ /ip dhcp-server disable $d; :log info ("Dartbit: disabled conflicting DHCP server " . [/ip dhcp-server get $d name] . " on ${bridge}") } }`);
+    // Enable router's DNS server so it can answer queries from clients
+    add(`/ip dns set servers=${dns} allow-remote-requests=yes`);
     add('');
 
     // 4. NAT
@@ -117,15 +122,26 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add(`:log info ("Dartbit hotspot: " . [/ip hotspot get [find name="dartbit-hotspot"] disabled] . "; DHCP: " . [/ip dhcp-server get [find name="dartbit-dhcp"] disabled])`);
     add('');
 
+    // 6b. CRITICAL: disable fasttrack-connection. RouterOS's default firewall has a
+    //     fasttrack rule that bypasses the entire forward chain on established connections.
+    //     This breaks hotspot interception — only the first packet goes through the
+    //     hotspot, subsequent HTTP requests are fast-tracked straight to the internet.
+    //     This is the #1 reason hotspots "give DHCP but no captive portal".
+    add('# 6b. Disable fasttrack — required for hotspot interception to work');
+    add(`:foreach f in=[/ip firewall filter find action=fasttrack-connection] do={ /ip firewall filter disable $f; :log info "Dartbit: disabled fasttrack-connection rule" }`);
+    add('');
+
     // 7. Walled garden — allow Dartbit backend AND the portal page so unauth users can reach it
     add('# 7. Walled garden — allow Dartbit portal & backend');
     add(`:foreach w in=[/ip hotspot walled-garden find comment~"Dartbit" !dynamic] do={ /ip hotspot walled-garden remove $w }`);
     add(`/ip hotspot walled-garden add dst-host=dartbit-production.up.railway.app comment="Dartbit backend"`);
     add(`/ip hotspot walled-garden add dst-host=*.dartbit-production.up.railway.app comment="Dartbit backend wildcard"`);
-    // Pre-resolve DNS for unauth clients (8.8.8.8 / 1.1.1.1)
+    // CRITICAL: do NOT add 8.8.8.8/1.1.1.1 to walled-garden!
+    // Doing so allows unauthenticated DNS queries to reach real DNS servers, which return
+    // real IPs for hostnames. The captive portal redirect mechanism relies on MikroTik
+    // intercepting DNS and returning the gateway IP for unauthenticated clients.
+    // Remove any old DNS walled-garden entries from prior versions:
     add(`:foreach w in=[/ip hotspot walled-garden ip find comment~"Dartbit DNS" !dynamic] do={ /ip hotspot walled-garden ip remove $w }`);
-    add(`/ip hotspot walled-garden ip add dst-address=8.8.8.8 comment="Dartbit DNS"`);
-    add(`/ip hotspot walled-garden ip add dst-address=1.1.1.1 comment="Dartbit DNS"`);
     add('');
 
     // 7b. The login page rewrite is NOT done from the script (RouterOS file edits
