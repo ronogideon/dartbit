@@ -88,7 +88,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
 
     // 6. Hotspot — captive portal with DHCP managed by the hotspot itself
     add('# 6. Hotspot — captive portal');
-    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=http-chap,http-pap http-cookie-lifetime=0s use-radius=no }`);
+    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name="dartbit.login" login-by=http-chap,http-pap http-cookie-lifetime=0s use-radius=no }`);
     add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 mac-cookie-timeout=0s address-pool=dhcp-pool }`);
     add(`:if ([:len [/ip hotspot find interface="${bridge}"]] = 0) do={ /ip hotspot add name=dartbit-hotspot interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no }`);
     add(`:foreach d in=[/ip dhcp-server find name="dartbit-dhcp"] do={ /ip dhcp-server remove $d }`);
@@ -107,10 +107,13 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add(`:foreach f in=[/ip firewall filter find comment~"Dartbit block unauth"] do={ /ip firewall filter remove $f }`);
     add('');
 
-    // 8b. TTL mangle — block phone tethering (TTL=63 means client decremented TTL once)
+    // 8b. TTL filter — block phone tethering (TTL=63 means client decremented TTL once)
+    //     mangle chain doesn't support action=drop in RouterOS 7; use filter instead.
     add('# 8b. TTL filter — blocks phone-tethered devices');
-    add(`:if ([:len [/ip firewall mangle find comment="Dartbit no-tether"]] = 0) do={ /ip firewall mangle add chain=prerouting in-interface=${bridge} ttl=equal:63 action=drop comment="Dartbit no-tether" }`);
-    add(`:if ([:len [/ip firewall mangle find comment="Dartbit no-tether2"]] = 0) do={ /ip firewall mangle add chain=prerouting in-interface=${bridge} ttl=equal:127 action=drop comment="Dartbit no-tether2" }`);
+    // Clean up legacy mangle drop rules from older deployments
+    add(`:foreach m in=[/ip firewall mangle find comment~"Dartbit no-tether"] do={ /ip firewall mangle remove $m }`);
+    add(`:if ([:len [/ip firewall filter find comment="Dartbit no-tether"]] = 0) do={ /ip firewall filter add chain=forward in-interface=${bridge} ttl=equal:63 action=drop comment="Dartbit no-tether" }`);
+    add(`:if ([:len [/ip firewall filter find comment="Dartbit no-tether2"]] = 0) do={ /ip firewall filter add chain=forward in-interface=${bridge} ttl=equal:127 action=drop comment="Dartbit no-tether2" }`);
     add('');
 
     // 8c. AP bridge-mode enforcement — disable hotspot's mac-cookie so devices
