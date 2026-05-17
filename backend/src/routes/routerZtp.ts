@@ -49,7 +49,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.4.8');
+    add('# Dartbit ZTP Script v1.4.9');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -69,7 +69,16 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
 
     // 2. LAN gateway IP
     add('# 2. LAN gateway IP');
-    add(`:if ([:len [/ip address find interface="${bridge}"]] = 0) do={ /ip address add address=${lanGw}/24 interface=${bridge} comment="Dartbit LAN Gateway" }`);
+    // CRITICAL: remove duplicate IP from any OTHER bridge first.
+    // The defconf has 192.168.88.1/24 on the default 'bridge' which causes routing chaos.
+    add(`:foreach a in=[/ip address find address="${lanGw}/24"] do={ :local iface [/ip address get $a interface]; :if ($iface != "${bridge}") do={ /ip address remove $a; :log info ("Dartbit: removed duplicate ${lanGw}/24 from " . $iface) } }`);
+    add(`:if ([:len [/ip address find interface="${bridge}" address="${lanGw}/24"]] = 0) do={ /ip address add address=${lanGw}/24 interface=${bridge} comment="Dartbit LAN Gateway" }`);
+    // CRITICAL: add the bridge to the LAN interface list so the default firewall
+    // (chain=input action=drop in-interface-list=!LAN) doesn't block DNS/DHCP/portal traffic from clients
+    add(`:if ([:len [/interface list find name="LAN"]] = 0) do={ /interface list add name=LAN }`);
+    add(`:if ([:len [/interface list member find list="LAN" interface="${bridge}"]] = 0) do={ /interface list member add list=LAN interface=${bridge} comment="Dartbit LAN" }`);
+    // Also disable the defconf DHCP server on the original bridge — it was serving the same subnet
+    add(`:foreach d in=[/ip dhcp-server find name="defconf"] do={ /ip dhcp-server disable $d; :log info "Dartbit: disabled defconf DHCP (subnet conflict)" }`);
     add('');
 
     // 3. DHCP pool + DHCP server on the bridge (hotspot doesn't auto-create one in all RouterOS versions)
