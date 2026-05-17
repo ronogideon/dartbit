@@ -49,7 +49,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.4.3');
+    add('# Dartbit ZTP Script v1.4.5');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -72,9 +72,19 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add(`:if ([:len [/ip address find interface="${bridge}"]] = 0) do={ /ip address add address=${lanGw}/24 interface=${bridge} comment="Dartbit LAN Gateway" }`);
     add('');
 
-    // 3. DHCP pool — shared between regular DHCP and Hotspot
-    add('# 3. DHCP pool');
+    // 3. DHCP pool + DHCP server on the bridge (hotspot doesn't auto-create one in all RouterOS versions)
+    add('# 3. DHCP pool + server');
     add(`:if ([:len [/ip pool find name="dhcp-pool"]] = 0) do={ /ip pool add name=dhcp-pool ranges=${dhcpStart}-${dhcpEnd} }`);
+    // Always update the pool range in case it changed
+    add(`/ip pool set [find name="dhcp-pool"] ranges=${dhcpStart}-${dhcpEnd}`);
+    // DHCP network entry — tells DHCP clients their gateway/DNS
+    add(`:if ([:len [/ip dhcp-server network find address="${lanSubnet}"]] = 0) do={ /ip dhcp-server network add address=${lanSubnet} gateway=${lanGw} dns-server=${dns} comment="Dartbit LAN" }`);
+    add(`/ip dhcp-server network set [find address="${lanSubnet}"] gateway=${lanGw} dns-server=${dns}`);
+    // The DHCP server bound to the bridge — this is what actually hands out IPs
+    add(`:if ([:len [/ip dhcp-server find name="dartbit-dhcp"]] = 0) do={ /ip dhcp-server add name=dartbit-dhcp interface=${bridge} address-pool=dhcp-pool lease-time=1d disabled=no }`);
+    add(`/ip dhcp-server set [find name="dartbit-dhcp"] interface=${bridge} address-pool=dhcp-pool disabled=no`);
+    // CRITICAL: remove any OTHER DHCP server on this bridge that would conflict
+    add(`:foreach d in=[/ip dhcp-server find interface="${bridge}"] do={ :if ([/ip dhcp-server get $d name] != "dartbit-dhcp") do={ /ip dhcp-server disable $d; :log info ("Dartbit: disabled conflicting DHCP server " . [/ip dhcp-server get $d name] . " on ${bridge}") } }`);
     add('');
 
     // 4. NAT
@@ -90,24 +100,21 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add('');
 
     // 6. Hotspot — captive portal with DHCP managed by the hotspot itself
-    //    Hotspot profile redirects to Dartbit's hosted portal for voucher login.
     add('# 6. Hotspot — captive portal');
-    // First remove old profile so the redirect URL updates if it changed
-    add(`:foreach p in=[/ip hotspot profile find name="hsprof-dartbit"] do={ /ip hotspot set [find profile=$p] profile=default; /ip hotspot profile remove $p }`);
-    // New profile pointing to the Dartbit portal — uses login-trial=no to disable trial users,
-    // and our HTML files (default) handle the redirect via $(link-redirect)
-    add(`/ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=http-chap,http-pap http-cookie-lifetime=0s use-radius=no`);
+    // Create profile if missing — don't blow it away if it exists (keeps hotspot running)
+    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=http-chap,http-pap http-cookie-lifetime=0s use-radius=no }`);
+    // Always sync the profile settings (idempotent — no disruption)
+    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=http-chap,http-pap http-cookie-lifetime=0s use-radius=no`);
     // User profile — strict one-device, no MAC sharing
     add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 mac-cookie-timeout=0s address-pool=dhcp-pool }`);
-    // Hotspot itself on the bridge — uses the bridge IP as gateway
+    // Hotspot itself on the bridge
     add(`:if ([:len [/ip hotspot find name="dartbit-hotspot"]] = 0) do={ /ip hotspot add name=dartbit-hotspot interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no }`);
-    // Force re-apply the profile to existing hotspot AND re-bind it so interception works
-    add(`:foreach h in=[/ip hotspot find name="dartbit-hotspot"] do={ /ip hotspot set $h interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit; /ip hotspot disable $h; :delay 500ms; /ip hotspot enable $h }`);
-    // Remove any legacy dartbit-dhcp server that would conflict with hotspot's DHCP
-    add(`:foreach d in=[/ip dhcp-server find name="dartbit-dhcp"] do={ /ip dhcp-server remove $d }`);
-    add(`:foreach n in=[/ip dhcp-server network find comment="Dartbit"] do={ /ip dhcp-server network remove $n }`);
-    // Make sure no other hotspot exists on this interface (cleanup of duplicates)
+    // Sync hotspot settings — idempotent, RouterOS handles no-op gracefully
+    add(`/ip hotspot set [find name="dartbit-hotspot"] interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no`);
+    // Remove any other hotspots on this interface (e.g. from other tools)
     add(`:foreach h in=[/ip hotspot find interface="${bridge}"] do={ :if ([/ip hotspot get $h name] != "dartbit-hotspot") do={ /ip hotspot remove $h } }`);
+    // Diagnostic logging
+    add(`:log info ("Dartbit hotspot: " . [/ip hotspot get [find name="dartbit-hotspot"] disabled] . "; DHCP: " . [/ip dhcp-server get [find name="dartbit-dhcp"] disabled])`);
     add('');
 
     // 7. Walled garden — allow Dartbit backend AND the portal page so unauth users can reach it

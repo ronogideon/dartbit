@@ -311,9 +311,9 @@ router.post('/:id/lan-ports', async (req: AuthRequest, res: Response) => {
         `:foreach p in=[/interface bridge port find interface="${port}"] do={ :local b [/interface bridge port get $p bridge]; :if ($b != "${bridge}") do={ /interface bridge port remove $p; :log info ("Dartbit: moved ${port} from " . $b . " to ${bridge}") } }`,
         `:if ([:len [/interface bridge port find interface="${port}" bridge="${bridge}"]] = 0 && [:len [/interface find name="${port}"]] > 0) do={ /interface bridge port add bridge=${bridge} interface=${port} comment="Dartbit LAN port" }`,
       ]),
-      // Bump hotspot so it re-binds and intercepts traffic from the new port
-      `:foreach h in=[/ip hotspot find interface="${bridge}"] do={ /ip hotspot disable $h; :delay 500ms; /ip hotspot enable $h }`,
-      `:log info "Dartbit: LAN ports updated, hotspot re-bound"`,
+      // Bump hotspot is no longer needed — RouterOS picks up bridge port changes automatically
+      // and disabling/enabling causes a DHCP outage that breaks all connected clients.
+      `:log info "Dartbit: LAN ports updated"`,
     ].join('\n');
 
     const { enqueueCommand } = await import('../utils/commandQueue');
