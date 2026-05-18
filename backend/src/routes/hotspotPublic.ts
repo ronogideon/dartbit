@@ -1,8 +1,28 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import prisma from '../utils/prisma';
 import { enqueueCommand } from '../utils/commandQueue';
 
 const router = Router();
+
+// Permissive CORS for all hotspot endpoints — these are explicitly designed to be
+// called from any captive portal origin (router gateway IPs are not predictable).
+// This middleware runs BEFORE the global CORS check and short-circuits with permissive headers.
+router.use((req: Request, res: Response, next: NextFunction) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept');
+  res.setHeader('Access-Control-Max-Age', '600');
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+  next();
+});
 
 // Public endpoint — NO auth. Captive portal calls this when user submits a voucher.
 // POST /hotspot/redeem

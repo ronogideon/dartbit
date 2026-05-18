@@ -31,19 +31,42 @@ const allowedOrigins = [
   process.env.FRONTEND_URL,
 ].filter(Boolean) as string[];
 
+// Captive portal pages are served by MikroTik routers from their gateway IPs
+// (typically 40.40.88.1, 192.168.x.x, 10.x.x.x). The portal makes AJAX to this backend
+// for voucher/credential verification. Allow these origins for CORS.
+function isCaptivePortalOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== 'http:') return false;
+    const host = url.hostname;
+    // 40.40.0.0/8 — our default captive portal subnet
+    if (/^40\.40\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+    // RFC1918 private ranges — covers any tenant-customized hotspot subnet
+    if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+    if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+    if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
-    callback(new Error('Not allowed by CORS'));
+    if (isCaptivePortalOrigin(origin)) return callback(null, true);
+    // For other origins, don't throw — just don't set CORS headers.
+    // Route-level middleware (e.g. on /hotspot) can override with permissive headers.
+    callback(null, false);
   },
   credentials: true,
 }));
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.5.5b', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.5.5b', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.5.6', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.5.6', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -64,7 +87,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.5.5b running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.5.6 running on port ${PORT}\n`);
   patchDatabase();
 });
 
