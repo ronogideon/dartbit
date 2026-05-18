@@ -576,7 +576,6 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     // We include it on the router if it's either unused OR not yet expired.
     // Add a 1-hour grace period after expiresAt before removing, in case the user's
     // session is still active on MikroTik.
-    const now = new Date();
     const vouchers = await prisma.voucher.findMany({
       where: {
         tenantId: r.tenantId,
