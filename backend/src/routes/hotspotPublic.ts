@@ -69,31 +69,17 @@ router.post('/redeem', async (req: Request, res: Response) => {
         usedAt: now,
         usedByMac: usedMac,
         usedByIp: usedIp,
-        expiresAt: sessionExpiresAt, // session-end time
+        expiresAt: sessionExpiresAt,
       },
     });
 
-    // Username = code, password = code (simple for voucher-style)
+    // The voucher was already pushed to the router at generation time as a hotspot user
+    // with limit-uptime equal to the voucher duration. MikroTik starts counting uptime
+    // only after the first login, then auto-disconnects when limit is reached.
+    // No command queue push needed here — the user is ready to login immediately.
+
     const username = cleanCode;
     const password = cleanCode;
-    const speed = voucher.package
-      ? `${voucher.package.speedUpKbps}k/${voucher.package.speedDownKbps}k`
-      : '10M/10M';
-    const profileName = voucher.package
-      ? `dartbit-vch-${voucher.package.id.substring(0, 8)}`
-      : 'dartbit-default';
-
-    // Push hotspot user to MikroTik via the command channel.
-    // The user is created with session-timeout=<duration> so MikroTik
-    // auto-disconnects when time expires.
-    const sessionTimeoutSeconds = voucher.durationMinutes * 60;
-    const commands = [
-      `:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} rate-limit=${speed} shared-users=1 mac-cookie-timeout=0s session-timeout=${sessionTimeoutSeconds}s comment="Dartbit voucher profile" }`,
-      `:if ([:len [/ip hotspot user find name="${username}"]] = 0) do={ /ip hotspot user add name=${username} password=${password} profile=${profileName} limit-uptime=${sessionTimeoutSeconds}s comment="Dartbit-voucher:${voucher.id}" } else={ /ip hotspot user set [find name="${username}"] password=${password} profile=${profileName} limit-uptime=${sessionTimeoutSeconds}s disabled=no }`,
-      `:log info "Dartbit: voucher ${cleanCode} redeemed, valid ${voucher.durationMinutes}min"`,
-    ];
-
-    enqueueCommand(r.id, commands.join('\n'));
 
     return res.json({
       success: true,
@@ -101,7 +87,6 @@ router.post('/redeem', async (req: Request, res: Response) => {
       password,
       durationMinutes: voucher.durationMinutes,
       package: voucher.package?.name,
-      message: 'Voucher accepted — please wait ~30 seconds for credentials to activate, then click Login on the captive portal',
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed';

@@ -246,12 +246,20 @@ button.primary svg{width:14px;height:14px}
           btn.disabled=false;btn.textContent='Get my voucher';
           return;
         }
-        show('success','<div class="code-display"><div class="label">Your voucher code</div><div class="code">'+data.code+'</div></div>Activating session in ~30 seconds...');
-        // Wait for router to sync the voucher, then auto-login
-        setTimeout(function(){
-          show('success','<div class="code-display"><div class="label">Your voucher code</div><div class="code">'+data.code+'</div></div>Connecting now...');
-          submitMikrotik(data.code,data.code);
-        },28000);
+        // Wait for router to sync the voucher (cmd polls every 5s)
+        var secsLeft=12;
+        var codeBox='<div class="code-display"><div class="label">Your voucher code</div><div class="code">'+data.code+'</div></div>';
+        show('success',codeBox+'Activating session ('+secsLeft+'s)...');
+        var iv=setInterval(function(){
+          secsLeft--;
+          if(secsLeft<=0){
+            clearInterval(iv);
+            show('success',codeBox+'Connecting now...');
+            submitMikrotik(data.code,data.code);
+          } else {
+            show('success',codeBox+'Activating session ('+secsLeft+'s)...');
+          }
+        },1000);
       }catch(e){
         show('error','Server response error');
         btn.disabled=false;btn.textContent='Get my voucher';
@@ -278,8 +286,9 @@ button.primary svg{width:14px;height:14px}
       try{
         var data=JSON.parse(xhr.responseText);
         if(!data.success){show('error',data.error||'Invalid voucher');btn.disabled=false;btn.textContent='Connect';return}
+        // Voucher is already on the router (pushed at generation). Submit immediately.
         show('success','Voucher accepted! Connecting...');
-        setTimeout(function(){submitMikrotik(data.username,data.password)},600);
+        setTimeout(function(){submitMikrotik(data.username,data.password)},500);
       }catch(e){show('error','Server response error');btn.disabled=false;btn.textContent='Connect'}
     };
     xhr.onerror=function(){show('error','Cannot reach server. Check connection.');btn.disabled=false;btn.textContent='Connect'};

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import prisma from '../utils/prisma';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { sendSuccess, sendError } from '../utils/response';
+import { enqueueCommand } from '../utils/commandQueue';
 
 const router = Router();
 router.use(authenticate);
@@ -77,6 +78,35 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
       include: { package: true, router: true },
       orderBy: { createdAt: 'desc' },
     });
+
+    // Immediately push vouchers to all routers as hotspot users.
+    // limit-uptime is cumulative session time — only starts counting once the user
+    // logs in for the first time. So vouchers can sit unused indefinitely.
+    try {
+      const targetRouters = routerId
+        ? await prisma.mikrotikRouter.findMany({ where: { id: routerId, tenantId } })
+        : await prisma.mikrotikRouter.findMany({ where: { tenantId } });
+
+      for (const r of targetRouters) {
+        // Determine profile and speed for the package
+        const pkg = packageId ? created[0]?.package : undefined;
+        const profileName = pkg ? `dartbit-vch-${pkg.id.substring(0, 8)}` : 'dartbit-default';
+        const speed = pkg ? `${pkg.speedUpKbps}k/${pkg.speedDownKbps}k` : '10M/10M';
+        const sessionSec = durationMinutes * 60;
+
+        const cmds: string[] = [];
+        cmds.push(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} rate-limit=${speed} shared-users=1 mac-cookie-timeout=0s comment="Dartbit voucher profile" }`);
+        for (const v of created) {
+          // Add each voucher as a hotspot user; limit-uptime starts counting on first login.
+          cmds.push(`:if ([:len [/ip hotspot user find name="${v.code}"]] = 0) do={ /ip hotspot user add name=${v.code} password=${v.code} profile=${profileName} limit-uptime=${sessionSec}s comment="Dartbit-voucher:${v.id}" }`);
+        }
+        cmds.push(`:log info "Dartbit: pushed ${created.length} new vouchers to router"`);
+        enqueueCommand(r.id, cmds.join('\n'));
+      }
+    } catch (pushErr) {
+      // Non-fatal — sync script will eventually push them
+      console.error('Voucher push to routers failed (will retry on next sync):', pushErr);
+    }
 
     sendSuccess(res, { batchId, count: created.length, vouchers: created });
   } catch (err) {

@@ -66,7 +66,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.6');
+    add('# Dartbit ZTP Script v1.5.7');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -286,7 +286,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add(`:foreach s in=[/system scheduler find comment="Dartbit cmd"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-cmd"] do={ /system script remove $s }`);
     add(`/system script add name=dartbit-cmd policy=read,write,test,reboot source={/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ /import file-name=dartbit-cmd.rsc; :delay 1s; /file remove [find name="dartbit-cmd.rsc"] }}`);
-    add(`/system scheduler add name=dartbit-cmd interval=30s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`);
+    add(`/system scheduler add name=dartbit-cmd interval=5s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`);
     add('');
 
     // === Active session reporter ===
@@ -566,18 +566,39 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       add(`:if ([:len [/ip dhcp-server lease find address="${sub.ipAddress}"]] = 0) do={ /ip dhcp-server lease add address=${sub.ipAddress} ${sub.macAddress ? `mac-address=${sub.macAddress}` : ''} server=dartbit-hotspot-dhcp comment="Dartbit:${sub.id}" }`);
     }
 
-    // ===== VOUCHERS — sync unused, non-expired vouchers to router as hotspot users =====
+    // ===== VOUCHERS — sync all non-fully-expired vouchers as hotspot users =====
+    // We push BOTH used and unused vouchers because:
+    //  - Unused vouchers must exist on the router so users can log in
+    //  - Used vouchers must stay on the router until their individual session expires
+    //    (limit-uptime = voucher's own durationMinutes), otherwise the session is cut short.
+    //
+    // Each voucher has its own expiresAt (set on redeem to: now + durationMinutes).
+    // We include it on the router if it's either unused OR not yet expired.
+    // Add a 1-hour grace period after expiresAt before removing, in case the user's
+    // session is still active on MikroTik.
+    const now = new Date();
     const vouchers = await prisma.voucher.findMany({
       where: {
         tenantId: r.tenantId,
-        isUsed: false,
         OR: [
           { routerId: null },
           { routerId: r.id },
         ],
+        AND: [
+          {
+            OR: [
+              // Either not used yet
+              { isUsed: false },
+              // Or used and session not yet expired (with 1h grace)
+              { isUsed: true, expiresAt: { gte: new Date(now.getTime() - 60 * 60 * 1000) } },
+              // Or used but expiresAt was never set (legacy data — be conservative, keep 24h)
+              { isUsed: true, expiresAt: null, usedAt: { gte: new Date(now.getTime() - 24 * 60 * 60 * 1000) } },
+            ],
+          },
+        ],
       },
       include: { package: true },
-      take: 1000,
+      take: 2000,
     });
 
     // Group by package so we create one user profile per package
@@ -597,28 +618,21 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     for (const prof of Object.values(profilesByPkg)) {
       add(`:if ([:len [/ip hotspot user profile find name="${prof.name}"]] = 0) do={ /ip hotspot user profile add name=${prof.name} rate-limit=${prof.speed} shared-users=1 mac-cookie-timeout=0s comment="Dartbit voucher profile" }`);
     }
-    // Add each voucher as a hotspot user — username and password = code
+    // Add each voucher as a hotspot user — username and password = code.
+    // limit-uptime starts counting from first login (MikroTik behavior).
     for (const v of vouchers) {
       const profileName = v.package ? `dartbit-vch-${v.package.id.substring(0, 8)}` : 'dartbit-default';
       const sessionSec = v.durationMinutes * 60;
       add(`:if ([:len [/ip hotspot user find name="${v.code}"]] = 0) do={ /ip hotspot user add name=${v.code} password=${v.code} profile=${profileName} limit-uptime=${sessionSec}s comment="Dartbit-voucher:${v.id}" }`);
     }
-    // Used vouchers can be removed from router after their session expires
-    // (we keep them in the DB for audit). Remove vouchers from router that are now used:
-    const usedVouchers = await prisma.voucher.findMany({
-      where: { tenantId: r.tenantId, isUsed: true },
-      select: { id: true, code: true },
-    });
-    for (const uv of usedVouchers) {
-      // Don't disable immediately — let MikroTik's limit-uptime handle expiry naturally.
-      // But if user is no longer in active list AND used, we can clean up.
-      // Keep this conservative: only remove if it's been more than 24h since use.
-      // The router will naturally drop the session via limit-uptime.
-    }
-    // Optional: remove voucher-users that no longer exist in backend
-    const knownVoucherIds = vouchers.map(v => `"Dartbit-voucher:${v.id}"`).concat(usedVouchers.map(uv => `"Dartbit-voucher:${uv.id}"`)).join(',');
+    // Clean up voucher-users for vouchers that are no longer in our active list
+    // (deleted from DB, or fully expired beyond the cleanupBefore window).
+    const knownVoucherIds = vouchers.map(v => `"Dartbit-voucher:${v.id}"`).join(',');
     if (knownVoucherIds) {
-      add(`:foreach u in=[/ip hotspot user find comment~"Dartbit-voucher:"] do={ :local c [/ip hotspot user get \$u comment]; :if ([:len [:find (${knownVoucherIds}) \$c]] = 0) do={ /ip hotspot user remove \$u } }`);
+      add(`:foreach u in=[/ip hotspot user find comment~"Dartbit-voucher:"] do={ :local c [/ip hotspot user get \$u comment]; :if ([:len [:find (${knownVoucherIds}) \$c]] = 0) do={ /ip hotspot user remove \$u; :log info ("Dartbit: removed expired voucher user " . [/ip hotspot user get \$u name]) } }`);
+    } else {
+      // No vouchers at all — clean up any orphaned voucher users
+      add(`:foreach u in=[/ip hotspot user find comment~"Dartbit-voucher:"] do={ /ip hotspot user remove $u }`);
     }
 
     const knownIds = subscribers.map(s => `"Dartbit:${s.id}"`).join(',');
