@@ -66,7 +66,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.4');
+    add('# Dartbit ZTP Script v1.5.5b');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -197,15 +197,8 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     }
     add('');
 
-    add('# 6d. Force captive portal redirect for ALL unauth HTTP traffic EXCEPT backend');
-    // Remove old Dartbit redirect rules so this is idempotent
+    add('# 6d. (Dartbit redirect rules removed — relying on MikroTik native hotspot interception)');
     add(`:foreach n in=[/ip firewall nat find comment~"Dartbit redirect"] do={ /ip firewall nat remove $n }`);
-    // Use !dst-address-list=dartbit-backend so Dartbit AJAX traffic passes through unobstructed.
-    add(`/ip firewall nat add chain=dstnat protocol=tcp dst-port=80 in-interface=${bridge} hotspot=from-client,!auth dst-address-list=!dartbit-backend action=redirect to-ports=64873 comment="Dartbit redirect http"`);
-    add(`/ip firewall nat add chain=dstnat protocol=tcp dst-port=443 in-interface=${bridge} hotspot=from-client,!auth dst-address-list=!dartbit-backend action=redirect to-ports=64875 comment="Dartbit redirect https"`);
-    // Move to top
-    add(`:local firstRule [:pick [/ip firewall nat find] 0]`);
-    add(`:foreach n in=[/ip firewall nat find comment~"Dartbit redirect"] do={ :do { /ip firewall nat move $n destination=$firstRule } on-error={} }`);
     add('');
 
     // 7. Walled garden — allow Dartbit backend AND the portal page so unauth users can reach it
