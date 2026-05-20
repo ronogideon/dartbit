@@ -529,11 +529,13 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       const expired = sub.expiresAt && sub.expiresAt <= now;
       const disabled = !sub.isActive || expired;
 
-      add(`:if ([:len [/ppp profile find name="${profileName}"]] = 0) do={ /ppp profile add name=${profileName} local-address=10.10.10.1 remote-address=pppoe-pool rate-limit=${speed} comment="Dartbit Package" }`);
-      add(`:if ([:len [/ppp secret find name="${sub.username}"]] > 0) do={ /ppp secret set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} comment="Dartbit:${sub.id}" } else={ /ppp secret add name="${sub.username}" password="${sub.secret}" profile=${profileName} service=pppoe disabled=${disabled ? 'yes' : 'no'} comment="Dartbit:${sub.id}" }`);
+      // Use locals to keep individual command lines short (RouterOS /import has ~200 char limit per line)
+      add(`:local pn "${profileName}"; :local un "${sub.username}"; :local pw "${sub.secret}"; :local cm "Dartbit:${sub.id}"`);
+      add(`:if ([:len [/ppp profile find name=\$pn]] = 0) do={ /ppp profile add name=\$pn local-address=10.10.10.1 remote-address=pppoe-pool rate-limit=${speed} comment="Dartbit Package" }`);
+      add(`:if ([:len [/ppp secret find name=\$un]] > 0) do={ /ppp secret set [find name=\$un] password=\$pw profile=\$pn disabled=${disabled ? 'yes' : 'no'} comment=\$cm } else={ /ppp secret add name=\$un password=\$pw profile=\$pn service=pppoe disabled=${disabled ? 'yes' : 'no'} comment=\$cm }`);
 
       if (expired) {
-        add(`:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove \$a }`);
+        add(`:foreach a in=[/ppp active find name=\$un] do={ /ppp active remove \$a }`);
       }
       // Note: per-subscriber expiry is enforced by the sync script (runs every 60s).
       // When expiresAt passes, sync will set disabled=yes on the next cycle.
@@ -546,12 +548,13 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       const expired = sub.expiresAt && sub.expiresAt <= now;
       const disabled = !sub.isActive || expired;
 
-      // shared-users=1 + mac-cookie-timeout=0 = strict one device per credential
-      add(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} rate-limit=${speed} shared-users=1 mac-cookie-timeout=0s comment="Dartbit Package" }`);
-      add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] > 0) do={ /ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} comment="Dartbit:${sub.id}" } else={ /ip hotspot user add name="${sub.username}" password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} comment="Dartbit:${sub.id}" }`);
+      // Use locals to keep individual lines short
+      add(`:local pn "${profileName}"; :local un "${sub.username}"; :local pw "${sub.secret}"; :local cm "Dartbit:${sub.id}"`);
+      add(`:if ([:len [/ip hotspot user profile find name=\$pn]] = 0) do={ /ip hotspot user profile add name=\$pn rate-limit=${speed} shared-users=1 mac-cookie-timeout=0s comment="Dartbit Package" }`);
+      add(`:if ([:len [/ip hotspot user find name=\$un]] > 0) do={ /ip hotspot user set [find name=\$un] password=\$pw profile=\$pn disabled=${disabled ? 'yes' : 'no'} comment=\$cm } else={ /ip hotspot user add name=\$un password=\$pw profile=\$pn disabled=${disabled ? 'yes' : 'no'} comment=\$cm }`);
 
       if (expired) {
-        add(`:foreach a in=[/ip hotspot active find user="${sub.username}"] do={ /ip hotspot active remove \$a }`);
+        add(`:foreach a in=[/ip hotspot active find user=\$un] do={ /ip hotspot active remove \$a }`);
       }
       // Note: per-subscriber expiry is enforced by the sync script (runs every 60s).
     }
@@ -613,7 +616,9 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       }
     }
     for (const prof of Object.values(profilesByPkg)) {
-      add(`:if ([:len [/ip hotspot user profile find name="${prof.name}"]] = 0) do={ /ip hotspot user profile add name=${prof.name} rate-limit=${prof.speed} shared-users=1 mac-cookie-timeout=0s comment="Dartbit voucher profile" }`);
+      // Break the line up to stay under RouterOS's ~200 char import limit
+      add(`:local pn "${prof.name}"`);
+      add(`:if ([:len [/ip hotspot user profile find name=\$pn]] = 0) do={ /ip hotspot user profile add name=\$pn rate-limit=${prof.speed} shared-users=1 mac-cookie-timeout=0s comment="Dartbit voucher" }`);
     }
     // Add each voucher as a hotspot user — username and password = code.
     // limit-uptime starts counting from first login (MikroTik behavior).
@@ -621,7 +626,8 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     for (const v of vouchers) {
       const profileName = v.package ? `dartbit-vch-${v.package.id.substring(0, 8)}` : 'dartbit-default';
       const sessionSec = v.durationMinutes * 60;
-      add(`:if ([:len [/ip hotspot user find name="${v.code}"]] = 0) do={ /ip hotspot user add name=${v.code} password=${v.code} profile=${profileName} limit-uptime=${sessionSec}s comment="Dartbit-voucher:${v.id}" }`);
+      add(`:local vc "${v.code}"; :local pn "${profileName}"; :local cm "Dartbit-voucher:${v.id}"`);
+      add(`:if ([:len [/ip hotspot user find name=\$vc]] = 0) do={ /ip hotspot user add name=\$vc password=\$vc profile=\$pn limit-uptime=${sessionSec}s comment=\$cm }`);
     }
     // Clean up voucher-users for vouchers that are no longer in our active list
     // (deleted from DB, or fully expired beyond the cleanupBefore window).
