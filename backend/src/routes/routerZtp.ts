@@ -579,18 +579,19 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     const vouchers = await prisma.voucher.findMany({
       where: {
         tenantId: r.tenantId,
-        OR: [
-          { routerId: null },
-          { routerId: r.id },
-        ],
         AND: [
+          // Router scope: either router-specific or any-router
           {
             OR: [
-              // Either not used yet
+              { routerId: null },
+              { routerId: r.id },
+            ],
+          },
+          // Lifecycle: either unused, or used-but-still-within-session-window
+          {
+            OR: [
               { isUsed: false },
-              // Or used and session not yet expired (with 1h grace)
               { isUsed: true, expiresAt: { gte: new Date(now.getTime() - 60 * 60 * 1000) } },
-              // Or used but expiresAt was never set (legacy data — be conservative, keep 24h)
               { isUsed: true, expiresAt: null, usedAt: { gte: new Date(now.getTime() - 24 * 60 * 60 * 1000) } },
             ],
           },
@@ -599,6 +600,7 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       include: { package: true },
       take: 2000,
     });
+    console.log(`[sync] Router ${r.id}: found ${vouchers.length} vouchers to push`);
 
     // Group by package so we create one user profile per package
     const profilesByPkg: Record<string, { name: string; speed: string }> = {};
@@ -619,6 +621,7 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     }
     // Add each voucher as a hotspot user — username and password = code.
     // limit-uptime starts counting from first login (MikroTik behavior).
+    add(`:log info "Dartbit: sync pushing ${vouchers.length} vouchers"`);
     for (const v of vouchers) {
       const profileName = v.package ? `dartbit-vch-${v.package.id.substring(0, 8)}` : 'dartbit-default';
       const sessionSec = v.durationMinutes * 60;
