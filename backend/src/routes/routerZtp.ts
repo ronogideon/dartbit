@@ -534,16 +534,9 @@ router.get('/sync-script', async (req: Request, res: Response) => {
 
       if (expired) {
         add(`:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove \$a }`);
-      } else if (sub.expiresAt) {
-        const { date, time } = rosDate(sub.expiresAt);
-        const schedName = `dartbit-exp-${sub.id.substring(0, 8)}`;
-        const scriptName = `dartbit-exp-script-${sub.id.substring(0, 8)}`;
-        // Expiry script body MUST be flat (no nested {} braces) — RouterOS source={} doesn't handle them.
-        // We disable the secret + remove any active session. /ppp active remove finds by name directly.
-        add(`:if ([:len [/system script find name="${scriptName}"]] > 0) do={ /system script remove [find name="${scriptName}"] }`);
-        add(`/system script add name=${scriptName} policy=read,write source={/ppp secret disable [find name="${sub.username}"]; /ppp active remove [find name="${sub.username}"]; :log info "Dartbit: Auto-expired ${sub.username}"}`);
-        add(`/system scheduler add name=${schedName} start-date=${date} start-time=${time} interval=0 on-event="/system script run ${scriptName}" comment="Dartbit-expiry:${sub.id}"`);
       }
+      // Note: per-subscriber expiry is enforced by the sync script (runs every 60s).
+      // When expiresAt passes, sync will set disabled=yes on the next cycle.
     }
 
     const hsUsers = subscribers.filter(s => s.service === 'HOTSPOT');
@@ -559,14 +552,8 @@ router.get('/sync-script', async (req: Request, res: Response) => {
 
       if (expired) {
         add(`:foreach a in=[/ip hotspot active find user="${sub.username}"] do={ /ip hotspot active remove \$a }`);
-      } else if (sub.expiresAt) {
-        const { date, time } = rosDate(sub.expiresAt);
-        const schedName = `dartbit-exp-${sub.id.substring(0, 8)}`;
-        const scriptName = `dartbit-exp-script-${sub.id.substring(0, 8)}`;
-        add(`:if ([:len [/system script find name="${scriptName}"]] > 0) do={ /system script remove [find name="${scriptName}"] }`);
-        add(`/system script add name=${scriptName} policy=read,write source={/ip hotspot user disable [find name="${sub.username}"]; /ip hotspot active remove [find user="${sub.username}"]; :log info "Dartbit: Auto-expired ${sub.username}"}`);
-        add(`/system scheduler add name=${schedName} start-date=${date} start-time=${time} interval=0 on-event="/system script run ${scriptName}" comment="Dartbit-expiry:${sub.id}"`);
       }
+      // Note: per-subscriber expiry is enforced by the sync script (runs every 60s).
     }
 
     const staticUsers = subscribers.filter(s => s.service === 'STATIC' && s.ipAddress);
