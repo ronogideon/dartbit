@@ -629,19 +629,27 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     }
     // Clean up voucher-users for vouchers that are no longer in our active list
     // (deleted from DB, or fully expired beyond the cleanupBefore window).
-    const knownVoucherIds = vouchers.map(v => `"Dartbit-voucher:${v.id}"`).join(',');
-    if (knownVoucherIds) {
-      add(`:foreach u in=[/ip hotspot user find comment~"Dartbit-voucher:"] do={ :local c [/ip hotspot user get \$u comment]; :if ([:len [:find (${knownVoucherIds}) \$c]] = 0) do={ /ip hotspot user remove \$u; :log info ("Dartbit: removed expired voucher user " . [/ip hotspot user get \$u name]) } }`);
+    if (vouchers.length > 0) {
+      const knownIdsArray = vouchers.map(v => `"Dartbit-voucher:${v.id}"`).join(';');
+      // Build a RouterOS array of known voucher comments, then check membership
+      add(`:local knownVoucherComments {${knownIdsArray}}`);
+      add(`:foreach u in=[/ip hotspot user find comment~"Dartbit-voucher:"] do={ :local c [/ip hotspot user get \$u comment]; :local keep false; :foreach kc in=\$knownVoucherComments do={ :if (\$c = \$kc) do={ :set keep true } }; :if (!\$keep) do={ :log info ("Dartbit: removing expired voucher user " . [/ip hotspot user get \$u name]); /ip hotspot user remove \$u } }`);
     } else {
       // No vouchers at all — clean up any orphaned voucher users
       add(`:foreach u in=[/ip hotspot user find comment~"Dartbit-voucher:"] do={ /ip hotspot user remove $u }`);
     }
 
-    const knownIds = subscribers.map(s => `"Dartbit:${s.id}"`).join(',');
+    const knownIds = subscribers.map(s => `"Dartbit:${s.id}"`).join(';');
     add('');
     add('# Disable Dartbit-managed users no longer in backend');
-    add(`:foreach s in=[/ppp secret find comment~"Dartbit:"] do={ :local c [/ppp secret get \$s comment]; :if ([:len [:find (${knownIds || '""'}) \$c]] = 0) do={ /ppp secret disable \$s; :foreach a in=[/ppp active find name=[/ppp secret get \$s name]] do={ /ppp active remove \$a } } }`);
-    add(`:foreach s in=[/ip hotspot user find comment~"Dartbit:"] do={ :local c [/ip hotspot user get \$s comment]; :if ([:len [:find (${knownIds || '""'}) \$c]] = 0) do={ /ip hotspot user disable \$s } }`);
+    if (subscribers.length > 0) {
+      add(`:local knownSubComments {${knownIds}}`);
+      add(`:foreach s in=[/ppp secret find comment~"Dartbit:"] do={ :local c [/ppp secret get \$s comment]; :local keep false; :foreach kc in=\$knownSubComments do={ :if (\$c = \$kc) do={ :set keep true } }; :if (!\$keep) do={ /ppp secret disable \$s; :foreach a in=[/ppp active find name=[/ppp secret get \$s name]] do={ /ppp active remove \$a } } }`);
+      add(`:foreach s in=[/ip hotspot user find comment~"Dartbit:"] do={ :local c [/ip hotspot user get \$s comment]; :local keep false; :foreach kc in=\$knownSubComments do={ :if (\$c = \$kc) do={ :set keep true } }; :if (!\$keep) do={ /ip hotspot user disable \$s } }`);
+    } else {
+      add(`:foreach s in=[/ppp secret find comment~"Dartbit:"] do={ /ppp secret disable \$s }`);
+      add(`:foreach s in=[/ip hotspot user find comment~"Dartbit:"] do={ /ip hotspot user disable \$s }`);
+    }
 
     res.type('text/plain').send(lines.join('\n'));
   } catch (err) {
