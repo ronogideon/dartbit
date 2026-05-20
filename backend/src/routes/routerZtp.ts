@@ -525,17 +525,18 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     const pppoeUsers = subscribers.filter(s => s.service === 'PPPOE');
     for (const sub of pppoeUsers) {
       const speed = sub.package ? `${sub.package.speedUpKbps}k/${sub.package.speedDownKbps}k` : '10M/10M';
-      const profileName = sub.package ? `dartbit-pkg-${sub.package.id.substring(0, 8)}` : 'dartbit-pppoe';
+      const profileName = sub.package ? `db-p-${sub.package.id.substring(0, 8)}` : 'dartbit-pppoe';
       const expired = sub.expiresAt && sub.expiresAt <= now;
       const disabled = !sub.isActive || expired;
 
-      // Use locals to keep individual command lines short (RouterOS /import has ~200 char limit per line)
-      add(`:local pn "${profileName}"; :local un "${sub.username}"; :local pw "${sub.secret}"; :local cm "Dartbit:${sub.id}"`);
-      add(`:if ([:len [/ppp profile find name=\$pn]] = 0) do={ /ppp profile add name=\$pn local-address=10.10.10.1 remote-address=pppoe-pool rate-limit=${speed} comment="Dartbit Package" }`);
-      add(`:if ([:len [/ppp secret find name=\$un]] > 0) do={ /ppp secret set [find name=\$un] password=\$pw profile=\$pn disabled=${disabled ? 'yes' : 'no'} comment=\$cm } else={ /ppp secret add name=\$un password=\$pw profile=\$pn service=pppoe disabled=${disabled ? 'yes' : 'no'} comment=\$cm }`);
-
+      // Each line stays short — uses inline strings, no shared state needed.
+      // Profile line: ~150 chars
+      add(`:if ([:len [/ppp profile find name="${profileName}"]] = 0) do={ /ppp profile add name=${profileName} local-address=10.10.10.1 remote-address=pppoe-pool rate-limit=${speed} comment="Dartbit" }`);
+      // For long secret-add lines, split into separate find/set/add operations to avoid 200-char import limit
+      add(`:if ([:len [/ppp secret find name="${sub.username}"]] = 0) do={ /ppp secret add name="${sub.username}" password="${sub.secret}" profile=${profileName} service=pppoe comment="Dartbit:${sub.id}" }`);
+      add(`/ppp secret set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} comment="Dartbit:${sub.id}"`);
       if (expired) {
-        add(`:foreach a in=[/ppp active find name=\$un] do={ /ppp active remove \$a }`);
+        add(`:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove \$a }`);
       }
       // Note: per-subscriber expiry is enforced by the sync script (runs every 60s).
       // When expiresAt passes, sync will set disabled=yes on the next cycle.
@@ -544,17 +545,17 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     const hsUsers = subscribers.filter(s => s.service === 'HOTSPOT');
     for (const sub of hsUsers) {
       const speed = sub.package ? `${sub.package.speedUpKbps}k/${sub.package.speedDownKbps}k` : '5M/5M';
-      const profileName = sub.package ? `dartbit-hspkg-${sub.package.id.substring(0, 8)}` : 'dartbit-default';
+      const profileName = sub.package ? `db-h-${sub.package.id.substring(0, 8)}` : 'dartbit-default';
       const expired = sub.expiresAt && sub.expiresAt <= now;
       const disabled = !sub.isActive || expired;
 
-      // Use locals to keep individual lines short
-      add(`:local pn "${profileName}"; :local un "${sub.username}"; :local pw "${sub.secret}"; :local cm "Dartbit:${sub.id}"`);
-      add(`:if ([:len [/ip hotspot user profile find name=\$pn]] = 0) do={ /ip hotspot user profile add name=\$pn rate-limit=${speed} shared-users=1 mac-cookie-timeout=0s comment="Dartbit Package" }`);
-      add(`:if ([:len [/ip hotspot user find name=\$un]] > 0) do={ /ip hotspot user set [find name=\$un] password=\$pw profile=\$pn disabled=${disabled ? 'yes' : 'no'} comment=\$cm } else={ /ip hotspot user add name=\$un password=\$pw profile=\$pn disabled=${disabled ? 'yes' : 'no'} comment=\$cm }`);
-
+      // Profile: split add+set so each line is short
+      add(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} comment="Dartbit" }`);
+      add(`/ip hotspot user profile set [find name="${profileName}"] rate-limit=${speed} shared-users=1 mac-cookie-timeout=0s`);
+      add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] = 0) do={ /ip hotspot user add name="${sub.username}" password="${sub.secret}" profile=${profileName} comment="Dartbit:${sub.id}" }`);
+      add(`/ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} comment="Dartbit:${sub.id}"`);
       if (expired) {
-        add(`:foreach a in=[/ip hotspot active find user=\$un] do={ /ip hotspot active remove \$a }`);
+        add(`:foreach a in=[/ip hotspot active find user="${sub.username}"] do={ /ip hotspot active remove \$a }`);
       }
       // Note: per-subscriber expiry is enforced by the sync script (runs every 60s).
     }
@@ -606,7 +607,7 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     for (const v of vouchers) {
       if (v.package) {
         const pid = v.package.id.substring(0, 8);
-        const pname = `dartbit-vch-${pid}`;
+        const pname = `db-v-${pid}`;
         if (!profilesByPkg[pname]) {
           profilesByPkg[pname] = {
             name: pname,
@@ -616,29 +617,26 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       }
     }
     for (const prof of Object.values(profilesByPkg)) {
-      // Break the line up to stay under RouterOS's ~200 char import limit
-      add(`:local pn "${prof.name}"`);
-      add(`:if ([:len [/ip hotspot user profile find name=\$pn]] = 0) do={ /ip hotspot user profile add name=\$pn rate-limit=${prof.speed} shared-users=1 mac-cookie-timeout=0s comment="Dartbit voucher" }`);
+      add(`:if ([:len [/ip hotspot user profile find name="${prof.name}"]] = 0) do={ /ip hotspot user profile add name=${prof.name} comment="Dartbit" }`);
+      add(`/ip hotspot user profile set [find name="${prof.name}"] rate-limit=${prof.speed} shared-users=1 mac-cookie-timeout=0s`);
     }
     // Add each voucher as a hotspot user — username and password = code.
     // limit-uptime starts counting from first login (MikroTik behavior).
     add(`:log info "Dartbit: sync pushing ${vouchers.length} vouchers"`);
     for (const v of vouchers) {
-      const profileName = v.package ? `dartbit-vch-${v.package.id.substring(0, 8)}` : 'dartbit-default';
+      const profileName = v.package ? `db-v-${v.package.id.substring(0, 8)}` : 'dartbit-default';
       const sessionSec = v.durationMinutes * 60;
-      add(`:local vc "${v.code}"; :local pn "${profileName}"; :local cm "Dartbit-voucher:${v.id}"`);
-      add(`:if ([:len [/ip hotspot user find name=\$vc]] = 0) do={ /ip hotspot user add name=\$vc password=\$vc profile=\$pn limit-uptime=${sessionSec}s comment=\$cm }`);
+      const shortId = v.id.substring(0, 8);
+      add(`:if ([:len [/ip hotspot user find name="${v.code}"]] = 0) do={ /ip hotspot user add name=${v.code} password=${v.code} profile=${profileName} limit-uptime=${sessionSec}s comment="Dbv:${shortId}" }`);
     }
-    // Clean up voucher-users for vouchers that are no longer in our active list
-    // (deleted from DB, or fully expired beyond the cleanupBefore window).
+    // Clean up voucher-users for vouchers that are no longer in our active list.
+    // Comment format on router: "Dbv:<shortId>" — short to fit in 200-char line limit.
     if (vouchers.length > 0) {
-      const knownIdsArray = vouchers.map(v => `"Dartbit-voucher:${v.id}"`).join(';');
-      // Build a RouterOS array of known voucher comments, then check membership
-      add(`:local knownVoucherComments {${knownIdsArray}}`);
-      add(`:foreach u in=[/ip hotspot user find comment~"Dartbit-voucher:"] do={ :local c [/ip hotspot user get \$u comment]; :local keep false; :foreach kc in=\$knownVoucherComments do={ :if (\$c = \$kc) do={ :set keep true } }; :if (!\$keep) do={ :log info ("Dartbit: removing expired voucher user " . [/ip hotspot user get \$u name]); /ip hotspot user remove \$u } }`);
+      const knownIdsArray = vouchers.map(v => `"Dbv:${v.id.substring(0, 8)}"`).join(';');
+      add(`:local kvc {${knownIdsArray}}`);
+      add(`:foreach u in=[/ip hotspot user find comment~"Dbv:"] do={ :local c [/ip hotspot user get \$u comment]; :local k false; :foreach kc in=\$kvc do={ :if (\$c = \$kc) do={ :set k true } }; :if (!\$k) do={ /ip hotspot user remove \$u } }`);
     } else {
-      // No vouchers at all — clean up any orphaned voucher users
-      add(`:foreach u in=[/ip hotspot user find comment~"Dartbit-voucher:"] do={ /ip hotspot user remove $u }`);
+      add(`:foreach u in=[/ip hotspot user find comment~"Dbv:"] do={ /ip hotspot user remove \$u }`);
     }
 
     const knownIds = subscribers.map(s => `"Dartbit:${s.id}"`).join(';');

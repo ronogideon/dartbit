@@ -90,15 +90,17 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
       for (const r of targetRouters) {
         // Determine profile and speed for the package
         const pkg = packageId ? created[0]?.package : undefined;
-        const profileName = pkg ? `dartbit-vch-${pkg.id.substring(0, 8)}` : 'dartbit-default';
+        const profileName = pkg ? `db-v-${pkg.id.substring(0, 8)}` : 'dartbit-default';
         const speed = pkg ? `${pkg.speedUpKbps}k/${pkg.speedDownKbps}k` : '10M/10M';
         const sessionSec = durationMinutes * 60;
 
         const cmds: string[] = [];
-        cmds.push(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} rate-limit=${speed} shared-users=1 mac-cookie-timeout=0s comment="Dartbit voucher profile" }`);
+        cmds.push(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} comment="Dartbit" }`);
+        cmds.push(`/ip hotspot user profile set [find name="${profileName}"] rate-limit=${speed} shared-users=1 mac-cookie-timeout=0s`);
         for (const v of created) {
+          const shortId = v.id.substring(0, 8);
           // Add each voucher as a hotspot user; limit-uptime starts counting on first login.
-          cmds.push(`:if ([:len [/ip hotspot user find name="${v.code}"]] = 0) do={ /ip hotspot user add name=${v.code} password=${v.code} profile=${profileName} limit-uptime=${sessionSec}s comment="Dartbit-voucher:${v.id}" }`);
+          cmds.push(`:if ([:len [/ip hotspot user find name="${v.code}"]] = 0) do={ /ip hotspot user add name=${v.code} password=${v.code} profile=${profileName} limit-uptime=${sessionSec}s comment="Dbv:${shortId}" }`);
         }
         cmds.push(`:log info "Dartbit: pushed ${created.length} new vouchers to router"`);
         enqueueCommand(r.id, cmds.join('\n'));
