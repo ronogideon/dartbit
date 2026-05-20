@@ -538,11 +538,10 @@ router.get('/sync-script', async (req: Request, res: Response) => {
         const { date, time } = rosDate(sub.expiresAt);
         const schedName = `dartbit-exp-${sub.id.substring(0, 8)}`;
         const scriptName = `dartbit-exp-script-${sub.id.substring(0, 8)}`;
-        // Create the expiry script first using source={...} brace form (proper way to embed multi-statement code).
-        // The :foreach inner {...} works inside source={...} because braces are balanced.
+        // Expiry script body MUST be flat (no nested {} braces) — RouterOS source={} doesn't handle them.
+        // We disable the secret + remove any active session. /ppp active remove finds by name directly.
         add(`:if ([:len [/system script find name="${scriptName}"]] > 0) do={ /system script remove [find name="${scriptName}"] }`);
-        add(`/system script add name=${scriptName} policy=read,write source={/ppp secret disable [find name="${sub.username}"]; :foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove \$a }; :log info "Dartbit: Auto-expired ${sub.username}"}`);
-        // Scheduler calls the script by name (simple, no nested braces)
+        add(`/system script add name=${scriptName} policy=read,write source={/ppp secret disable [find name="${sub.username}"]; /ppp active remove [find name="${sub.username}"]; :log info "Dartbit: Auto-expired ${sub.username}"}`);
         add(`/system scheduler add name=${schedName} start-date=${date} start-time=${time} interval=0 on-event="/system script run ${scriptName}" comment="Dartbit-expiry:${sub.id}"`);
       }
     }
@@ -565,7 +564,7 @@ router.get('/sync-script', async (req: Request, res: Response) => {
         const schedName = `dartbit-exp-${sub.id.substring(0, 8)}`;
         const scriptName = `dartbit-exp-script-${sub.id.substring(0, 8)}`;
         add(`:if ([:len [/system script find name="${scriptName}"]] > 0) do={ /system script remove [find name="${scriptName}"] }`);
-        add(`/system script add name=${scriptName} policy=read,write source={/ip hotspot user disable [find name="${sub.username}"]; :foreach a in=[/ip hotspot active find user="${sub.username}"] do={ /ip hotspot active remove \$a }; :log info "Dartbit: Auto-expired ${sub.username}"}`);
+        add(`/system script add name=${scriptName} policy=read,write source={/ip hotspot user disable [find name="${sub.username}"]; /ip hotspot active remove [find user="${sub.username}"]; :log info "Dartbit: Auto-expired ${sub.username}"}`);
         add(`/system scheduler add name=${schedName} start-date=${date} start-time=${time} interval=0 on-event="/system script run ${scriptName}" comment="Dartbit-expiry:${sub.id}"`);
       }
     }
