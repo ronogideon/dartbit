@@ -2,7 +2,7 @@
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getSettings, updateSettings, getBillingCurrent, getBillingHistory, setBillingDueDate } from '@/lib/api';
+import { getSettings, updateSettings, getBillingCurrent, getBillingHistory, setBillingDueDate, billingCheckout } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import toast from 'react-hot-toast';
 import { Settings as SettingsIcon, CreditCard, Users } from 'lucide-react';
@@ -131,6 +131,17 @@ function BillingTab() {
   const { data, isLoading } = useQuery({ queryKey: ['billing-current'], queryFn: getBillingCurrent });
   const { data: history } = useQuery({ queryKey: ['billing-history'], queryFn: getBillingHistory });
 
+  const checkoutMut = useMutation({
+    mutationFn: billingCheckout,
+    onSuccess: (res: { authorizationUrl: string }) => {
+      // Redirect the browser to Paystack's hosted checkout
+      window.location.href = res.authorizationUrl;
+    },
+    onError: (e: { response?: { data?: { error?: string } } }) => {
+      toast.error(e?.response?.data?.error || 'Could not start checkout');
+    },
+  });
+
   const dueDateMut = useMutation({
     mutationFn: setBillingDueDate,
     onSuccess: () => {
@@ -179,9 +190,10 @@ function BillingTab() {
           </div>
           <button
             className="btn-primary"
-            onClick={() => toast('Paystack checkout coming in the next update', { icon: '⏳' })}
+            onClick={() => checkoutMut.mutate()}
+            disabled={checkoutMut.isPending}
           >
-            Pay Now
+            {checkoutMut.isPending ? 'Starting…' : 'Pay Now'}
           </button>
         </div>
       </div>

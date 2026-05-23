@@ -64,6 +64,8 @@ export const updateSettings = (data: unknown) => api.put('/settings', data).then
 export const getBillingCurrent = () => api.get('/billing/current').then((r) => r.data.data);
 export const getBillingHistory = () => api.get('/billing/history').then((r) => r.data.data);
 export const setBillingDueDate = (daysFromNow: number) => api.post('/billing/set-due-date', { daysFromNow }).then((r) => r.data.data);
+export const billingCheckout = () => api.post('/billing/checkout', {}).then((r) => r.data.data);
+export const billingVerify = (reference: string) => api.get(`/billing/verify/${reference}`).then((r) => r.data.data);
 
 export default api;
 

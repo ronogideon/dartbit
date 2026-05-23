@@ -1,13 +1,14 @@
 'use client';
 import { useEffect } from 'react';
-import { useRouter, usePathname } from 'next/navigation';
-import { useQuery } from '@tanstack/react-query';
+import { useRouter, usePathname, useSearchParams } from 'next/navigation';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/lib/auth';
-import { getTenantInfo } from '@/lib/api';
+import { getTenantInfo, billingVerify } from '@/lib/api';
 import Sidebar from '@/components/layout/Sidebar';
 import TrialBanner from '@/components/ui/TrialBanner';
 import PayNowBanner from '@/components/ui/PayNowBanner';
 import Paywall from '@/components/ui/Paywall';
+import toast from 'react-hot-toast';
 
 interface TenantInfo { billingStatus?: string; }
 
@@ -15,6 +16,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const qc = useQueryClient();
 
   useEffect(() => {
     if (!isLoading && !user) router.push('/auth/login');
@@ -26,6 +29,29 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     staleTime: 60000,
     enabled: !!user && user.role === 'TENANT_ADMIN',
   });
+
+  // Handle Paystack return (?verify=<ref>) at the layout level, so it works even
+  // when the paywall is active (an overdue tenant paying to regain access).
+  const verifyRef = searchParams.get('verify');
+  useEffect(() => {
+    if (!verifyRef || !user) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const result = await billingVerify(verifyRef);
+        if (cancelled) return;
+        if (result.paid || result.alreadyPaid) toast.success('Payment confirmed — thank you!');
+        else toast.error('Payment not completed.');
+        qc.invalidateQueries({ queryKey: ['billing-current'] });
+        qc.invalidateQueries({ queryKey: ['billing-history'] });
+        qc.invalidateQueries({ queryKey: ['tenant-info'] });
+        window.history.replaceState({}, '', '/settings?tab=billing');
+      } catch {
+        if (!cancelled) toast.error('Could not verify payment.');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [verifyRef, user, qc]);
 
   if (isLoading) return (
     <div className="flex items-center justify-center h-screen bg-gray-50 dark:bg-gray-950">

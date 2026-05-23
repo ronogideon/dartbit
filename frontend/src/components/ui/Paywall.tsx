@@ -1,6 +1,6 @@
 'use client';
-import { useQuery } from '@tanstack/react-query';
-import { getBillingCurrent } from '@/lib/api';
+import { useQuery, useMutation } from '@tanstack/react-query';
+import { getBillingCurrent, billingCheckout } from '@/lib/api';
 import { Lock, AlertTriangle } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -16,6 +16,11 @@ function fmtDate(d: string | null | undefined): string {
 // Replaces all app content until payment is confirmed.
 export default function Paywall() {
   const { data, isLoading } = useQuery({ queryKey: ['billing-current'], queryFn: getBillingCurrent });
+  const checkoutMut = useMutation({
+    mutationFn: billingCheckout,
+    onSuccess: (res: { authorizationUrl: string }) => { window.location.href = res.authorizationUrl; },
+    onError: (e: { response?: { data?: { error?: string } } }) => toast.error(e?.response?.data?.error || 'Could not start checkout'),
+  });
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex items-center justify-center p-4">
@@ -62,9 +67,10 @@ export default function Paywall() {
 
               <button
                 className="btn-primary w-full"
-                onClick={() => toast('Paystack checkout coming in the next update', { icon: '⏳' })}
+                onClick={() => checkoutMut.mutate()}
+                disabled={checkoutMut.isPending}
               >
-                Pay {fmtKES(data.breakdown.appliedCharge)} Now
+                {checkoutMut.isPending ? 'Starting…' : `Pay ${fmtKES(data.breakdown.appliedCharge)} Now`}
               </button>
             </>
           ) : (

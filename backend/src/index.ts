@@ -18,6 +18,7 @@ import signupRoutes from './routes/signup';
 import adminRoutes from './routes/admin';
 import voucherRoutes from './routes/vouchers';
 import billingRoutes from './routes/billing';
+import webhookRoutes from './routes/webhooks';
 import hotspotPublicRoutes from './routes/hotspotPublic';
 import hotspotHtmlRoutes from './routes/hotspotHtml';
 
@@ -64,10 +65,14 @@ app.use(cors({
   credentials: true,
 }));
 
+// Webhooks must be registered BEFORE express.json() so the raw body is preserved
+// for Paystack's HMAC signature verification.
+app.use('/webhooks', webhookRoutes);
+
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.6.1', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.6.1', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.6.2', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.6.2', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -89,7 +94,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.6.1 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.6.2 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
