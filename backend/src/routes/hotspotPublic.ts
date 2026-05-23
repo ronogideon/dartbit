@@ -168,7 +168,7 @@ router.post('/purchase', async (req: Request, res: Response) => {
     const sessionSec = pkg.validityMinutes * 60;
     const commands = [
       `:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} comment="Dartbit" }`,
-      `/ip hotspot user profile set [find name="${profileName}"] rate-limit=${speed} shared-users=1 mac-cookie-timeout=0s`,
+      `/ip hotspot user profile set [find name="${profileName}"] rate-limit=${speed} shared-users=1`,
       `:if ([:len [/ip hotspot user find name="${code}"]] = 0) do={ /ip hotspot user add name=${code} password=${code} profile=${profileName} limit-uptime=${sessionSec}s comment="Dbv:${voucher.id.substring(0, 8)}" }`,
       `:log info "Dartbit: purchased voucher ${code} for package ${pkg.name}"`,
     ];

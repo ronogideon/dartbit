@@ -137,7 +137,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     // Always sync the profile settings (idempotent — no disruption)
     add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=http-chap,http-pap http-cookie-lifetime=0s use-radius=no`);
     // User profile — strict one-device, no MAC sharing
-    add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 mac-cookie-timeout=0s address-pool=dhcp-pool }`);
+    add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 address-pool=dhcp-pool }`);
     // Hotspot itself on the bridge
     add(`:if ([:len [/ip hotspot find name="dartbit-hotspot"]] = 0) do={ /ip hotspot add name=dartbit-hotspot interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no }`);
     // Sync hotspot settings — idempotent, RouterOS handles no-op gracefully
@@ -277,7 +277,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add('# 10. Subscriber sync');
     add(`:foreach s in=[/system scheduler find comment="Dartbit sub sync"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-sync"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-sync policy=read,write,test source={/tool fetch url="${backendUrl}/router/sync-script?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-sync.rsc; :delay 1s; /import file-name=dartbit-sync.rsc}`);
+    add(`/system script add name=dartbit-sync policy=read,write,test source={/tool fetch url="${backendUrl}/router/sync-script?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-sync.rsc; :delay 1s; :local f [/file get dartbit-sync.rsc contents]; [:parse \$f]}`);
     add(`/system scheduler add name=dartbit-sync interval=60s on-event="/system script run dartbit-sync" comment="Dartbit sub sync"`);
     add('');
 
@@ -285,7 +285,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add('# 11. Remote commands');
     add(`:foreach s in=[/system scheduler find comment="Dartbit cmd"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-cmd"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-cmd policy=read,write,test,reboot source={/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ /import file-name=dartbit-cmd.rsc; :delay 1s; /file remove [find name="dartbit-cmd.rsc"] }}`);
+    add(`/system script add name=dartbit-cmd policy=read,write,test,reboot source={/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ :local f [/file get dartbit-cmd.rsc contents]; [:parse \$f]; /file remove [find name="dartbit-cmd.rsc"] }}`);
     add(`/system scheduler add name=dartbit-cmd interval=5s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`);
     add('');
 
@@ -534,7 +534,7 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       add(`:if ([:len [/ppp profile find name="${profileName}"]] = 0) do={ /ppp profile add name=${profileName} local-address=10.10.10.1 remote-address=pppoe-pool rate-limit=${speed} comment="Dartbit" }`);
       // For long secret-add lines, split into separate find/set/add operations to avoid 200-char import limit
       add(`:if ([:len [/ppp secret find name="${sub.username}"]] = 0) do={ /ppp secret add name="${sub.username}" password="${sub.secret}" profile=${profileName} service=pppoe comment="Dartbit:${sub.id}" }`);
-      add(`/ppp secret set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} comment="Dartbit:${sub.id}"`);
+      add(`:if ([:len [/ppp secret find name="${sub.username}"]] > 0) do={ /ppp secret set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} }`);
       if (expired) {
         add(`:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove \$a }`);
       }
@@ -551,9 +551,9 @@ router.get('/sync-script', async (req: Request, res: Response) => {
 
       // Profile: split add+set so each line is short
       add(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} comment="Dartbit" }`);
-      add(`/ip hotspot user profile set [find name="${profileName}"] rate-limit=${speed} shared-users=1 mac-cookie-timeout=0s`);
+      add(`/ip hotspot user profile set [find name="${profileName}"] rate-limit=${speed} shared-users=1`);
       add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] = 0) do={ /ip hotspot user add name="${sub.username}" password="${sub.secret}" profile=${profileName} comment="Dartbit:${sub.id}" }`);
-      add(`/ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} comment="Dartbit:${sub.id}"`);
+      add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] > 0) do={ /ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} }`);
       if (expired) {
         add(`:foreach a in=[/ip hotspot active find user="${sub.username}"] do={ /ip hotspot active remove \$a }`);
       }
@@ -618,7 +618,7 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     }
     for (const prof of Object.values(profilesByPkg)) {
       add(`:if ([:len [/ip hotspot user profile find name="${prof.name}"]] = 0) do={ /ip hotspot user profile add name=${prof.name} comment="Dartbit" }`);
-      add(`/ip hotspot user profile set [find name="${prof.name}"] rate-limit=${prof.speed} shared-users=1 mac-cookie-timeout=0s`);
+      add(`/ip hotspot user profile set [find name="${prof.name}"] rate-limit=${prof.speed} shared-users=1`);
     }
     // Add each voucher as a hotspot user — username and password = code.
     // limit-uptime starts counting from first login (MikroTik behavior).
