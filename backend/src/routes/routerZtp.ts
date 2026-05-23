@@ -550,7 +550,7 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       const disabled = !sub.isActive || expired;
 
       // Profile: split add+set so each line is short
-      add(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} comment="Dartbit" }`);
+      add(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} }`);
       add(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1`);
       add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] = 0) do={ /ip hotspot user add name="${sub.username}" password="${sub.secret}" profile=${profileName} comment="Dartbit:${sub.id}" }`);
       add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] > 0) do={ /ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} }`);
@@ -617,7 +617,7 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       }
     }
     for (const prof of Object.values(profilesByPkg)) {
-      add(`:if ([:len [/ip hotspot user profile find name="${prof.name}"]] = 0) do={ /ip hotspot user profile add name=${prof.name} comment="Dartbit" }`);
+      add(`:if ([:len [/ip hotspot user profile find name="${prof.name}"]] = 0) do={ /ip hotspot user profile add name=${prof.name} }`);
       add(`/ip hotspot user profile set [find name="${prof.name}"] rate-limit="${prof.speed}" shared-users=1`);
     }
     // Add each voucher as a hotspot user — username and password = code.

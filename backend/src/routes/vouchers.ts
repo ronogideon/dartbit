@@ -95,7 +95,7 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
         const sessionSec = durationMinutes * 60;
 
         const cmds: string[] = [];
-        cmds.push(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} comment="Dartbit" }`);
+        cmds.push(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} }`);
         cmds.push(`/ip hotspot user profile set [find name="${profileName}"] rate-limit=${speed} shared-users=1`);
         for (const v of created) {
           const shortId = v.id.slice(-8);
