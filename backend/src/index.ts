@@ -74,6 +74,26 @@ app.use(express.json());
 app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.6.2', status: 'running' }));
 app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.6.2', timestamp: new Date().toISOString() }));
 
+// TEMPORARY — returns this server's outbound (egress) IP, i.e. the IP Railway uses
+// when calling external APIs like Paystack. Use this to whitelist in Paystack.
+// Remove after you've grabbed the IP.
+app.get('/my-egress-ip', async (_req, res) => {
+  try {
+    const https = await import('https');
+    const services = ['https://api.ipify.org?format=json'];
+    https.get(services[0], (r) => {
+      let data = '';
+      r.on('data', (c) => (data += c));
+      r.on('end', () => {
+        try { res.json({ egressIp: JSON.parse(data).ip }); }
+        catch { res.json({ raw: data }); }
+      });
+    }).on('error', (e) => res.status(500).json({ error: e.message }));
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : 'failed' });
+  }
+});
+
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
 app.use('/admin', adminRoutes);
