@@ -17,6 +17,7 @@ import settingsRoutes from './routes/settings';
 import signupRoutes from './routes/signup';
 import adminRoutes from './routes/admin';
 import voucherRoutes from './routes/vouchers';
+import billingRoutes from './routes/billing';
 import hotspotPublicRoutes from './routes/hotspotPublic';
 import hotspotHtmlRoutes from './routes/hotspotHtml';
 
@@ -65,8 +66,8 @@ app.use(cors({
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.5.9', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.5.9', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.6.0', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.6.0', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -81,13 +82,14 @@ app.use('/online-sessions', onlineSessionRoutes);
 app.use('/tenants', tenantRoutes);
 app.use('/settings', settingsRoutes);
 app.use('/vouchers', voucherRoutes);
+app.use('/billing', billingRoutes);
 app.use('/hotspot', hotspotPublicRoutes);
 app.use('/hotspot-html', hotspotHtmlRoutes);
 
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.5.9 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.6.0 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
 });
@@ -316,6 +318,34 @@ async function patchDatabase() {
     await safeExec(prisma, 'SessionRecord sub idx', `CREATE INDEX IF NOT EXISTS "SessionRecord_tenantId_subscriberId_startedAt_idx" ON "SessionRecord"("tenantId","subscriberId","startedAt")`);
     await safeExec(prisma, 'SessionRecord user idx', `CREATE INDEX IF NOT EXISTS "SessionRecord_tenantId_username_startedAt_idx" ON "SessionRecord"("tenantId","username","startedAt")`);
     await safeExec(prisma, 'SessionRecord ended idx', `CREATE INDEX IF NOT EXISTS "SessionRecord_endedAt_idx" ON "SessionRecord"("endedAt")`);
+
+    // Tenant billing columns
+    await safeExec(prisma, 'Tenant.billingDueDate', `ALTER TABLE "Tenant" ADD COLUMN IF NOT EXISTS "billingDueDate" TIMESTAMP(3)`);
+    await safeExec(prisma, 'Tenant.billingStatus', `ALTER TABLE "Tenant" ADD COLUMN IF NOT EXISTS "billingStatus" TEXT NOT NULL DEFAULT 'CURRENT'`);
+
+    // TenantPayment table — platform billing history
+    await safeExec(prisma, 'TenantPayment table',
+      `CREATE TABLE IF NOT EXISTS "TenantPayment" (
+        "id" TEXT NOT NULL,
+        "tenantId" TEXT NOT NULL,
+        "amount" DOUBLE PRECISION NOT NULL,
+        "status" TEXT NOT NULL DEFAULT 'PENDING',
+        "paystackRef" TEXT,
+        "paystackUrl" TEXT,
+        "periodStart" TIMESTAMP(3) NOT NULL,
+        "periodEnd" TIMESTAMP(3) NOT NULL,
+        "dueDate" TIMESTAMP(3) NOT NULL,
+        "paidAt" TIMESTAMP(3),
+        "pppoeCount" INTEGER NOT NULL DEFAULT 0,
+        "pppoeCharge" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "hotspotIncome" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "hotspotCharge" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "TenantPayment_pkey" PRIMARY KEY ("id")
+      )`);
+    await safeExec(prisma, 'TenantPayment ref unique', `CREATE UNIQUE INDEX IF NOT EXISTS "TenantPayment_paystackRef_key" ON "TenantPayment"("paystackRef")`);
+    await safeExec(prisma, 'TenantPayment tenant idx', `CREATE INDEX IF NOT EXISTS "TenantPayment_tenantId_status_idx" ON "TenantPayment"("tenantId","status")`);
 
     console.log('✅ Database patch complete');
   } catch (err) {

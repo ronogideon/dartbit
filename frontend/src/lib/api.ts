@@ -61,6 +61,8 @@ export const deleteTenant = (id: string) => api.delete(`/tenants/${id}`).then((r
 
 export const getSettings = () => api.get('/settings').then((r) => r.data.data);
 export const updateSettings = (data: unknown) => api.put('/settings', data).then((r) => r.data.data);
+export const getBillingCurrent = () => api.get('/billing/current').then((r) => r.data.data);
+export const getBillingHistory = () => api.get('/billing/history').then((r) => r.data.data);
 
 export default api;
 

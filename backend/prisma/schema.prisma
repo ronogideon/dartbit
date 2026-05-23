@@ -54,6 +54,8 @@ model Tenant {
   isActive      Boolean      @default(true)
   status        TenantStatus @default(TRIAL)
   trialEndsAt   DateTime?
+  billingDueDate DateTime?
+  billingStatus String       @default("CURRENT") // CURRENT | DUE_SOON | OVERDUE | PAID
   users         User[]
   routers       MikrotikRouter[]
   subscribers   Subscriber[]
@@ -62,8 +64,34 @@ model Tenant {
   messages      Message[]
   settings      TenantSetting?
   vouchers      Voucher[]
+  tenantPayments TenantPayment[]
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
+}
+
+// Platform billing: a tenant's payment to the Dartbit platform (via Paystack).
+model TenantPayment {
+  id              String   @id @default(cuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  amount          Float                          // KES amount invoiced
+  status          String   @default("PENDING")   // PENDING | PAID | FAILED
+  paystackRef     String?  @unique               // Paystack transaction reference
+  paystackUrl     String?                        // checkout URL
+  periodStart     DateTime                        // billing period this covers
+  periodEnd       DateTime
+  dueDate         DateTime
+  paidAt          DateTime?
+  // Breakdown snapshot at invoice time
+  pppoeCount      Int      @default(0)
+  pppoeCharge     Float    @default(0)
+  hotspotIncome   Float    @default(0)
+  hotspotCharge   Float    @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([tenantId, status])
+  @@index([paystackRef])
 }
 
 model MikrotikRouter {
