@@ -11,6 +11,7 @@ datasource db {
 enum UserRole {
   SUPERADMIN
   TENANT_ADMIN
+  TENANT_VIEWER
 }
 
 enum ServiceType {
@@ -38,6 +39,7 @@ model User {
   password  String
   name      String
   role      UserRole
+  isActive  Boolean  @default(true)
   tenantId  String?
   tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: SetNull)
   createdAt DateTime @default(now())

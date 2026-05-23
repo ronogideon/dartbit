@@ -24,6 +24,9 @@ router.post('/login', async (req: Request, res: Response) => {
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return sendError(res, 'Invalid credentials', 401);
 
+    // Deactivated system users cannot log in
+    if (user.isActive === false) return sendError(res, 'Your account has been deactivated. Contact your administrator.', 403);
+
     const token = signToken({ userId: user.id, role: user.role, tenantId: user.tenantId || undefined });
 
     sendSuccess(res, {

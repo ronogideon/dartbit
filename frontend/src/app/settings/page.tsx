@@ -2,10 +2,10 @@
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getSettings, updateSettings, getBillingCurrent, getBillingHistory, setBillingDueDate, billingCheckout } from '@/lib/api';
+import { getSettings, updateSettings, getBillingCurrent, getBillingHistory, billingCheckout, getSystemUsers, createSystemUser, updateSystemUser, resetSystemUserPassword, deleteSystemUser } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import toast from 'react-hot-toast';
-import { Settings as SettingsIcon, CreditCard, Users } from 'lucide-react';
+import { Settings as SettingsIcon, CreditCard, Users, Plus, Trash2, KeyRound, Copy, Check } from 'lucide-react';
 
 type Tab = 'general' | 'billing' | 'users';
 
@@ -142,16 +142,6 @@ function BillingTab() {
     },
   });
 
-  const dueDateMut = useMutation({
-    mutationFn: setBillingDueDate,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['billing-current'] });
-      qc.invalidateQueries({ queryKey: ['tenant-info'] });
-      toast.success('Due date updated');
-    },
-    onError: () => toast.error('Failed'),
-  });
-
   if (isLoading) return <div className="text-center py-8 text-gray-400">Loading...</div>;
   if (!data) return <div className="text-center py-8 text-red-500">Failed to load billing</div>;
 
@@ -188,13 +178,22 @@ function BillingTab() {
           <div className="text-sm text-gray-500">
             Due date: <span className="font-medium text-gray-700 dark:text-gray-200">{fmtDate(data.tenant.billingDueDate)}</span>
           </div>
-          <button
-            className="btn-primary"
-            onClick={() => checkoutMut.mutate()}
-            disabled={checkoutMut.isPending}
-          >
-            {checkoutMut.isPending ? 'Starting…' : 'Pay Now'}
-          </button>
+          {data.canPayNow ? (
+            <button
+              className="btn-primary"
+              onClick={() => checkoutMut.mutate()}
+              disabled={checkoutMut.isPending}
+            >
+              {checkoutMut.isPending ? 'Starting…' : 'Pay Now'}
+            </button>
+          ) : (
+            <div className="text-right">
+              <button className="btn-primary opacity-50 cursor-not-allowed" disabled>Pay Now</button>
+              <div className="text-xs text-gray-400 mt-1">
+                Opens {fmtDate(data.windowOpensAt)}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -235,16 +234,6 @@ function BillingTab() {
           </div>
         )}
       </div>
-      {/* Test controls — simulate due dates until Paystack flow lands in the next update */}
-      <div className="card p-6 border-dashed border-2 border-gray-200 dark:border-gray-700">
-        <h2 className="font-semibold mb-1 text-sm text-gray-500">Testing Controls</h2>
-        <p className="text-xs text-gray-400 mb-3">Simulate billing states (temporary — removed once Paystack is live).</p>
-        <div className="flex flex-wrap gap-2">
-          <button onClick={() => dueDateMut.mutate(10)} disabled={dueDateMut.isPending} className="btn-secondary text-xs">Due in 10 days (Current)</button>
-          <button onClick={() => dueDateMut.mutate(3)} disabled={dueDateMut.isPending} className="btn-secondary text-xs">Due in 3 days (Banner)</button>
-          <button onClick={() => dueDateMut.mutate(-1)} disabled={dueDateMut.isPending} className="btn-secondary text-xs">Overdue (Paywall)</button>
-        </div>
-      </div>
     </div>
   );
 }
@@ -260,14 +249,173 @@ function Row({ label, value, muted }: { label: string; value: string; muted?: bo
 
 /* ---------------- System Users ---------------- */
 function UsersTab() {
+  const qc = useQueryClient();
+  const { data: users, isLoading } = useQuery({ queryKey: ['system-users'], queryFn: getSystemUsers });
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState({ name: '', email: '', role: 'TENANT_VIEWER' });
+  const [tempPassword, setTempPassword] = useState<{ email: string; password: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ['system-users'] });
+
+  const createMut = useMutation({
+    mutationFn: createSystemUser,
+    onSuccess: (res: { user: { email: string }; tempPassword: string }) => {
+      invalidate();
+      setShowAdd(false);
+      setForm({ name: '', email: '', role: 'TENANT_VIEWER' });
+      setTempPassword({ email: res.user.email, password: res.tempPassword });
+    },
+    onError: (e: { response?: { data?: { error?: string } } }) => toast.error(e?.response?.data?.error || 'Failed to create user'),
+  });
+
+  const updateMut = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: { role?: string; isActive?: boolean } }) => updateSystemUser(id, data),
+    onSuccess: () => { invalidate(); toast.success('Updated'); },
+    onError: (e: { response?: { data?: { error?: string } } }) => toast.error(e?.response?.data?.error || 'Failed'),
+  });
+
+  const resetMut = useMutation({
+    mutationFn: resetSystemUserPassword,
+    onSuccess: (res: { tempPassword: string }, id: string) => {
+      const u = (users || []).find((x: { id: string }) => x.id === id);
+      setTempPassword({ email: u?.email || 'user', password: res.tempPassword });
+    },
+    onError: () => toast.error('Failed to reset password'),
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: deleteSystemUser,
+    onSuccess: () => { invalidate(); toast.success('User removed'); },
+    onError: (e: { response?: { data?: { error?: string } } }) => toast.error(e?.response?.data?.error || 'Failed'),
+  });
+
+  const copyPassword = () => {
+    if (!tempPassword) return;
+    navigator.clipboard.writeText(tempPassword.password);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   return (
-    <div className="max-w-2xl">
+    <div className="max-w-3xl space-y-6">
       <div className="card p-6">
-        <h2 className="font-semibold mb-2">System Users</h2>
-        <p className="text-sm text-gray-500">
-          Manage additional users who can access this ISP account. User management is coming in the next update.
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="font-semibold">System Users</h2>
+            <p className="text-sm text-gray-500">Manage who can access this ISP account.</p>
+          </div>
+          <button onClick={() => setShowAdd(true)} className="btn-primary flex items-center gap-1.5 text-sm">
+            <Plus size={16} /> Add User
+          </button>
+        </div>
+
+        {isLoading ? (
+          <div className="text-center py-6 text-gray-400">Loading...</div>
+        ) : !users || users.length === 0 ? (
+          <div className="text-center py-6 text-gray-400">No users yet</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-gray-500 border-b border-gray-200 dark:border-gray-800">
+                  <th className="py-2 font-medium">Name</th>
+                  <th className="py-2 font-medium">Email</th>
+                  <th className="py-2 font-medium">Role</th>
+                  <th className="py-2 font-medium">Status</th>
+                  <th className="py-2 font-medium text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((u: { id: string; name: string; email: string; role: string; isActive: boolean }) => (
+                  <tr key={u.id} className="border-b border-gray-100 dark:border-gray-800/50">
+                    <td className="py-3 font-medium">{u.name}</td>
+                    <td className="py-3 text-gray-500">{u.email}</td>
+                    <td className="py-3">
+                      <select
+                        value={u.role}
+                        onChange={(e) => updateMut.mutate({ id: u.id, data: { role: e.target.value } })}
+                        className="bg-transparent border border-gray-200 dark:border-gray-700 rounded px-2 py-1 text-xs"
+                      >
+                        <option value="TENANT_ADMIN">Admin</option>
+                        <option value="TENANT_VIEWER">Viewer</option>
+                      </select>
+                    </td>
+                    <td className="py-3">
+                      <button
+                        onClick={() => updateMut.mutate({ id: u.id, data: { isActive: !u.isActive } })}
+                        className={u.isActive ? 'badge-green' : 'badge-red'}
+                      >
+                        {u.isActive ? 'Active' : 'Inactive'}
+                      </button>
+                    </td>
+                    <td className="py-3">
+                      <div className="flex items-center justify-end gap-2">
+                        <button onClick={() => resetMut.mutate(u.id)} title="Reset password" className="p-1.5 text-gray-400 hover:text-blue-600">
+                          <KeyRound size={15} />
+                        </button>
+                        <button onClick={() => { if (confirm(`Remove ${u.name}?`)) deleteMut.mutate(u.id); }} title="Remove user" className="p-1.5 text-gray-400 hover:text-red-600">
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="text-xs text-gray-400 mt-4">
+          <span className="font-medium">Admin</span> has full access. <span className="font-medium">Viewer</span> can see data but not make changes.
         </p>
       </div>
+
+      {/* Add user inline form */}
+      {showAdd && (
+        <div className="card p-6">
+          <h3 className="font-semibold mb-4">Add System User</h3>
+          <div className="space-y-3">
+            <div>
+              <label className="label">Full Name</label>
+              <input className="input" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Jane Doe" />
+            </div>
+            <div>
+              <label className="label">Email</label>
+              <input className="input" type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="jane@example.com" />
+            </div>
+            <div>
+              <label className="label">Role</label>
+              <select className="input" value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value }))}>
+                <option value="TENANT_VIEWER">Viewer (read-only)</option>
+                <option value="TENANT_ADMIN">Admin (full access)</option>
+              </select>
+            </div>
+          </div>
+          <div className="flex gap-2 mt-4">
+            <button onClick={() => createMut.mutate(form)} disabled={createMut.isPending || !form.name || !form.email} className="btn-primary">
+              {createMut.isPending ? 'Creating…' : 'Create User'}
+            </button>
+            <button onClick={() => setShowAdd(false)} className="btn-secondary">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Temp password reveal (shown once) */}
+      {tempPassword && (
+        <div className="card p-6 border-2 border-blue-200 dark:border-blue-800">
+          <h3 className="font-semibold mb-1">Temporary Password</h3>
+          <p className="text-sm text-gray-500 mb-3">
+            Share this with <span className="font-medium">{tempPassword.email}</span>. It won&apos;t be shown again.
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 bg-gray-100 dark:bg-gray-800 px-3 py-2 rounded font-mono text-sm">{tempPassword.password}</code>
+            <button onClick={copyPassword} className="btn-secondary flex items-center gap-1.5">
+              {copied ? <><Check size={15} /> Copied</> : <><Copy size={15} /> Copy</>}
+            </button>
+          </div>
+          <button onClick={() => setTempPassword(null)} className="text-sm text-gray-400 hover:text-gray-600 mt-3">Done</button>
+        </div>
+      )}
     </div>
   );
 }

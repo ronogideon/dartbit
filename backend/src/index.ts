@@ -18,6 +18,7 @@ import signupRoutes from './routes/signup';
 import adminRoutes from './routes/admin';
 import voucherRoutes from './routes/vouchers';
 import billingRoutes from './routes/billing';
+import usersRoutes from './routes/users';
 import webhookRoutes from './routes/webhooks';
 import hotspotPublicRoutes from './routes/hotspotPublic';
 import hotspotHtmlRoutes from './routes/hotspotHtml';
@@ -71,28 +72,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.6.2', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.6.2', timestamp: new Date().toISOString() }));
-
-// TEMPORARY — returns this server's outbound (egress) IP, i.e. the IP Railway uses
-// when calling external APIs like Paystack. Use this to whitelist in Paystack.
-// Remove after you've grabbed the IP.
-app.get('/my-egress-ip', async (_req, res) => {
-  try {
-    const https = await import('https');
-    const services = ['https://api.ipify.org?format=json'];
-    https.get(services[0], (r) => {
-      let data = '';
-      r.on('data', (c) => (data += c));
-      r.on('end', () => {
-        try { res.json({ egressIp: JSON.parse(data).ip }); }
-        catch { res.json({ raw: data }); }
-      });
-    }).on('error', (e) => res.status(500).json({ error: e.message }));
-  } catch (e) {
-    res.status(500).json({ error: e instanceof Error ? e.message : 'failed' });
-  }
-});
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.6.3', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.6.3', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -108,13 +89,14 @@ app.use('/tenants', tenantRoutes);
 app.use('/settings', settingsRoutes);
 app.use('/vouchers', voucherRoutes);
 app.use('/billing', billingRoutes);
+app.use('/users', usersRoutes);
 app.use('/hotspot', hotspotPublicRoutes);
 app.use('/hotspot-html', hotspotHtmlRoutes);
 
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.6.2 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.6.3 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -410,6 +392,10 @@ async function patchDatabase() {
       )`);
     await safeExec(prisma, 'TenantPayment ref unique', `CREATE UNIQUE INDEX IF NOT EXISTS "TenantPayment_paystackRef_key" ON "TenantPayment"("paystackRef")`);
     await safeExec(prisma, 'TenantPayment tenant idx', `CREATE INDEX IF NOT EXISTS "TenantPayment_tenantId_status_idx" ON "TenantPayment"("tenantId","status")`);
+
+    // System users: add TENANT_VIEWER enum value + User.isActive
+    await safeExec(prisma, 'UserRole TENANT_VIEWER', `ALTER TYPE "UserRole" ADD VALUE IF NOT EXISTS 'TENANT_VIEWER'`);
+    await safeExec(prisma, 'User.isActive', `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "isActive" BOOLEAN NOT NULL DEFAULT true`);
 
     console.log('✅ Database patch complete');
   } catch (err) {

@@ -63,9 +63,13 @@ export const getSettings = () => api.get('/settings').then((r) => r.data.data);
 export const updateSettings = (data: unknown) => api.put('/settings', data).then((r) => r.data.data);
 export const getBillingCurrent = () => api.get('/billing/current').then((r) => r.data.data);
 export const getBillingHistory = () => api.get('/billing/history').then((r) => r.data.data);
-export const setBillingDueDate = (daysFromNow: number) => api.post('/billing/set-due-date', { daysFromNow }).then((r) => r.data.data);
 export const billingCheckout = () => api.post('/billing/checkout', {}).then((r) => r.data.data);
 export const billingVerify = (reference: string) => api.get(`/billing/verify/${reference}`).then((r) => r.data.data);
+export const getSystemUsers = () => api.get('/users').then((r) => r.data.data);
+export const createSystemUser = (data: { name: string; email: string; role: string }) => api.post('/users', data).then((r) => r.data.data);
+export const updateSystemUser = (id: string, data: { name?: string; role?: string; isActive?: boolean }) => api.put(`/users/${id}`, data).then((r) => r.data.data);
+export const resetSystemUserPassword = (id: string) => api.post(`/users/${id}/reset-password`, {}).then((r) => r.data.data);
+export const deleteSystemUser = (id: string) => api.delete(`/users/${id}`).then((r) => r.data.data);
 
 export default api;
 

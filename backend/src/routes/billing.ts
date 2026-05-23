@@ -97,6 +97,18 @@ router.get('/current', authenticate, async (req: AuthRequest, res: Response) => 
       orderBy: { createdAt: 'desc' },
     });
 
+    // Payment window: open within 5 days before due date, or anytime once overdue.
+    // If no due date yet (fresh/trial), allow payment to start the first cycle.
+    const now = Date.now();
+    const FIVE_DAYS = 5 * 24 * 60 * 60 * 1000;
+    let canPayNow = true;
+    let windowOpensAt: Date | null = null;
+    if (tenant.billingDueDate) {
+      const due = tenant.billingDueDate.getTime();
+      windowOpensAt = new Date(due - FIVE_DAYS);
+      canPayNow = now >= due - FIVE_DAYS;
+    }
+
     sendSuccess(res, {
       tenant: {
         name: tenant.name,
@@ -107,6 +119,8 @@ router.get('/current', authenticate, async (req: AuthRequest, res: Response) => 
       },
       breakdown,
       pendingInvoice: pending,
+      canPayNow,
+      windowOpensAt,
     });
   } catch (err) {
     console.error('billing/current error:', err);
@@ -140,6 +154,24 @@ router.post('/checkout', authenticate, async (req: AuthRequest, res: Response) =
 
     const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
     if (!tenant) return sendError(res, 'Tenant not found', 404);
+
+    // Payment window: only allow paying within 5 days before the due date (or once overdue).
+    // This prevents paying months in advance and keeps the cycle predictable.
+    if (tenant.billingDueDate) {
+      const now = Date.now();
+      const due = tenant.billingDueDate.getTime();
+      const FIVE_DAYS = 5 * 24 * 60 * 60 * 1000;
+      const windowOpens = due - FIVE_DAYS;
+      if (now < windowOpens) {
+        const opensDate = new Date(windowOpens);
+        return sendError(
+          res,
+          `Payment opens 5 days before your due date (from ${opensDate.toDateString()}).`,
+          400
+        );
+      }
+    }
+
     const user = userId ? await prisma.user.findUnique({ where: { id: userId }, select: { email: true } }) : null;
     const userEmail = user?.email;
 
@@ -231,55 +263,30 @@ router.get('/verify/:reference', authenticate, async (req: AuthRequest, res: Res
   }
 });
 
-// Shared: mark an invoice paid and advance the tenant's billing cycle by one month.
-async function markInvoicePaid(invoiceId: string, tenantId: string, currentDue: Date) {
-  const nextDue = new Date(currentDue);
-  nextDue.setMonth(nextDue.getMonth() + 1);
-  // If the current due date is already in the past, base the next cycle off now.
-  if (nextDue.getTime() < Date.now()) {
-    const n = new Date();
-    nextDue.setTime(new Date(n.getFullYear(), n.getMonth() + 1, 1).getTime());
-  }
+// Shared: mark an invoice paid and advance the tenant's billing cycle.
+// Next due date = 30 days from the payment date (now). Also moves the tenant off
+// TRIAL (so the trial banner disappears) and clears trialEndsAt.
+async function markInvoicePaid(invoiceId: string, tenantId: string, _currentDue: Date) {
+  const paidAt = new Date();
+  const nextDue = new Date(paidAt.getTime() + 30 * 24 * 60 * 60 * 1000); // 30 days from payment
+
   await prisma.$transaction([
     prisma.tenantPayment.update({
       where: { id: invoiceId },
-      data: { status: 'PAID', paidAt: new Date() },
+      data: { status: 'PAID', paidAt },
     }),
     prisma.tenant.update({
       where: { id: tenantId },
-      data: { billingStatus: 'PAID', billingDueDate: nextDue },
+      data: {
+        billingStatus: 'PAID',
+        billingDueDate: nextDue,
+        status: 'ACTIVE',     // off the trial — trial banner will stop showing
+        trialEndsAt: null,    // clear trial end so TrialBanner returns null
+      },
     }),
   ]);
 }
 
 export { markInvoicePaid };
-
-// POST /billing/set-due-date — set/advance the billing due date for the current tenant.
-// Body: { daysFromNow: number }. Useful for testing the banner (5 days) and paywall (overdue).
-// In production this is driven by the monthly cycle on payment confirmation.
-router.post('/set-due-date', authenticate, async (req: AuthRequest, res: Response) => {
-  try {
-    const tenantId = req.user?.tenantId;
-    if (!tenantId) return sendError(res, 'No tenant', 400);
-    const days = Number(req.body?.daysFromNow);
-    if (!Number.isFinite(days)) return sendError(res, 'daysFromNow required', 400);
-
-    const due = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
-    const now = Date.now();
-    const FIVE_DAYS = 5 * 24 * 60 * 60 * 1000;
-    let status: string;
-    if (now > due.getTime()) status = 'OVERDUE';
-    else if (due.getTime() - now <= FIVE_DAYS) status = 'DUE_SOON';
-    else status = 'CURRENT';
-
-    const tenant = await prisma.tenant.update({
-      where: { id: tenantId },
-      data: { billingDueDate: due, billingStatus: status },
-    });
-    sendSuccess(res, { billingDueDate: tenant.billingDueDate, billingStatus: tenant.billingStatus });
-  } catch (err) {
-    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
-  }
-});
 
 export default router;
