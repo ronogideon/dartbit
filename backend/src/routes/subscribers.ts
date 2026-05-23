@@ -130,4 +130,71 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// GET /subscribers/:id/detail — full subscriber info + 30-day usage + session history
+router.get('/:id/detail', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const sub = await prisma.subscriber.findUnique({
+      where: { id: req.params.id },
+      include: { package: true, router: true },
+    });
+    if (!sub) return sendError(res, 'Subscriber not found', 404);
+    if (tenantId && sub.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
+
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    // Session history for the past 30 days (most recent first)
+    const records = await prisma.sessionRecord.findMany({
+      where: {
+        tenantId: sub.tenantId,
+        subscriberId: sub.id,
+        startedAt: { gte: thirtyDaysAgo },
+      },
+      orderBy: { startedAt: 'desc' },
+      take: 500,
+    });
+
+    // Totals over the 30-day window
+    let totalRx = 0n, totalTx = 0n;
+    const sessions = records.map(rec => {
+      totalRx += rec.rxBytes;
+      totalTx += rec.txBytes;
+      const durationMs = (rec.endedAt ?? rec.lastSeenAt).getTime() - rec.startedAt.getTime();
+      return {
+        id: rec.id,
+        startedAt: rec.startedAt,
+        endedAt: rec.endedAt,
+        active: !rec.endedAt,
+        durationSeconds: Math.max(0, Math.round(durationMs / 1000)),
+        ipAddress: rec.ipAddress,
+        downloadBytes: rec.rxBytes.toString(),
+        uploadBytes: rec.txBytes.toString(),
+      };
+    });
+
+    sendSuccess(res, {
+      subscriber: {
+        id: sub.id, username: sub.username, fullName: sub.fullName,
+        phone: sub.phone, email: sub.email, service: sub.service,
+        isActive: sub.isActive, expiresAt: sub.expiresAt,
+        lastOnlineAt: sub.lastOnlineAt, ipAddress: sub.ipAddress,
+        macAddress: sub.macAddress, createdAt: sub.createdAt,
+        package: sub.package ? { id: sub.package.id, name: sub.package.name,
+          speedUpKbps: sub.package.speedUpKbps, speedDownKbps: sub.package.speedDownKbps } : null,
+        router: sub.router ? { id: sub.router.id, name: sub.router.name } : null,
+      },
+      usage30d: {
+        totalDownloadBytes: totalRx.toString(),
+        totalUploadBytes: totalTx.toString(),
+        totalBytes: (totalRx + totalTx).toString(),
+        sessionCount: records.length,
+      },
+      sessions,
+    });
+  } catch (err) {
+    console.error('Subscriber detail error:', err);
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
 export default router;

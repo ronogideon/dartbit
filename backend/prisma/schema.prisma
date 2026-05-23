@@ -148,6 +148,7 @@ model Subscriber {
   tenant       Tenant          @relation(fields: [tenantId], references: [id])
   payments     Payment[]
   sessions     OnlineSession[]
+  sessionRecords SessionRecord[]
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
 
@@ -213,6 +214,33 @@ model OnlineSession {
   tenantId      String
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
+}
+
+// Persistent record of completed (and in-progress) sessions.
+// startedAt set when a username first appears; endedAt set when it disappears.
+// rxBytes/txBytes are the session totals (MikroTik counters at session end minus start).
+model SessionRecord {
+  id           String      @id @default(cuid())
+  username     String
+  service      ServiceType @default(PPPOE)
+  ipAddress    String?
+  startedAt    DateTime    @default(now())
+  endedAt      DateTime?
+  lastSeenAt   DateTime    @default(now())
+  rxBytes      BigInt      @default(0)   // download to client (bytes)
+  txBytes      BigInt      @default(0)   // upload from client (bytes)
+  startRx      BigInt      @default(0)   // counter snapshot at session start
+  startTx      BigInt      @default(0)
+  subscriberId String?
+  subscriber   Subscriber? @relation(fields: [subscriberId], references: [id], onDelete: SetNull)
+  routerId     String?
+  tenantId     String
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([tenantId, subscriberId, startedAt])
+  @@index([tenantId, username, startedAt])
+  @@index([endedAt])
 }
 
 model TenantSetting {

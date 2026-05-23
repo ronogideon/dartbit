@@ -5,6 +5,7 @@ import { getSubscribers, createSubscriber, updateSubscriber, deleteSubscriber, g
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
+import SubscriberDetail from '@/components/SubscriberDetail';
 import toast from 'react-hot-toast';
 import { Plus, Edit2, Trash2, Search } from 'lucide-react';
 
@@ -47,6 +48,7 @@ export default function SubscribersPage() {
   const qc = useQueryClient();
   const [search, setSearch] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
+  const [detailId, setDetailId] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [editing, setEditing] = useState<Subscriber | null>(null);
   const [form, setForm] = useState(emptyForm);
@@ -181,7 +183,11 @@ export default function SubscribersPage() {
                 const expired = s.expiresAt && new Date(s.expiresAt) < new Date();
                 return (
                   <tr key={s.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/30">
-                    <td className="table-td font-medium">{s.fullName}</td>
+                    <td className="table-td font-medium">
+                      <button onClick={() => setDetailId(s.id)} className="text-blue-600 hover:text-blue-700 hover:underline text-left">
+                        {s.fullName}
+                      </button>
+                    </td>
                     <td className="table-td text-gray-500">{s.username}</td>
                     <td className="table-td"><span className="badge-blue">{s.service}</span></td>
                     <td className="table-td">{s.package?.name || '-'}</td>
@@ -206,6 +212,8 @@ export default function SubscribersPage() {
           </table>
         </div>
       </div>
+
+      <SubscriberDetail subscriberId={detailId} onClose={() => setDetailId(null)} />
 
       <Modal isOpen={modalOpen} onClose={closeModal} title={editing ? 'Edit Subscriber' : 'Add Subscriber'}>
         <form onSubmit={handleSubmit} className="space-y-4">

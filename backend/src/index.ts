@@ -65,8 +65,8 @@ app.use(cors({
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.5.8', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.5.8', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.5.9', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.5.9', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -87,9 +87,40 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.5.8 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.5.9 running on port ${PORT}\n`);
   patchDatabase();
+  startSessionCleanup();
 });
+
+// Prune SessionRecords older than 30 days. Before deleting, ensure each subscriber's
+// lastOnlineAt reflects their most recent session (so we keep the "last seen" summary).
+function startSessionCleanup() {
+  const prisma = new PrismaClient();
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+  const run = async () => {
+    try {
+      const cutoff = new Date(Date.now() - THIRTY_DAYS_MS);
+      // Delete ended sessions that ended before the cutoff.
+      // (Subscriber.lastOnlineAt is already maintained live by the /sessions endpoint,
+      //  so the "last online" summary survives pruning.)
+      const result = await prisma.sessionRecord.deleteMany({
+        where: { endedAt: { not: null, lt: cutoff } },
+      });
+      if (result.count > 0) console.log(`🧹 Pruned ${result.count} sessions older than 30 days`);
+      // Also finalize zombie sessions: started but never ended and not seen in 10 minutes
+      // (e.g. backend restarted and lost the in-memory active map).
+      const zombieCutoff = new Date(Date.now() - 10 * 60 * 1000);
+      await prisma.sessionRecord.updateMany({
+        where: { endedAt: null, lastSeenAt: { lt: zombieCutoff } },
+        data: { endedAt: zombieCutoff },
+      });
+    } catch (err) {
+      console.error('Session cleanup error:', err instanceof Error ? err.message : err);
+    }
+  };
+  run();
+  setInterval(run, 60 * 60 * 1000); // hourly
+}
 
 server.on('error', (err) => {
   console.error('Server error:', err);
@@ -260,6 +291,31 @@ async function patchDatabase() {
     await safeExec(prisma, 'Voucher.code unique', `CREATE UNIQUE INDEX IF NOT EXISTS "Voucher_code_key" ON "Voucher"("code")`);
     await safeExec(prisma, 'Voucher tenant idx', `CREATE INDEX IF NOT EXISTS "Voucher_tenantId_isUsed_idx" ON "Voucher"("tenantId","isUsed")`);
     await safeExec(prisma, 'Voucher batch idx', `CREATE INDEX IF NOT EXISTS "Voucher_batchId_idx" ON "Voucher"("batchId")`);
+
+    // SessionRecord table — persistent session history
+    await safeExec(prisma, 'SessionRecord table',
+      `CREATE TABLE IF NOT EXISTS "SessionRecord" (
+        "id" TEXT NOT NULL,
+        "username" TEXT NOT NULL,
+        "service" "ServiceType" NOT NULL DEFAULT 'PPPOE',
+        "ipAddress" TEXT,
+        "startedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "endedAt" TIMESTAMP(3),
+        "lastSeenAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "rxBytes" BIGINT NOT NULL DEFAULT 0,
+        "txBytes" BIGINT NOT NULL DEFAULT 0,
+        "startRx" BIGINT NOT NULL DEFAULT 0,
+        "startTx" BIGINT NOT NULL DEFAULT 0,
+        "subscriberId" TEXT,
+        "routerId" TEXT,
+        "tenantId" TEXT NOT NULL,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "SessionRecord_pkey" PRIMARY KEY ("id")
+      )`);
+    await safeExec(prisma, 'SessionRecord sub idx', `CREATE INDEX IF NOT EXISTS "SessionRecord_tenantId_subscriberId_startedAt_idx" ON "SessionRecord"("tenantId","subscriberId","startedAt")`);
+    await safeExec(prisma, 'SessionRecord user idx', `CREATE INDEX IF NOT EXISTS "SessionRecord_tenantId_username_startedAt_idx" ON "SessionRecord"("tenantId","username","startedAt")`);
+    await safeExec(prisma, 'SessionRecord ended idx', `CREATE INDEX IF NOT EXISTS "SessionRecord_endedAt_idx" ON "SessionRecord"("endedAt")`);
 
     console.log('✅ Database patch complete');
   } catch (err) {

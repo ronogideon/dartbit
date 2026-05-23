@@ -293,7 +293,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add('# 12. Active session reporter');
     add(`:foreach s in=[/system scheduler find comment="Dartbit session sync"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-sessions"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . ","); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|0|0,"); }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
+    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . ","); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :local bi 0; :local bo 0; :do { :set bi [/ip hotspot active get \$a bytes-in]; :set bo [/ip hotspot active get \$a bytes-out]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$bi . "|" . \$bo . ","); }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
     add(`/system scheduler add name=dartbit-sessions interval=5s on-event="/system script run dartbit-sessions" comment="Dartbit session sync"`);
     add('');
 
@@ -386,6 +386,22 @@ router.all('/interfaces', async (req: Request, res: Response) => {
 // In-memory traffic baseline for bandwidth deltas
 const lastTrafficReading: Record<string, { rx: number; tx: number; at: number }> = {};
 
+// In-memory map of currently active sessions, keyed by `${routerId}:${username}`.
+// Tracks the SessionRecord id, latest byte counters, and last-seen time.
+// Used to detect session start (new key) and end (key missing from a poll).
+interface ActiveSession {
+  recordId: string;
+  service: 'PPPOE' | 'HOTSPOT' | 'STATIC';
+  startRx: number;
+  startTx: number;
+  lastRx: number;
+  lastTx: number;
+  lastSeen: number;
+  ipAddress: string;
+  subscriberId?: string;
+}
+const activeSessions: Record<string, Record<string, ActiveSession>> = {}; // routerId -> username -> session
+
 router.all('/sessions', async (req: Request, res: Response) => {
   try {
     const apiKey = String(req.query.apiKey || req.body?.apiKey || '');
@@ -455,14 +471,14 @@ router.all('/sessions', async (req: Request, res: Response) => {
       const usernames = sessions.map(s => s.username);
       const subs = await prisma.subscriber.findMany({
         where: { tenantId: r.tenantId, username: { in: usernames } },
-        select: { id: true, username: true },
+        select: { id: true, username: true, service: true },
       });
-      const subByUsername: Record<string, string> = {};
-      for (const s of subs) subByUsername[s.username] = s.id;
+      const subByUsername: Record<string, { id: string; service: string }> = {};
+      for (const s of subs) subByUsername[s.username] = { id: s.id, service: s.service };
 
       const sessionsWithIds = sessions.map(s => ({
         ...s,
-        subscriberId: subByUsername[s.username] || undefined,
+        subscriberId: subByUsername[s.username]?.id || undefined,
       }));
 
       if (sessionsWithIds.length > 0) {
@@ -475,6 +491,12 @@ router.all('/sessions', async (req: Request, res: Response) => {
           });
         }
       }
+
+      // === Persistent session history (SessionRecord) ===
+      await recordSessionHistory(r.id, r.tenantId, sessions, subByUsername, now);
+    } else {
+      // Empty poll = no active sessions. End all currently-tracked sessions for this router.
+      await recordSessionHistory(r.id, r.tenantId, [], {}, Date.now());
     }
 
     res.json({ ok: true });
@@ -483,6 +505,102 @@ router.all('/sessions', async (req: Request, res: Response) => {
     sendError(res, 'Failed', 500);
   }
 });
+
+// Detects session starts (username newly present) and ends (username gone),
+// maintaining persistent SessionRecord rows with byte totals.
+async function recordSessionHistory(
+  routerId: string,
+  tenantId: string,
+  sessions: Array<{ username: string; ipAddress: string; uptime?: string }>,
+  subByUsername: Record<string, { id: string; service: string }>,
+  now: number,
+) {
+  if (!activeSessions[routerId]) activeSessions[routerId] = {};
+  const tracked = activeSessions[routerId];
+  const seenNow = new Set<string>();
+
+  for (const s of sessions) {
+    if (!s.username) continue;
+    seenNow.add(s.username);
+    const key = `${routerId}:${s.username}`;
+    const reading = lastTrafficReading[key]; // { rx, tx, at } — cumulative counters
+    const rx = reading?.rx ?? 0;
+    const tx = reading?.tx ?? 0;
+    const sub = subByUsername[s.username];
+    const service = (sub?.service as 'PPPOE' | 'HOTSPOT' | 'STATIC') || 'HOTSPOT';
+
+    const existing = tracked[s.username];
+    if (!existing) {
+      // New session — create a SessionRecord
+      try {
+        const rec = await prisma.sessionRecord.create({
+          data: {
+            username: s.username,
+            service,
+            ipAddress: s.ipAddress || null,
+            startedAt: new Date(now),
+            lastSeenAt: new Date(now),
+            startRx: BigInt(rx),
+            startTx: BigInt(tx),
+            rxBytes: BigInt(0),
+            txBytes: BigInt(0),
+            subscriberId: sub?.id || null,
+            routerId,
+            tenantId,
+          },
+        });
+        tracked[s.username] = {
+          recordId: rec.id, service,
+          startRx: rx, startTx: tx, lastRx: rx, lastTx: tx,
+          lastSeen: now, ipAddress: s.ipAddress || '', subscriberId: sub?.id,
+        };
+      } catch (e) {
+        console.error('Failed to create SessionRecord:', e);
+      }
+    } else {
+      // Ongoing session — update byte totals + lastSeen.
+      // Counters may reset (e.g. reconnect) — if current < start, treat as a fresh baseline.
+      let totalRx = rx - existing.startRx;
+      let totalTx = tx - existing.startTx;
+      if (totalRx < 0 || totalTx < 0) {
+        existing.startRx = rx; existing.startTx = tx;
+        totalRx = 0; totalTx = 0;
+      }
+      existing.lastRx = rx; existing.lastTx = tx; existing.lastSeen = now;
+      try {
+        await prisma.sessionRecord.update({
+          where: { id: existing.recordId },
+          data: {
+            lastSeenAt: new Date(now),
+            rxBytes: BigInt(Math.max(0, totalRx)),
+            txBytes: BigInt(Math.max(0, totalTx)),
+            ipAddress: s.ipAddress || existing.ipAddress || null,
+          },
+        });
+      } catch (e) {
+        console.error('Failed to update SessionRecord:', e);
+      }
+    }
+  }
+
+  // Any tracked session NOT seen in this poll has ended — finalize it.
+  for (const username of Object.keys(tracked)) {
+    if (!seenNow.has(username)) {
+      const sess = tracked[username];
+      try {
+        await prisma.sessionRecord.update({
+          where: { id: sess.recordId },
+          data: { endedAt: new Date(sess.lastSeen), lastSeenAt: new Date(sess.lastSeen) },
+        });
+      } catch (e) {
+        console.error('Failed to finalize SessionRecord:', e);
+      }
+      delete tracked[username];
+      // Clean the traffic reading cache for the ended session
+      delete lastTrafficReading[`${routerId}:${username}`];
+    }
+  }
+}
 
 router.get('/sync-script', async (req: Request, res: Response) => {
   try {
