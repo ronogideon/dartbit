@@ -297,24 +297,21 @@ router.post('/:id/lan-ports', async (req: AuthRequest, res: Response) => {
       update: { lanInterface: lanCsv },
     });
 
-    // Build a command that:
-    // 1. Removes any port from this bridge that isn't in the new list
-    // 2. For each desired port: if it's on a DIFFERENT bridge, move it; if not on any, add it
-    // 3. Bumps the hotspot interface so it picks up the new bridge membership
-    const desiredQuoted = cleanPorts.map(p => `"${p}"`).join(',');
-    const cmd = [
-      `# Update LAN ports on bridge ${bridge}`,
-      // Remove ports from THIS bridge that aren't in the new list
-      `:foreach p in=[/interface bridge port find bridge="${bridge}"] do={ :local iname [/interface bridge port get $p interface]; :if ([:len [:find (${desiredQuoted}) $iname]] = 0) do={ /interface bridge port remove $p } }`,
-      // For each desired port: move it from whatever bridge it's on (if any) to ours
-      ...cleanPorts.flatMap(port => [
-        `:foreach p in=[/interface bridge port find interface="${port}"] do={ :local b [/interface bridge port get $p bridge]; :if ($b != "${bridge}") do={ /interface bridge port remove $p; :log info ("Dartbit: moved ${port} from " . $b . " to ${bridge}") } }`,
-        `:if ([:len [/interface bridge port find interface="${port}" bridge="${bridge}"]] = 0 && [:len [/interface find name="${port}"]] > 0) do={ /interface bridge port add bridge=${bridge} interface=${port} comment="Dartbit LAN port" }`,
-      ]),
-      // Bump hotspot is no longer needed — RouterOS picks up bridge port changes automatically
-      // and disabling/enabling causes a DHCP outage that breaks all connected clients.
-      `:log info "Dartbit: LAN ports updated"`,
-    ].join('\n');
+    // Build commands. Each is a single self-contained line (the command queue
+    // runs them via /import, so we avoid the [:find (list) x] syntax which is invalid).
+    const cmds: string[] = [];
+    // 1. Remove ports from THIS bridge that aren't in the desired list.
+    //    Build a RouterOS array of desired interface names and check membership.
+    const desiredArray = cleanPorts.map(p => `"${p}"`).join(';');
+    cmds.push(`:local want {${desiredArray}}`);
+    cmds.push(`:foreach p in=[/interface bridge port find bridge="${bridge}"] do={ :local nm [/interface bridge port get $p interface]; :local keep false; :foreach w in=$want do={ :if ($nm = $w) do={ :set keep true } }; :if (!$keep) do={ /interface bridge port remove $p } }`);
+    // 2. For each desired port: move from any other bridge, then add to ours if missing.
+    for (const port of cleanPorts) {
+      cmds.push(`:foreach p in=[/interface bridge port find interface="${port}"] do={ :if ([/interface bridge port get $p bridge] != "${bridge}") do={ /interface bridge port remove $p } }`);
+      cmds.push(`:if ([:len [/interface bridge port find interface="${port}" bridge="${bridge}"]] = 0 && [:len [/interface find name="${port}"]] > 0) do={ /interface bridge port add bridge=${bridge} interface=${port} comment="Dartbit LAN port" }`);
+    }
+    cmds.push(`:log info "Dartbit: LAN ports updated"`);
+    const cmd = cmds.join('\n');
 
     const { enqueueCommand } = await import('../utils/commandQueue');
     enqueueCommand(r.id, cmd);
