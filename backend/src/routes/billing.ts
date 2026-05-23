@@ -4,7 +4,6 @@ import { authenticate, AuthRequest } from '../middleware/auth';
 import { sendSuccess, sendError } from '../utils/response';
 
 const router = Router();
-
 const MIN_FEE = 500;            // KES floor
 const PPPOE_RATE = 20;          // KES per active PPPoE user
 const HOTSPOT_RATE = 0.03;      // 3% of hotspot income
@@ -125,6 +124,34 @@ router.get('/history', authenticate, async (req: AuthRequest, res: Response) => 
       take: 100,
     });
     sendSuccess(res, payments);
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
+// POST /billing/set-due-date — set/advance the billing due date for the current tenant.
+// Body: { daysFromNow: number }. Useful for testing the banner (5 days) and paywall (overdue).
+// In production this is driven by the monthly cycle on payment confirmation.
+router.post('/set-due-date', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return sendError(res, 'No tenant', 400);
+    const days = Number(req.body?.daysFromNow);
+    if (!Number.isFinite(days)) return sendError(res, 'daysFromNow required', 400);
+
+    const due = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+    const now = Date.now();
+    const FIVE_DAYS = 5 * 24 * 60 * 60 * 1000;
+    let status: string;
+    if (now > due.getTime()) status = 'OVERDUE';
+    else if (due.getTime() - now <= FIVE_DAYS) status = 'DUE_SOON';
+    else status = 'CURRENT';
+
+    const tenant = await prisma.tenant.update({
+      where: { id: tenantId },
+      data: { billingDueDate: due, billingStatus: status },
+    });
+    sendSuccess(res, { billingDueDate: tenant.billingDueDate, billingStatus: tenant.billingStatus });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);
   }

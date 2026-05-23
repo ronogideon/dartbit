@@ -66,8 +66,8 @@ app.use(cors({
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.6.0', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.6.0', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.6.1', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.6.1', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -89,9 +89,10 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.6.0 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.6.1 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
+  startBillingStatusUpdater();
 });
 
 // Prune SessionRecords older than 30 days. Before deleting, ensure each subscriber's
@@ -122,6 +123,44 @@ function startSessionCleanup() {
   };
   run();
   setInterval(run, 60 * 60 * 1000); // hourly
+}
+
+// Update each tenant's billingStatus based on their due date:
+//   no due date         -> unchanged (trial / not yet billed)
+//   due in >5 days       -> CURRENT
+//   due within 5 days    -> DUE_SOON
+//   past due             -> OVERDUE
+// PAID is set explicitly on payment confirmation (and cleared when a new cycle's
+// due date is set). This runs alongside session cleanup.
+function startBillingStatusUpdater() {
+  const prisma = new PrismaClient();
+  const run = async () => {
+    try {
+      const now = Date.now();
+      const FIVE_DAYS = 5 * 24 * 60 * 60 * 1000;
+      const tenants = await prisma.tenant.findMany({
+        where: { billingDueDate: { not: null } },
+        select: { id: true, billingDueDate: true, billingStatus: true },
+      });
+      for (const t of tenants) {
+        if (!t.billingDueDate) continue;
+        const due = t.billingDueDate.getTime();
+        let status: string;
+        if (now > due) status = 'OVERDUE';
+        else if (due - now <= FIVE_DAYS) status = 'DUE_SOON';
+        else status = 'CURRENT';
+        // Don't override a PAID status that's still within the current cycle.
+        if (t.billingStatus === 'PAID' && now <= due) continue;
+        if (status !== t.billingStatus) {
+          await prisma.tenant.update({ where: { id: t.id }, data: { billingStatus: status } });
+        }
+      }
+    } catch (err) {
+      console.error('Billing status update error:', err instanceof Error ? err.message : err);
+    }
+  };
+  run();
+  setInterval(run, 30 * 60 * 1000); // every 30 min
 }
 
 server.on('error', (err) => {

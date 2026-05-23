@@ -1,7 +1,8 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getSettings, updateSettings, getBillingCurrent, getBillingHistory } from '@/lib/api';
+import { getSettings, updateSettings, getBillingCurrent, getBillingHistory, setBillingDueDate } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import toast from 'react-hot-toast';
 import { Settings as SettingsIcon, CreditCard, Users } from 'lucide-react';
@@ -22,7 +23,17 @@ function fmtDate(d: string | null | undefined): string {
 }
 
 export default function SettingsPage() {
-  const [tab, setTab] = useState<Tab>('general');
+  return (
+    <Suspense fallback={<AppLayout><div className="text-center py-8 text-gray-400">Loading...</div></AppLayout>}>
+      <SettingsContent />
+    </Suspense>
+  );
+}
+
+function SettingsContent() {
+  const searchParams = useSearchParams();
+  const initialTab = (searchParams.get('tab') as Tab) || 'general';
+  const [tab, setTab] = useState<Tab>(['general', 'billing', 'users'].includes(initialTab) ? initialTab : 'general');
 
   return (
     <AppLayout>
@@ -116,8 +127,19 @@ function GeneralTab() {
 
 /* ---------------- Billing ---------------- */
 function BillingTab() {
+  const qc = useQueryClient();
   const { data, isLoading } = useQuery({ queryKey: ['billing-current'], queryFn: getBillingCurrent });
   const { data: history } = useQuery({ queryKey: ['billing-history'], queryFn: getBillingHistory });
+
+  const dueDateMut = useMutation({
+    mutationFn: setBillingDueDate,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['billing-current'] });
+      qc.invalidateQueries({ queryKey: ['tenant-info'] });
+      toast.success('Due date updated');
+    },
+    onError: () => toast.error('Failed'),
+  });
 
   if (isLoading) return <div className="text-center py-8 text-gray-400">Loading...</div>;
   if (!data) return <div className="text-center py-8 text-red-500">Failed to load billing</div>;
@@ -200,6 +222,16 @@ function BillingTab() {
             </table>
           </div>
         )}
+      </div>
+      {/* Test controls — simulate due dates until Paystack flow lands in the next update */}
+      <div className="card p-6 border-dashed border-2 border-gray-200 dark:border-gray-700">
+        <h2 className="font-semibold mb-1 text-sm text-gray-500">Testing Controls</h2>
+        <p className="text-xs text-gray-400 mb-3">Simulate billing states (temporary — removed once Paystack is live).</p>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => dueDateMut.mutate(10)} disabled={dueDateMut.isPending} className="btn-secondary text-xs">Due in 10 days (Current)</button>
+          <button onClick={() => dueDateMut.mutate(3)} disabled={dueDateMut.isPending} className="btn-secondary text-xs">Due in 3 days (Banner)</button>
+          <button onClick={() => dueDateMut.mutate(-1)} disabled={dueDateMut.isPending} className="btn-secondary text-xs">Overdue (Paywall)</button>
+        </div>
       </div>
     </div>
   );
