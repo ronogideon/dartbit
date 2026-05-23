@@ -277,7 +277,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add('# 10. Subscriber sync');
     add(`:foreach s in=[/system scheduler find comment="Dartbit sub sync"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-sync"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-sync policy=read,write,test source={/tool fetch url="${backendUrl}/router/sync-script?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-sync.rsc; :delay 1s; :local f [/file get dartbit-sync.rsc contents]; [:parse \$f]}`);
+    add(`/system script add name=dartbit-sync policy=read,write,test source={/tool fetch url="${backendUrl}/router/sync-script?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-sync.rsc; :delay 1s; /import file-name=dartbit-sync.rsc}`);
     add(`/system scheduler add name=dartbit-sync interval=60s on-event="/system script run dartbit-sync" comment="Dartbit sub sync"`);
     add('');
 
@@ -285,7 +285,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add('# 11. Remote commands');
     add(`:foreach s in=[/system scheduler find comment="Dartbit cmd"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-cmd"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-cmd policy=read,write,test,reboot source={/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ :local f [/file get dartbit-cmd.rsc contents]; [:parse \$f]; /file remove [find name="dartbit-cmd.rsc"] }}`);
+    add(`/system script add name=dartbit-cmd policy=read,write,test,reboot source={/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ /import file-name=dartbit-cmd.rsc; :delay 1s; /file remove [find name="dartbit-cmd.rsc"] }}`);
     add(`/system scheduler add name=dartbit-cmd interval=5s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`);
     add('');
 
@@ -531,7 +531,7 @@ router.get('/sync-script', async (req: Request, res: Response) => {
 
       // Each line stays short — uses inline strings, no shared state needed.
       // Profile line: ~150 chars
-      add(`:if ([:len [/ppp profile find name="${profileName}"]] = 0) do={ /ppp profile add name=${profileName} local-address=10.10.10.1 remote-address=pppoe-pool rate-limit=${speed} comment="Dartbit" }`);
+      add(`:if ([:len [/ppp profile find name="${profileName}"]] = 0) do={ /ppp profile add name=${profileName} local-address=10.10.10.1 remote-address=pppoe-pool rate-limit="${speed}" comment="Dartbit" }`);
       // For long secret-add lines, split into separate find/set/add operations to avoid 200-char import limit
       add(`:if ([:len [/ppp secret find name="${sub.username}"]] = 0) do={ /ppp secret add name="${sub.username}" password="${sub.secret}" profile=${profileName} service=pppoe comment="Dartbit:${sub.id}" }`);
       add(`:if ([:len [/ppp secret find name="${sub.username}"]] > 0) do={ /ppp secret set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} }`);
@@ -551,7 +551,7 @@ router.get('/sync-script', async (req: Request, res: Response) => {
 
       // Profile: split add+set so each line is short
       add(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} comment="Dartbit" }`);
-      add(`/ip hotspot user profile set [find name="${profileName}"] rate-limit=${speed} shared-users=1`);
+      add(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1`);
       add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] = 0) do={ /ip hotspot user add name="${sub.username}" password="${sub.secret}" profile=${profileName} comment="Dartbit:${sub.id}" }`);
       add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] > 0) do={ /ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} }`);
       if (expired) {
@@ -618,7 +618,7 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     }
     for (const prof of Object.values(profilesByPkg)) {
       add(`:if ([:len [/ip hotspot user profile find name="${prof.name}"]] = 0) do={ /ip hotspot user profile add name=${prof.name} comment="Dartbit" }`);
-      add(`/ip hotspot user profile set [find name="${prof.name}"] rate-limit=${prof.speed} shared-users=1`);
+      add(`/ip hotspot user profile set [find name="${prof.name}"] rate-limit="${prof.speed}" shared-users=1`);
     }
     // Add each voucher as a hotspot user — username and password = code.
     // limit-uptime starts counting from first login (MikroTik behavior).
@@ -626,13 +626,13 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     for (const v of vouchers) {
       const profileName = v.package ? `db-v-${v.package.id.substring(0, 8)}` : 'dartbit-default';
       const sessionSec = v.durationMinutes * 60;
-      const shortId = v.id.substring(0, 8);
+      const shortId = v.id.slice(-8);
       add(`:if ([:len [/ip hotspot user find name="${v.code}"]] = 0) do={ /ip hotspot user add name=${v.code} password=${v.code} profile=${profileName} limit-uptime=${sessionSec}s comment="Dbv:${shortId}" }`);
     }
     // Clean up voucher-users for vouchers that are no longer in our active list.
     // Comment format on router: "Dbv:<shortId>" — short to fit in 200-char line limit.
     if (vouchers.length > 0) {
-      const knownIdsArray = vouchers.map(v => `"Dbv:${v.id.substring(0, 8)}"`).join(';');
+      const knownIdsArray = vouchers.map(v => `"Dbv:${v.id.slice(-8)}"`).join(';');
       add(`:local kvc {${knownIdsArray}}`);
       add(`:foreach u in=[/ip hotspot user find comment~"Dbv:"] do={ :local c [/ip hotspot user get \$u comment]; :local k false; :foreach kc in=\$kvc do={ :if (\$c = \$kc) do={ :set k true } }; :if (!\$k) do={ /ip hotspot user remove \$u } }`);
     } else {

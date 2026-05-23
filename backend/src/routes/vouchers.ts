@@ -98,7 +98,7 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
         cmds.push(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} comment="Dartbit" }`);
         cmds.push(`/ip hotspot user profile set [find name="${profileName}"] rate-limit=${speed} shared-users=1`);
         for (const v of created) {
-          const shortId = v.id.substring(0, 8);
+          const shortId = v.id.slice(-8);
           // Add each voucher as a hotspot user; limit-uptime starts counting on first login.
           cmds.push(`:if ([:len [/ip hotspot user find name="${v.code}"]] = 0) do={ /ip hotspot user add name=${v.code} password=${v.code} profile=${profileName} limit-uptime=${sessionSec}s comment="Dbv:${shortId}" }`);
         }
