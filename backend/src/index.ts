@@ -23,6 +23,7 @@ import paymentConfigRoutes from './routes/paymentConfig';
 import webhookRoutes from './routes/webhooks';
 import hotspotPublicRoutes from './routes/hotspotPublic';
 import mpesaRoutes from './routes/mpesa';
+import subscriberPortalRoutes from './routes/subscriberPortal';
 import hotspotHtmlRoutes from './routes/hotspotHtml';
 
 const app = express();
@@ -61,8 +62,15 @@ app.use(cors({
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
     if (isCaptivePortalOrigin(origin)) return callback(null, true);
-    // For other origins, don't throw — just don't set CORS headers.
-    // Route-level middleware (e.g. on /hotspot) can override with permissive headers.
+    // Allow any subdomain of the configured portal base domain (e.g. *.dartbit.app)
+    // so each tenant's subscriber portal can call the shared backend.
+    const base = process.env.PORTAL_BASE_DOMAIN; // e.g. "dartbit.app"
+    if (base) {
+      try {
+        const host = new URL(origin).hostname;
+        if (host === base || host.endsWith(`.${base}`)) return callback(null, true);
+      } catch { /* ignore */ }
+    }
     callback(null, false);
   },
   credentials: true,
@@ -74,8 +82,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.6.8', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.6.8', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.6.9', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.6.9', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -95,12 +103,13 @@ app.use('/users', usersRoutes);
 app.use('/payment-config', paymentConfigRoutes);
 app.use('/hotspot', mpesaRoutes);
 app.use('/hotspot', hotspotPublicRoutes);
+app.use('/portal', subscriberPortalRoutes);
 app.use('/hotspot-html', hotspotHtmlRoutes);
 
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.6.8 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.6.9 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -451,7 +460,7 @@ async function patchDatabase() {
       )`);
     await safeExec(prisma, 'MpesaTx checkout unique', `CREATE UNIQUE INDEX IF NOT EXISTS "MpesaTransaction_checkoutRequestId_key" ON "MpesaTransaction"("checkoutRequestId")`);
     await safeExec(prisma, 'MpesaTx tenant idx', `CREATE INDEX IF NOT EXISTS "MpesaTransaction_tenantId_status_idx" ON "MpesaTransaction"("tenantId","status")`);
-    // v1.6.8 payout/fee columns
+    // v1.6.9 payout/fee columns
     await safeExec(prisma, 'MpesaTx collectedVia', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "collectedVia" TEXT DEFAULT 'TENANT'`);
     await safeExec(prisma, 'MpesaTx platformFee', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "platformFee" DOUBLE PRECISION NOT NULL DEFAULT 0`);
     await safeExec(prisma, 'MpesaTx netToTenant', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "netToTenant" DOUBLE PRECISION NOT NULL DEFAULT 0`);
