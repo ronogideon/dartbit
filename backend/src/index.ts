@@ -31,11 +31,12 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 
 const allowedOrigins = [
-  'https://dartbit-production.up.railway.app',
-  'https://accomplished-patience-production-dd5a.up.railway.app',
-  'http://localhost:3000',
-  'http://localhost:3001',
-  process.env.FRONTEND_URL,
+  'https://dartbit-production.up.railway.app',   // backend (self / same-origin calls)
+  'https://dartbit.up.railway.app',              // main frontend
+  'http://localhost:3000',                       // local dev — main frontend
+  'http://localhost:3001',                       // local dev — superadmin frontend
+  process.env.FRONTEND_URL,                      // override / additional main frontend origin
+  process.env.SUPERADMIN_URL,                    // the separate superadmin analytics portal
 ].filter(Boolean) as string[];
 
 // Captive portal pages are served by MikroTik routers from their gateway IPs
