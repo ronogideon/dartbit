@@ -22,6 +22,7 @@ import usersRoutes from './routes/users';
 import paymentConfigRoutes from './routes/paymentConfig';
 import webhookRoutes from './routes/webhooks';
 import hotspotPublicRoutes from './routes/hotspotPublic';
+import mpesaRoutes from './routes/mpesa';
 import hotspotHtmlRoutes from './routes/hotspotHtml';
 
 const app = express();
@@ -73,8 +74,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.6.6', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.6.6', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.6.7', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.6.7', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -92,13 +93,14 @@ app.use('/vouchers', voucherRoutes);
 app.use('/billing', billingRoutes);
 app.use('/users', usersRoutes);
 app.use('/payment-config', paymentConfigRoutes);
+app.use('/hotspot', mpesaRoutes);
 app.use('/hotspot', hotspotPublicRoutes);
 app.use('/hotspot-html', hotspotHtmlRoutes);
 
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.6.6 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.6.7 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -422,6 +424,33 @@ async function patchDatabase() {
         CONSTRAINT "PaymentConfig_pkey" PRIMARY KEY ("id")
       )`);
     await safeExec(prisma, 'PaymentConfig tenant unique', `CREATE UNIQUE INDEX IF NOT EXISTS "PaymentConfig_tenantId_key" ON "PaymentConfig"("tenantId")`);
+
+    // MpesaTransaction — STK push lifecycle for hotspot purchases
+    await safeExec(prisma, 'MpesaTransaction table',
+      `CREATE TABLE IF NOT EXISTS "MpesaTransaction" (
+        "id" TEXT NOT NULL,
+        "tenantId" TEXT NOT NULL,
+        "routerId" TEXT,
+        "packageId" TEXT,
+        "phone" TEXT NOT NULL,
+        "amount" DOUBLE PRECISION NOT NULL,
+        "status" TEXT NOT NULL DEFAULT 'PENDING',
+        "checkoutRequestId" TEXT,
+        "merchantRequestId" TEXT,
+        "mpesaReceipt" TEXT,
+        "username" TEXT,
+        "password" TEXT,
+        "clientMac" TEXT,
+        "clientIp" TEXT,
+        "durationMinutes" INTEGER NOT NULL DEFAULT 60,
+        "expiresAt" TIMESTAMP(3),
+        "resultDesc" TEXT,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "MpesaTransaction_pkey" PRIMARY KEY ("id")
+      )`);
+    await safeExec(prisma, 'MpesaTx checkout unique', `CREATE UNIQUE INDEX IF NOT EXISTS "MpesaTransaction_checkoutRequestId_key" ON "MpesaTransaction"("checkoutRequestId")`);
+    await safeExec(prisma, 'MpesaTx tenant idx', `CREATE INDEX IF NOT EXISTS "MpesaTransaction_tenantId_status_idx" ON "MpesaTransaction"("tenantId","status")`);
 
     console.log('✅ Database patch complete');
   } catch (err) {

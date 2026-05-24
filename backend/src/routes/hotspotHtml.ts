@@ -106,7 +106,7 @@ button.primary svg{width:14px;height:14px}
         <label>Phone (optional)</label>
         <input id="buy-phone" placeholder="e.g. 0712345678" inputmode="tel" autocomplete="tel">
       </div>
-      <button class="primary" id="buy-btn" disabled>Get my voucher</button>
+      <button class="primary" id="buy-btn" disabled>Pay with M-Pesa</button>
     </div>
 
     <div class="panel" id="panel-voucher">
@@ -227,48 +227,76 @@ button.primary svg{width:14px;height:14px}
   }
   function escapeHtml(s){var d=document.createElement('div');d.innerText=s;return d.innerHTML}
 
-  // === BUY: purchase package ===
+  // === BUY: STK push purchase ===
   document.getElementById('buy-btn').addEventListener('click',function(){
     if(!selectedPkg)return;
     var btn=this;
     var phone=document.getElementById('buy-phone').value.trim();
-    btn.disabled=true;btn.innerHTML=spinner()+' Creating...';
+    if(!phone){show('error','Enter your M-Pesa phone number');return;}
+    btn.disabled=true;btn.innerHTML=spinner()+' Sending request...';
     clr();
     var xhr=new XMLHttpRequest();
-    xhr.open('POST',BACKEND+'/hotspot/purchase',true);
+    xhr.open('POST',BACKEND+'/hotspot/stk',true);
     xhr.setRequestHeader('Content-Type','application/json');
-    xhr.timeout=20000;
+    xhr.timeout=30000;
     xhr.onload=function(){
       try{
         var data=JSON.parse(xhr.responseText);
         if(!data.success){
-          show('error',data.error||'Purchase failed');
-          btn.disabled=false;btn.textContent='Get my voucher';
+          show('error',data.error||'Could not start payment');
+          btn.disabled=false;btn.textContent='Pay with M-Pesa';
           return;
         }
-        // Wait for router to sync the voucher (cmd polls every 5s)
-        var secsLeft=12;
-        var codeBox='<div class="code-display"><div class="label">Your voucher code</div><div class="code">'+data.code+'</div></div>';
-        show('success',codeBox+'Activating session ('+secsLeft+'s)...');
-        var iv=setInterval(function(){
-          secsLeft--;
-          if(secsLeft<=0){
-            clearInterval(iv);
-            show('success',codeBox+'Connecting now...');
-            submitMikrotik(data.code,data.code);
-          } else {
-            show('success',codeBox+'Activating session ('+secsLeft+'s)...');
-          }
-        },1000);
+        show('success','Check your phone — enter your M-Pesa PIN to complete payment.');
+        pollStk(data.transactionId,btn);
       }catch(e){
         show('error','Server response error');
-        btn.disabled=false;btn.textContent='Get my voucher';
+        btn.disabled=false;btn.textContent='Pay with M-Pesa';
       }
     };
-    xhr.onerror=function(){show('error','Cannot reach server. Check connection.');btn.disabled=false;btn.textContent='Get my voucher'};
-    xhr.ontimeout=function(){show('error','Server timeout.');btn.disabled=false;btn.textContent='Get my voucher'};
-    xhr.send(JSON.stringify({packageId:selectedPkg.id,routerApiKey:API_KEY,phone:phone,mac:MAC,ip:IP}));
+    xhr.onerror=function(){show('error','Cannot reach server. Check connection.');btn.disabled=false;btn.textContent='Pay with M-Pesa'};
+    xhr.ontimeout=function(){show('error','Request timeout. Try again.');btn.disabled=false;btn.textContent='Pay with M-Pesa'};
+    xhr.send(JSON.stringify({apiKey:API_KEY,packageId:selectedPkg.id,phone:phone,mac:MAC,ip:IP}));
   });
+
+  // Poll STK status until PAID or FAILED (up to ~90s)
+  function pollStk(txId,btn){
+    var tries=0,max=30;
+    var iv=setInterval(function(){
+      tries++;
+      if(tries>max){
+        clearInterval(iv);
+        show('error','Payment timed out. If you were charged, use the Account tab with your credentials.');
+        btn.disabled=false;btn.textContent='Pay with M-Pesa';
+        return;
+      }
+      var xhr=new XMLHttpRequest();
+      xhr.open('GET',BACKEND+'/hotspot/stk-status/'+txId,true);
+      xhr.timeout=8000;
+      xhr.onload=function(){
+        try{
+          var d=JSON.parse(xhr.responseText);
+          if(d.status==='PAID'){
+            clearInterval(iv);
+            var creds='<div class="code-display"><div class="label">Your login</div><div class="code">'+d.username+' / '+d.password+'</div></div>';
+            if(d.autoConnected){
+              show('success',creds+'Payment received! Connecting your device now...');
+              setTimeout(function(){submitMikrotik(d.username,d.password);},2500);
+            } else {
+              show('success',creds+'Payment received! Signing you in...');
+              setTimeout(function(){submitMikrotik(d.username,d.password);},1500);
+            }
+          } else if(d.status==='FAILED'){
+            clearInterval(iv);
+            show('error',d.message||'Payment failed or cancelled.');
+            btn.disabled=false;btn.textContent='Pay with M-Pesa';
+          }
+          // else still PENDING — keep polling
+        }catch(e){}
+      };
+      xhr.send();
+    },3000);
+  }
 
   // === VOUCHER flow ===
   document.getElementById('voucher-form').addEventListener('submit',function(e){

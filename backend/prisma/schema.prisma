@@ -347,3 +347,34 @@ model Voucher {
   @@index([code])
   @@index([batchId])
 }
+
+// Tracks an M-Pesa STK Push transaction for a hotspot purchase.
+// Lifecycle: PENDING (STK sent) -> PAID (callback success) | FAILED (callback fail/timeout)
+// On PAID we provision a hotspot user (username/password) and auto-connect the captured MAC.
+model MpesaTransaction {
+  id                String    @id @default(cuid())
+  tenantId          String
+  routerId          String?
+  packageId         String?
+  phone             String                    // payer phone (2547...)
+  amount            Float
+  status            String    @default("PENDING") // PENDING | PAID | FAILED
+  // Daraja identifiers
+  checkoutRequestId String?   @unique          // from STK initiate response
+  merchantRequestId String?
+  mpesaReceipt      String?                    // M-Pesa confirmation code (on success)
+  // Provisioning result
+  username          String?
+  password          String?
+  clientMac         String?                    // captured from hotspot session at buy time
+  clientIp          String?
+  durationMinutes   Int       @default(60)
+  expiresAt         DateTime?
+  resultDesc        String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([tenantId, status])
+  @@index([checkoutRequestId])
+  @@index([mpesaReceipt])
+}
