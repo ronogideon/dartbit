@@ -67,8 +67,44 @@ model Tenant {
   settings      TenantSetting?
   vouchers      Voucher[]
   tenantPayments TenantPayment[]
+  paymentConfig PaymentConfig?
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
+}
+
+// A tenant's chosen method for COLLECTING money from their own customers.
+// Methods:
+//   TILL_MANUAL    — Dartbit central Daraja collects; B2C payout to tenant till (1% fee)
+//   PHONE_MANUAL   — Dartbit central Daraja collects; B2C payout to tenant phone (1% fee)
+//   DARAJA_API     — tenant's own Daraja (Till or PayBill); money direct to tenant
+//   KOPOKOPO_API   — tenant's own KopoKopo; money direct to tenant
+// Sensitive credentials are stored encrypted (see utils/crypto).
+model PaymentConfig {
+  id              String   @id @default(cuid())
+  tenantId        String   @unique
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  method          String   @default("TILL_MANUAL") // TILL_MANUAL | PHONE_MANUAL | DARAJA_API | KOPOKOPO_API
+
+  // For manual methods (Dartbit collects, then disburses here):
+  payoutTill      String?  // tenant's till number for B2C payout
+  payoutPhone     String?  // tenant's phone for B2C payout
+
+  // For DARAJA_API (tenant's own Daraja) — encrypted:
+  darajaShortcode    String?  // Till or PayBill number
+  darajaType         String?  // "TILL" | "PAYBILL"
+  darajaConsumerKey  String?  // encrypted
+  darajaConsumerSecret String? // encrypted
+  darajaPasskey      String?  // encrypted (for STK)
+
+  // For KOPOKOPO_API (tenant's own KopoKopo) — encrypted:
+  kopoClientId       String?  // encrypted
+  kopoClientSecret   String?  // encrypted
+  kopoTillNumber     String?
+  kopoApiKey         String?  // encrypted
+
+  configured      Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 // Platform billing: a tenant's payment to the Dartbit platform (via Paystack).

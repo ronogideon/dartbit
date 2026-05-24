@@ -19,6 +19,7 @@ import adminRoutes from './routes/admin';
 import voucherRoutes from './routes/vouchers';
 import billingRoutes from './routes/billing';
 import usersRoutes from './routes/users';
+import paymentConfigRoutes from './routes/paymentConfig';
 import webhookRoutes from './routes/webhooks';
 import hotspotPublicRoutes from './routes/hotspotPublic';
 import hotspotHtmlRoutes from './routes/hotspotHtml';
@@ -72,8 +73,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.6.4', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.6.4', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.6.6', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.6.6', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -90,13 +91,14 @@ app.use('/settings', settingsRoutes);
 app.use('/vouchers', voucherRoutes);
 app.use('/billing', billingRoutes);
 app.use('/users', usersRoutes);
+app.use('/payment-config', paymentConfigRoutes);
 app.use('/hotspot', hotspotPublicRoutes);
 app.use('/hotspot-html', hotspotHtmlRoutes);
 
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.6.4 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.6.6 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -396,6 +398,30 @@ async function patchDatabase() {
     // System users: add TENANT_VIEWER enum value + User.isActive
     await safeExec(prisma, 'UserRole TENANT_VIEWER', `ALTER TYPE "UserRole" ADD VALUE IF NOT EXISTS 'TENANT_VIEWER'`);
     await safeExec(prisma, 'User.isActive', `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "isActive" BOOLEAN NOT NULL DEFAULT true`);
+
+    // PaymentConfig — tenant's collection method + (encrypted) credentials
+    await safeExec(prisma, 'PaymentConfig table',
+      `CREATE TABLE IF NOT EXISTS "PaymentConfig" (
+        "id" TEXT NOT NULL,
+        "tenantId" TEXT NOT NULL,
+        "method" TEXT NOT NULL DEFAULT 'TILL_MANUAL',
+        "payoutTill" TEXT,
+        "payoutPhone" TEXT,
+        "darajaShortcode" TEXT,
+        "darajaType" TEXT,
+        "darajaConsumerKey" TEXT,
+        "darajaConsumerSecret" TEXT,
+        "darajaPasskey" TEXT,
+        "kopoClientId" TEXT,
+        "kopoClientSecret" TEXT,
+        "kopoTillNumber" TEXT,
+        "kopoApiKey" TEXT,
+        "configured" BOOLEAN NOT NULL DEFAULT false,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "PaymentConfig_pkey" PRIMARY KEY ("id")
+      )`);
+    await safeExec(prisma, 'PaymentConfig tenant unique', `CREATE UNIQUE INDEX IF NOT EXISTS "PaymentConfig_tenantId_key" ON "PaymentConfig"("tenantId")`);
 
     console.log('✅ Database patch complete');
   } catch (err) {

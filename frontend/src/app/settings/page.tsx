@@ -2,12 +2,12 @@
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getSettings, updateSettings, getBillingCurrent, getBillingHistory, billingCheckout, getSystemUsers, createSystemUser, updateSystemUser, resetSystemUserPassword, deleteSystemUser } from '@/lib/api';
+import { getSettings, updateSettings, getBillingCurrent, getBillingHistory, billingCheckout, getSystemUsers, createSystemUser, updateSystemUser, resetSystemUserPassword, deleteSystemUser, getPaymentConfig, updatePaymentConfig } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import toast from 'react-hot-toast';
-import { Settings as SettingsIcon, CreditCard, Users, Plus, Trash2, KeyRound, Copy, Check } from 'lucide-react';
+import { Settings as SettingsIcon, CreditCard, Users, Plus, Trash2, KeyRound, Copy, Check, Wallet } from 'lucide-react';
 
-type Tab = 'general' | 'billing' | 'users';
+type Tab = 'general' | 'billing' | 'payments' | 'users';
 
 interface Settings {
   currency?: string; timezone?: string; backendUrl?: string;
@@ -33,7 +33,7 @@ export default function SettingsPage() {
 function SettingsContent() {
   const searchParams = useSearchParams();
   const initialTab = (searchParams.get('tab') as Tab) || 'general';
-  const [tab, setTab] = useState<Tab>(['general', 'billing', 'users'].includes(initialTab) ? initialTab : 'general');
+  const [tab, setTab] = useState<Tab>(['general', 'billing', 'payments', 'users'].includes(initialTab) ? initialTab : 'general');
 
   return (
     <AppLayout>
@@ -46,11 +46,13 @@ function SettingsContent() {
       <div className="flex gap-1 border-b border-gray-200 dark:border-gray-800 mb-6">
         <TabButton active={tab === 'general'} onClick={() => setTab('general')} icon={<SettingsIcon size={16} />} label="General" />
         <TabButton active={tab === 'billing'} onClick={() => setTab('billing')} icon={<CreditCard size={16} />} label="Billing" />
+        <TabButton active={tab === 'payments'} onClick={() => setTab('payments')} icon={<Wallet size={16} />} label="Payments" />
         <TabButton active={tab === 'users'} onClick={() => setTab('users')} icon={<Users size={16} />} label="System Users" />
       </div>
 
       {tab === 'general' && <GeneralTab />}
       {tab === 'billing' && <BillingTab />}
+      {tab === 'payments' && <PaymentsTab />}
       {tab === 'users' && <UsersTab />}
     </AppLayout>
   );
@@ -244,6 +246,160 @@ function Row({ label, value, muted }: { label: string; value: string; muted?: bo
       <span className={muted ? 'text-sm text-gray-500' : 'text-sm text-gray-700 dark:text-gray-300'}>{label}</span>
       <span className={muted ? 'text-sm text-gray-500' : 'font-medium'}>{value}</span>
     </div>
+  );
+}
+
+/* ---------------- Payments ---------------- */
+function PaymentsTab() {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({ queryKey: ['payment-config'], queryFn: getPaymentConfig });
+  const [form, setForm] = useState<Record<string, string>>({});
+  const [method, setMethod] = useState('TILL_MANUAL');
+
+  useEffect(() => {
+    if (data) {
+      setMethod(data.method || 'TILL_MANUAL');
+      setForm({
+        payoutTill: data.payoutTill || '',
+        payoutPhone: data.payoutPhone || '',
+        darajaShortcode: data.darajaShortcode || '',
+        darajaType: data.darajaType || 'TILL',
+        darajaConsumerKey: data.darajaConsumerKey || '',
+        darajaConsumerSecret: data.darajaConsumerSecret || '',
+        darajaPasskey: data.darajaPasskey || '',
+        kopoTillNumber: data.kopoTillNumber || '',
+        kopoClientId: data.kopoClientId || '',
+        kopoClientSecret: data.kopoClientSecret || '',
+        kopoApiKey: data.kopoApiKey || '',
+      });
+    }
+  }, [data]);
+
+  const saveMut = useMutation({
+    mutationFn: updatePaymentConfig,
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['payment-config'] }); toast.success('Payment settings saved'); },
+    onError: (e: { response?: { data?: { error?: string } } }) => toast.error(e?.response?.data?.error || 'Failed to save'),
+  });
+
+  const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
+  const save = () => saveMut.mutate({ method, ...form });
+
+  if (isLoading) return <div className="text-center py-8 text-gray-400">Loading...</div>;
+
+  return (
+    <div className="max-w-2xl space-y-6">
+      <div className="card p-6">
+        <h2 className="font-semibold mb-1">Collection Method</h2>
+        <p className="text-sm text-gray-500 mb-4">How you collect payments from your customers.</p>
+
+        <div className="grid grid-cols-1 gap-2">
+          <MethodOption value="TILL_MANUAL" current={method} onSelect={setMethod}
+            title="Till (Managed by Dartbit)"
+            desc="Dartbit collects via M-Pesa and pays out to your till. 1% transaction fee." />
+          <MethodOption value="PHONE_MANUAL" current={method} onSelect={setMethod}
+            title="Phone Number (Managed by Dartbit)"
+            desc="Dartbit collects via M-Pesa and pays out to your phone. 1% transaction fee." />
+          <MethodOption value="DARAJA_API" current={method} onSelect={setMethod}
+            title="M-Pesa Daraja API (Your own)"
+            desc="Money goes directly to your Till/PayBill. No fee. Requires your Daraja API keys." />
+          <MethodOption value="KOPOKOPO_API" current={method} onSelect={setMethod}
+            title="KopoKopo API (Your own)"
+            desc="Money goes directly to your KopoKopo account. No fee. Requires KopoKopo API keys." />
+        </div>
+      </div>
+
+      {/* Method-specific fields */}
+      <div className="card p-6">
+        <h2 className="font-semibold mb-4">Details</h2>
+        {method === 'TILL_MANUAL' && (
+          <div>
+            <label className="label">Your Till Number (for payouts)</label>
+            <input className="input" value={form.payoutTill || ''} onChange={e => set('payoutTill', e.target.value)} placeholder="e.g. 123456" />
+            <p className="text-xs text-gray-400 mt-2">Dartbit collects customer payments and disburses to this till, less a 1% fee (rounded up).</p>
+          </div>
+        )}
+        {method === 'PHONE_MANUAL' && (
+          <div>
+            <label className="label">Your Phone Number (for payouts)</label>
+            <input className="input" value={form.payoutPhone || ''} onChange={e => set('payoutPhone', e.target.value)} placeholder="e.g. 0712345678" />
+            <p className="text-xs text-gray-400 mt-2">Dartbit collects customer payments and disburses to this number, less a 1% fee (rounded up).</p>
+          </div>
+        )}
+        {method === 'DARAJA_API' && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label">Shortcode (Till / PayBill)</label>
+                <input className="input" value={form.darajaShortcode || ''} onChange={e => set('darajaShortcode', e.target.value)} placeholder="e.g. 174379" />
+              </div>
+              <div>
+                <label className="label">Type</label>
+                <select className="input" value={form.darajaType || 'TILL'} onChange={e => set('darajaType', e.target.value)}>
+                  <option value="TILL">Till (Buy Goods)</option>
+                  <option value="PAYBILL">PayBill</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="label">Consumer Key</label>
+              <input className="input" value={form.darajaConsumerKey || ''} onChange={e => set('darajaConsumerKey', e.target.value)} placeholder="Your Daraja consumer key" />
+            </div>
+            <div>
+              <label className="label">Consumer Secret</label>
+              <input className="input" type="password" value={form.darajaConsumerSecret || ''} onChange={e => set('darajaConsumerSecret', e.target.value)} placeholder="Your Daraja consumer secret" />
+            </div>
+            <div>
+              <label className="label">Passkey (for STK Push)</label>
+              <input className="input" type="password" value={form.darajaPasskey || ''} onChange={e => set('darajaPasskey', e.target.value)} placeholder="Your STK passkey" />
+            </div>
+            <p className="text-xs text-gray-400">Credentials are encrypted at rest. Leave masked fields unchanged to keep existing values.</p>
+          </div>
+        )}
+        {method === 'KOPOKOPO_API' && (
+          <div className="space-y-3">
+            <div>
+              <label className="label">Till Number</label>
+              <input className="input" value={form.kopoTillNumber || ''} onChange={e => set('kopoTillNumber', e.target.value)} placeholder="Your KopoKopo till" />
+            </div>
+            <div>
+              <label className="label">Client ID</label>
+              <input className="input" value={form.kopoClientId || ''} onChange={e => set('kopoClientId', e.target.value)} placeholder="KopoKopo client ID" />
+            </div>
+            <div>
+              <label className="label">Client Secret</label>
+              <input className="input" type="password" value={form.kopoClientSecret || ''} onChange={e => set('kopoClientSecret', e.target.value)} placeholder="KopoKopo client secret" />
+            </div>
+            <div>
+              <label className="label">API Key</label>
+              <input className="input" type="password" value={form.kopoApiKey || ''} onChange={e => set('kopoApiKey', e.target.value)} placeholder="KopoKopo API key" />
+            </div>
+            <p className="text-xs text-gray-400">Credentials are encrypted at rest. Leave masked fields unchanged to keep existing values.</p>
+          </div>
+        )}
+
+        <button onClick={save} disabled={saveMut.isPending} className="btn-primary w-full mt-5">
+          {saveMut.isPending ? 'Saving…' : 'Save Payment Settings'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MethodOption({ value, current, onSelect, title, desc }: { value: string; current: string; onSelect: (v: string) => void; title: string; desc: string }) {
+  const active = value === current;
+  return (
+    <button
+      onClick={() => onSelect(value)}
+      className={`text-left p-3 rounded-lg border-2 transition-colors ${active ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20' : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'}`}
+    >
+      <div className="flex items-center gap-2">
+        <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${active ? 'border-blue-600' : 'border-gray-300'}`}>
+          {active && <div className="w-2 h-2 rounded-full bg-blue-600" />}
+        </div>
+        <span className="font-medium text-sm">{title}</span>
+      </div>
+      <p className="text-xs text-gray-500 mt-1 ml-6">{desc}</p>
+    </button>
   );
 }
 

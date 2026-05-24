@@ -70,6 +70,8 @@ export const createSystemUser = (data: { name: string; email: string; role: stri
 export const updateSystemUser = (id: string, data: { name?: string; role?: string; isActive?: boolean }) => api.put(`/users/${id}`, data).then((r) => r.data.data);
 export const resetSystemUserPassword = (id: string) => api.post(`/users/${id}/reset-password`, {}).then((r) => r.data.data);
 export const deleteSystemUser = (id: string) => api.delete(`/users/${id}`).then((r) => r.data.data);
+export const getPaymentConfig = () => api.get('/payment-config').then((r) => r.data.data);
+export const updatePaymentConfig = (data: unknown) => api.put('/payment-config', data).then((r) => r.data.data);
 
 export default api;
 

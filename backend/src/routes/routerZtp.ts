@@ -132,12 +132,17 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
 
     // 6. Hotspot — captive portal with DHCP managed by the hotspot itself
     add('# 6. Hotspot — captive portal');
-    // Create profile if missing — don't blow it away if it exists (keeps hotspot running)
-    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=http-chap,http-pap http-cookie-lifetime=0s use-radius=no }`);
+    // login-by includes "cookie" so a returning client (same MAC, within cookie lifetime)
+    // is auto-authenticated without re-entering their voucher. http-cookie-lifetime sets
+    // how long the MAC binding survives a disconnect (1 day here). On reconnect within
+    // that window, RouterOS auto-logs them back in; after it expires, the portal voucher
+    // form is the fallback.
+    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,http-chap,http-pap http-cookie-lifetime=1d use-radius=no }`);
     // Always sync the profile settings (idempotent — no disruption)
-    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=http-chap,http-pap http-cookie-lifetime=0s use-radius=no`);
-    // User profile — strict one-device, no MAC sharing
+    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,http-chap,http-pap http-cookie-lifetime=1d use-radius=no`);
+    // User profile — one device per credential, with MAC cookie so reconnects auto-login
     add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 address-pool=dhcp-pool }`);
+    add(`:do { /ip hotspot user profile set [find name="dartbit-default"] add-mac-cookie=yes } on-error={}`);
     // Hotspot itself on the bridge
     add(`:if ([:len [/ip hotspot find name="dartbit-hotspot"]] = 0) do={ /ip hotspot add name=dartbit-hotspot interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no }`);
     // Sync hotspot settings — idempotent, RouterOS handles no-op gracefully
@@ -243,8 +248,9 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     add('# 8b. Anti-tethering disabled (re-enable carefully if needed)');
     add('');
 
-    // 8c. AP bridge-mode enforcement — disable hotspot's mac-cookie so devices
-    //     can't auto-relogin from another spot, and force the hotspot to re-evaluate
+    // 8c. Force hotspot to re-bind to bridge (picks up newly added ports).
+    //     MAC cookie is intentionally ENABLED (see profile above) so returning
+    //     clients auto-reconnect within the cookie lifetime without re-entering vouchers.
     add('# 8c. Force hotspot to re-bind to bridge (picks up newly added ports)');
     add(`:foreach h in=[/ip hotspot find name="dartbit-hotspot"] do={ /ip hotspot set $h address-pool=dhcp-pool profile=hsprof-dartbit; /ip hotspot disable $h; :delay 500ms; /ip hotspot enable $h }`);
     add('');
@@ -673,7 +679,7 @@ router.get('/sync-script', async (req: Request, res: Response) => {
 
       // Profile: split add+set so each line is short
       add(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} }`);
-      add(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1`);
+      add(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=yes`);
       add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] = 0) do={ /ip hotspot user add name="${sub.username}" password="${sub.secret}" profile=${profileName} comment="Dartbit:${sub.id}" }`);
       add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] > 0) do={ /ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} }`);
       if (expired) {
@@ -740,7 +746,7 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     }
     for (const prof of Object.values(profilesByPkg)) {
       add(`:if ([:len [/ip hotspot user profile find name="${prof.name}"]] = 0) do={ /ip hotspot user profile add name=${prof.name} }`);
-      add(`/ip hotspot user profile set [find name="${prof.name}"] rate-limit="${prof.speed}" shared-users=1`);
+      add(`/ip hotspot user profile set [find name="${prof.name}"] rate-limit="${prof.speed}" shared-users=1 add-mac-cookie=yes`);
     }
     // Add each voucher as a hotspot user — username and password = code.
     // limit-uptime starts counting from first login (MikroTik behavior).

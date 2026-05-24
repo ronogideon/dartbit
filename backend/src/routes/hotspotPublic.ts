@@ -51,13 +51,31 @@ router.post('/redeem', async (req: Request, res: Response) => {
     });
     if (!voucher) return res.status(404).json({ success: false, error: 'Invalid voucher code' });
     if (voucher.tenantId !== r.tenantId) return res.status(403).json({ success: false, error: 'Voucher not valid for this router' });
-    if (voucher.isUsed) return res.status(400).json({ success: false, error: 'Voucher already used' });
-    if (voucher.expiresAt && voucher.expiresAt < new Date()) {
+
+    const now = new Date();
+
+    // Re-login support: if the voucher is already used but still within its validity
+    // window (session not expired), allow re-entry so a disconnected client can log
+    // back in and resume their remaining time. The voucher user is still on the router
+    // (sync keeps it until expiresAt + grace), and limit-uptime is cumulative.
+    if (voucher.isUsed) {
+      if (voucher.expiresAt && voucher.expiresAt > now) {
+        return res.json({
+          success: true,
+          username: voucher.code,
+          password: voucher.code,
+          durationMinutes: voucher.durationMinutes,
+          package: voucher.package?.name,
+          resumed: true,
+        });
+      }
+      return res.status(400).json({ success: false, error: 'Voucher already used' });
+    }
+    if (voucher.expiresAt && voucher.expiresAt < now) {
       return res.status(400).json({ success: false, error: 'Voucher expired' });
     }
 
     // Mark as used and capture session info
-    const now = new Date();
     const sessionExpiresAt = new Date(now.getTime() + voucher.durationMinutes * 60 * 1000);
     const usedMac = typeof mac === 'string' ? mac.replace(/[^A-Fa-f0-9:.\-]/g, '').substring(0, 20) : null;
     const usedIp = typeof ip === 'string' ? ip.replace(/[^0-9.]/g, '').substring(0, 16) : null;
