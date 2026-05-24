@@ -155,10 +155,13 @@ router.get('/:id/detail', async (req: AuthRequest, res: Response) => {
     });
 
     // Totals over the 30-day window
-    let totalRx = 0n, totalTx = 0n;
+    // Byte semantics (subscriber POV):
+    //   SessionRecord.rxBytes = counter the MikroTik RECEIVES from client = subscriber UPLOAD
+    //   SessionRecord.txBytes = counter the MikroTik SENDS to client    = subscriber DOWNLOAD
+    let totalUpload = 0n, totalDownload = 0n;
     const sessions = records.map(rec => {
-      totalRx += rec.rxBytes;
-      totalTx += rec.txBytes;
+      totalUpload += rec.rxBytes;
+      totalDownload += rec.txBytes;
       const durationMs = (rec.endedAt ?? rec.lastSeenAt).getTime() - rec.startedAt.getTime();
       return {
         id: rec.id,
@@ -167,8 +170,8 @@ router.get('/:id/detail', async (req: AuthRequest, res: Response) => {
         active: !rec.endedAt,
         durationSeconds: Math.max(0, Math.round(durationMs / 1000)),
         ipAddress: rec.ipAddress,
-        downloadBytes: rec.rxBytes.toString(),
-        uploadBytes: rec.txBytes.toString(),
+        downloadBytes: rec.txBytes.toString(),
+        uploadBytes: rec.rxBytes.toString(),
       };
     });
 
@@ -184,9 +187,9 @@ router.get('/:id/detail', async (req: AuthRequest, res: Response) => {
         router: sub.router ? { id: sub.router.id, name: sub.router.name } : null,
       },
       usage30d: {
-        totalDownloadBytes: totalRx.toString(),
-        totalUploadBytes: totalTx.toString(),
-        totalBytes: (totalRx + totalTx).toString(),
+        totalDownloadBytes: totalDownload.toString(),
+        totalUploadBytes: totalUpload.toString(),
+        totalBytes: (totalDownload + totalUpload).toString(),
         sessionCount: records.length,
       },
       sessions,

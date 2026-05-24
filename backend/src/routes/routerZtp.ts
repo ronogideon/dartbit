@@ -445,7 +445,10 @@ router.all('/sessions', async (req: Request, res: Response) => {
         const key = `${r.id}:${username}`;
         const prev = lastTrafficReading[key];
 
-        if (prev && rxBytes > 0 && txBytes > 0) {
+        // Compute speed from deltas. Update if we have a previous reading and ANY
+        // counter is present (don't require both > 0 — hotspot users may have one
+        // direction momentarily idle, which previously blocked all updates).
+        if (prev && (rxBytes > 0 || txBytes > 0)) {
           const dt = (now - prev.at) / 1000;
           if (dt > 0 && dt < 120) {
             const rxDelta = Math.max(0, rxBytes - prev.rx);
@@ -455,9 +458,10 @@ router.all('/sessions', async (req: Request, res: Response) => {
           }
         }
 
-        if (rxBytes > 0 || txBytes > 0) {
-          lastTrafficReading[key] = { rx: rxBytes, tx: txBytes, at: now };
-        }
+        // Always record the latest counter reading (even if one side is 0) so the
+        // next poll can compute a delta. This is what makes voucher/hotspot users
+        // update live every 5s like PPPoE.
+        lastTrafficReading[key] = { rx: rxBytes, tx: txBytes, at: now };
 
         sessions.push({
           username, ipAddress, uptime,
