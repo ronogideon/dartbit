@@ -2,22 +2,14 @@ import { Router, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import prisma from '../utils/prisma';
 import { decryptDarajaCreds, centralDarajaCreds, stkPush, normalizePhone } from '../utils/daraja';
+import { resolveTenantBySubdomain } from '../utils/tenantResolve';
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'dartbit-dev-secret';
 
-// Resolve the tenant from the request: prefer ?subdomain=, else the Host header subdomain.
-async function resolveTenant(req: Request): Promise<{ id: string; name: string; subdomain: string } | null> {
-  let sub = String(req.query.subdomain || '').trim().toLowerCase();
-  if (!sub) {
-    const host = (req.headers.host || '').split(':')[0];
-    const parts = host.split('.');
-    // acme.dartbit.app -> "acme"; ignore apex/www
-    if (parts.length >= 3 && parts[0] !== 'www') sub = parts[0].toLowerCase();
-  }
-  if (!sub) return null;
-  const t = await prisma.tenant.findUnique({ where: { subdomain: sub }, select: { id: true, name: true, subdomain: true } });
-  return t;
+// Resolve the tenant from the request (subdomain, ?t=, or header).
+async function resolveTenant(req: Request) {
+  return resolveTenantBySubdomain(req);
 }
 
 function signSubscriberToken(payload: { sid: string; tid: string; kind: 'PPPOE' | 'HOTSPOT' }): string {

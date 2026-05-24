@@ -22,7 +22,23 @@ export default function LoginPage() {
     try {
       const data = await login(email, password);
       setAuth(data.user, data.token);
+      // Remember the tenant's subdomain for tenant-scoped routing.
+      if (data.subdomain) {
+        try { localStorage.setItem('dartbit_subdomain', data.subdomain); } catch {}
+      }
       toast.success(`Welcome back, ${data.user.name}!`);
+
+      // Subdomain enforcement (auto-redirect) activates once a custom domain is live.
+      // Controlled by NEXT_PUBLIC_PORTAL_BASE_DOMAIN. Until then, stay on the current host.
+      const base = process.env.NEXT_PUBLIC_PORTAL_BASE_DOMAIN;
+      if (base && data.subdomain && typeof window !== 'undefined') {
+        const host = window.location.hostname;
+        const expected = `${data.subdomain}.${base}`;
+        if (host !== expected) {
+          window.location.href = `https://${expected}/dashboard`;
+          return;
+        }
+      }
       router.push('/dashboard');
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Invalid email or password';

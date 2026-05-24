@@ -29,9 +29,18 @@ router.post('/login', async (req: Request, res: Response) => {
 
     const token = signToken({ userId: user.id, role: user.role, tenantId: user.tenantId || undefined });
 
+    // Include the tenant's subdomain so the frontend can route the admin to their
+    // tenant-scoped URL (/t/<subdomain>/... now, <subdomain>.domain later).
+    let subdomain: string | null = null;
+    if (user.tenantId) {
+      const t = await prisma.tenant.findUnique({ where: { id: user.tenantId }, select: { subdomain: true } });
+      subdomain = t?.subdomain || null;
+    }
+
     sendSuccess(res, {
       token,
       user: { id: user.id, email: user.email, name: user.name, role: user.role, tenantId: user.tenantId },
+      subdomain,
     });
   } catch {
     sendError(res, 'Login failed', 500);
