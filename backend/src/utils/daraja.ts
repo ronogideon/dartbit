@@ -33,6 +33,22 @@ export function decryptDarajaCreds(cfg: {
   };
 }
 
+// Dartbit's CENTRAL Daraja credentials (from env), used to collect on behalf of
+// tenants who don't have their own API (TILL_MANUAL / PHONE_MANUAL methods).
+export function centralDarajaCreds(): DarajaCreds | null {
+  const consumerKey = process.env.DARAJA_CONSUMER_KEY;
+  const consumerSecret = process.env.DARAJA_CONSUMER_SECRET;
+  const passkey = process.env.DARAJA_PASSKEY;
+  const shortcode = process.env.DARAJA_SHORTCODE;
+  const type = (process.env.DARAJA_TYPE as 'TILL' | 'PAYBILL') || 'TILL';
+  if (!consumerKey || !consumerSecret || !shortcode) return null;
+  return { consumerKey, consumerSecret, passkey: passkey || '', shortcode, type };
+}
+
+export function isCentralDarajaConfigured(): boolean {
+  return !!centralDarajaCreds();
+}
+
 function httpsRequest(method: string, path: string, headers: Record<string, string>, body?: string): Promise<{ status: number; json: Record<string, unknown> }> {
   return new Promise((resolve, reject) => {
     const req = https.request(
@@ -122,4 +138,53 @@ export async function stkPush(params: {
     merchantRequestId: json.MerchantRequestID as string,
     responseCode: json.ResponseCode as string,
   };
+}
+
+// B2C payout — Dartbit pays a tenant their collected funds (minus fee) to a phone or till.
+// Requires central B2C credentials in env (separate Safaricom approval from STK/C2B).
+// Returns the conversation ID, or throws if B2C isn't configured / fails.
+export async function b2cPayout(params: {
+  amount: number;
+  partyB: string;          // recipient phone (2547...) or till
+  remarks: string;
+  resultUrl: string;
+  isPhone: boolean;        // true=BusinessPayment to phone, false=till
+}): Promise<{ conversationId: string }> {
+  const consumerKey = process.env.DARAJA_B2C_CONSUMER_KEY || process.env.DARAJA_CONSUMER_KEY;
+  const consumerSecret = process.env.DARAJA_B2C_CONSUMER_SECRET || process.env.DARAJA_CONSUMER_SECRET;
+  const shortcode = process.env.DARAJA_B2C_SHORTCODE;
+  const initiator = process.env.DARAJA_B2C_INITIATOR;
+  const securityCredential = process.env.DARAJA_B2C_SECURITY_CREDENTIAL;
+  if (!consumerKey || !consumerSecret || !shortcode || !initiator || !securityCredential) {
+    throw new Error('B2C not configured');
+  }
+  const creds: DarajaCreds = { consumerKey, consumerSecret, passkey: '', shortcode, type: 'PAYBILL' };
+  const token = await getAccessToken(creds);
+
+  const payload = JSON.stringify({
+    InitiatorName: initiator,
+    SecurityCredential: securityCredential,
+    CommandID: params.isPhone ? 'BusinessPayment' : 'BusinessPayBill',
+    Amount: Math.round(params.amount),
+    PartyA: shortcode,
+    PartyB: params.isPhone ? normalizePhone(params.partyB) : params.partyB,
+    Remarks: params.remarks.slice(0, 100),
+    QueueTimeOutURL: params.resultUrl,
+    ResultURL: params.resultUrl,
+    Occasion: 'Payout',
+  });
+
+  const { json } = await httpsRequest('POST', '/mpesa/b2c/v1/paymentrequest', {
+    Authorization: `Bearer ${token}`,
+    'Content-Type': 'application/json',
+  }, payload);
+
+  if (!json.ConversationID) {
+    throw new Error((json.errorMessage as string) || 'B2C payout failed');
+  }
+  return { conversationId: json.ConversationID as string };
+}
+
+export function isB2cConfigured(): boolean {
+  return !!(process.env.DARAJA_B2C_INITIATOR && process.env.DARAJA_B2C_SECURITY_CREDENTIAL && process.env.DARAJA_B2C_SHORTCODE);
 }

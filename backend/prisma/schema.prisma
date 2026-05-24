@@ -371,6 +371,13 @@ model MpesaTransaction {
   durationMinutes   Int       @default(60)
   expiresAt         DateTime?
   resultDesc        String?
+  // Collection routing + payout (for Dartbit-collected manual methods)
+  collectedVia      String?   @default("TENANT") // TENANT | DARTBIT
+  platformFee       Float     @default(0)         // 1% fee retained by Dartbit (manual methods)
+  netToTenant       Float     @default(0)         // amount owed/paid to tenant after fee
+  payoutStatus      String?   // null | PENDING | PAID | FAILED
+  payoutRef         String?   // B2C conversation id
+  payoutAt          DateTime?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 

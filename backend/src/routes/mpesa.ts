@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import prisma from '../utils/prisma';
 import { enqueueCommand } from '../utils/commandQueue';
-import { decryptDarajaCreds, stkPush, normalizePhone } from '../utils/daraja';
+import { decryptDarajaCreds, centralDarajaCreds, stkPush, normalizePhone, b2cPayout, isB2cConfigured } from '../utils/daraja';
 
 const router = Router();
 
@@ -28,13 +28,32 @@ router.post('/stk', async (req: Request, res: Response) => {
     if (!pkg || pkg.tenantId !== r.tenantId) return res.status(404).json({ success: false, error: 'Package not found' });
 
     const cfg = await prisma.paymentConfig.findUnique({ where: { tenantId: r.tenantId } });
-    if (!cfg || cfg.method !== 'DARAJA_API') {
-      return res.status(400).json({ success: false, error: 'This provider is not set up for direct M-Pesa payments.' });
+    if (!cfg) return res.status(400).json({ success: false, error: 'Payments are not set up for this provider yet.' });
+
+    // Pick the collecting credentials based on the tenant's chosen method:
+    //   DARAJA_API           -> tenant's own Daraja (money direct to them, no fee)
+    //   TILL_MANUAL/PHONE    -> Dartbit's central Daraja (collect, then disburse minus 1%)
+    let creds: ReturnType<typeof decryptDarajaCreds> = null;
+    let collectedVia: 'TENANT' | 'DARTBIT' = 'TENANT';
+
+    if (cfg.method === 'DARAJA_API') {
+      creds = decryptDarajaCreds(cfg);
+      collectedVia = 'TENANT';
+      if (!creds) return res.status(400).json({ success: false, error: 'Payment credentials incomplete' });
+    } else if (cfg.method === 'TILL_MANUAL' || cfg.method === 'PHONE_MANUAL') {
+      creds = centralDarajaCreds();
+      collectedVia = 'DARTBIT';
+      if (!creds) return res.status(503).json({ success: false, error: 'Central payment service unavailable. Contact support.' });
+    } else {
+      // KOPOKOPO_API not handled by this STK endpoint
+      return res.status(400).json({ success: false, error: 'Selected payment method does not support STK push here.' });
     }
-    const creds = decryptDarajaCreds(cfg);
-    if (!creds) return res.status(400).json({ success: false, error: 'Payment credentials incomplete' });
 
     const durationMinutes = pkg.validityMinutes || 60;
+
+    // Compute fee for Dartbit-collected payments: 1% rounded UP to next whole KES.
+    const platformFee = collectedVia === 'DARTBIT' ? Math.ceil(pkg.price * 0.01) : 0;
+    const netToTenant = collectedVia === 'DARTBIT' ? Math.max(0, pkg.price - platformFee) : pkg.price;
 
     // Create the pending transaction first so the callback can find it
     const tx = await prisma.mpesaTransaction.create({
@@ -43,6 +62,7 @@ router.post('/stk', async (req: Request, res: Response) => {
         phone: normalizePhone(phone), amount: pkg.price, status: 'PENDING',
         clientMac: mac || null, clientIp: ip || null,
         durationMinutes,
+        collectedVia, platformFee, netToTenant,
       },
     });
 
@@ -134,6 +154,39 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
     where: { id: txId },
     data: { status: 'PAID', mpesaReceipt: receipt || null, username, password, expiresAt, resultDesc: 'Success' },
   });
+
+  // For Dartbit-collected (manual) methods, disburse the tenant's net share via B2C.
+  if (tx.collectedVia === 'DARTBIT' && tx.netToTenant > 0) {
+    const cfg = await prisma.paymentConfig.findUnique({ where: { tenantId: tx.tenantId } });
+    const isPhone = cfg?.method === 'PHONE_MANUAL';
+    const dest = isPhone ? cfg?.payoutPhone : cfg?.payoutTill;
+    if (dest && isB2cConfigured()) {
+      await prisma.mpesaTransaction.update({ where: { id: txId }, data: { payoutStatus: 'PENDING' } });
+      try {
+        const result = await b2cPayout({
+          amount: tx.netToTenant,
+          partyB: dest,
+          isPhone: !!isPhone,
+          remarks: `Dartbit payout ${txId.slice(-8)}`,
+          resultUrl: `${BACKEND_URL}/hotspot/b2c-result/${txId}`,
+        });
+        await prisma.mpesaTransaction.update({
+          where: { id: txId },
+          data: { payoutStatus: 'PENDING', payoutRef: result.conversationId },
+        });
+      } catch (e) {
+        // Payout failed/not enabled — leave as PENDING for manual settlement, log it.
+        console.error('B2C payout error:', e instanceof Error ? e.message : e);
+        await prisma.mpesaTransaction.update({
+          where: { id: txId },
+          data: { payoutStatus: isB2cConfigured() ? 'FAILED' : 'PENDING' },
+        });
+      }
+    } else {
+      // No B2C configured — mark payout PENDING so it can be settled manually/periodically.
+      await prisma.mpesaTransaction.update({ where: { id: txId }, data: { payoutStatus: 'PENDING' } });
+    }
+  }
 }
 
 // GET /hotspot/stk-status/:txId — portal polls this to know when payment completed.
@@ -154,6 +207,26 @@ router.get('/stk-status/:txId', async (req: Request, res: Response) => {
     });
   } catch {
     res.status(500).json({ success: false, error: 'Failed' });
+  }
+});
+
+// POST /hotspot/b2c-result/:txId — Daraja B2C payout result callback.
+router.post('/b2c-result/:txId', async (req: Request, res: Response) => {
+  res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
+  try {
+    const txId = req.params.txId;
+    const result = req.body?.Result;
+    if (!result) return;
+    const ok = result.ResultCode === 0;
+    await prisma.mpesaTransaction.update({
+      where: { id: txId },
+      data: {
+        payoutStatus: ok ? 'PAID' : 'FAILED',
+        payoutAt: ok ? new Date() : null,
+      },
+    });
+  } catch (err) {
+    console.error('b2c-result error:', err instanceof Error ? err.message : err);
   }
 });
 
