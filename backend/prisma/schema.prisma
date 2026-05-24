@@ -10,6 +10,7 @@ datasource db {
 
 enum UserRole {
   SUPERADMIN
+  SUPERADMIN_VIEWER
   TENANT_ADMIN
   TENANT_VIEWER
 }

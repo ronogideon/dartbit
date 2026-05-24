@@ -24,6 +24,7 @@ import webhookRoutes from './routes/webhooks';
 import hotspotPublicRoutes from './routes/hotspotPublic';
 import mpesaRoutes from './routes/mpesa';
 import subscriberPortalRoutes from './routes/subscriberPortal';
+import superadminAnalyticsRoutes from './routes/superadminAnalytics';
 import hotspotHtmlRoutes from './routes/hotspotHtml';
 
 const app = express();
@@ -82,8 +83,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.7.0', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.7.0', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.7.1', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.7.1', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -104,12 +105,13 @@ app.use('/payment-config', paymentConfigRoutes);
 app.use('/hotspot', mpesaRoutes);
 app.use('/hotspot', hotspotPublicRoutes);
 app.use('/portal', subscriberPortalRoutes);
+app.use('/superadmin', superadminAnalyticsRoutes);
 app.use('/hotspot-html', hotspotHtmlRoutes);
 
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.7.0 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.7.1 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -408,6 +410,7 @@ async function patchDatabase() {
 
     // System users: add TENANT_VIEWER enum value + User.isActive
     await safeExec(prisma, 'UserRole TENANT_VIEWER', `ALTER TYPE "UserRole" ADD VALUE IF NOT EXISTS 'TENANT_VIEWER'`);
+    await safeExec(prisma, 'UserRole SUPERADMIN_VIEWER', `ALTER TYPE "UserRole" ADD VALUE IF NOT EXISTS 'SUPERADMIN_VIEWER'`);
     await safeExec(prisma, 'User.isActive', `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "isActive" BOOLEAN NOT NULL DEFAULT true`);
 
     // PaymentConfig — tenant's collection method + (encrypted) credentials
@@ -460,7 +463,7 @@ async function patchDatabase() {
       )`);
     await safeExec(prisma, 'MpesaTx checkout unique', `CREATE UNIQUE INDEX IF NOT EXISTS "MpesaTransaction_checkoutRequestId_key" ON "MpesaTransaction"("checkoutRequestId")`);
     await safeExec(prisma, 'MpesaTx tenant idx', `CREATE INDEX IF NOT EXISTS "MpesaTransaction_tenantId_status_idx" ON "MpesaTransaction"("tenantId","status")`);
-    // v1.7.0 payout/fee columns
+    // v1.7.1 payout/fee columns
     await safeExec(prisma, 'MpesaTx collectedVia', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "collectedVia" TEXT DEFAULT 'TENANT'`);
     await safeExec(prisma, 'MpesaTx platformFee', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "platformFee" DOUBLE PRECISION NOT NULL DEFAULT 0`);
     await safeExec(prisma, 'MpesaTx netToTenant', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "netToTenant" DOUBLE PRECISION NOT NULL DEFAULT 0`);

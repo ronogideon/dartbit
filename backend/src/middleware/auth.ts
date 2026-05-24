@@ -28,6 +28,14 @@ export const requireSuperAdmin = (req: AuthRequest, res: Response, next: NextFun
   next();
 };
 
+// Read access for analytics: full superadmins AND view-only superadmin team members.
+export const requireSuperAdminRead = (req: AuthRequest, res: Response, next: NextFunction) => {
+  if (!['SUPERADMIN', 'SUPERADMIN_VIEWER'].includes(req.user?.role || '')) {
+    return sendError(res, 'Forbidden: Superadmin only', 403);
+  }
+  next();
+};
+
 export const requireTenantAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
   if (!['SUPERADMIN', 'TENANT_ADMIN'].includes(req.user?.role || '')) {
     return sendError(res, 'Forbidden', 403);
