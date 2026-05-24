@@ -16,12 +16,20 @@ async function main() {
   const superHash = await bcrypt.hash('SuperAdmin123!', 10);
   const superAdmin = await prisma.user.upsert({
     where: { email: 'superadmin@dartbit.local' },
-    update: {},
+    // Re-seeding REPAIRS the account: resets the password hash, role, and active flag.
+    // (Previously this was empty, so an existing row with a stale/old password was never
+    // updated — causing "invalid credentials" even after a successful seed.)
+    update: {
+      password: superHash,
+      role: 'SUPERADMIN',
+      isActive: true,
+    },
     create: {
       email: 'superadmin@dartbit.local',
       password: superHash,
       name: 'Super Admin',
       role: 'SUPERADMIN',
+      isActive: true,
     },
   });
   console.log(`✓ Superadmin: ${superAdmin.email}`);
@@ -53,13 +61,19 @@ async function main() {
   const adminHash = await bcrypt.hash('Test12345', 10);
   const tenantAdmin = await prisma.user.upsert({
     where: { email: 'admin@demoisp.com' },
-    update: {},
+    update: {
+      password: adminHash,
+      role: 'TENANT_ADMIN',
+      isActive: true,
+      tenantId: tenant.id,
+    },
     create: {
       email: 'admin@demoisp.com',
       password: adminHash,
       name: 'Demo Admin',
       role: 'TENANT_ADMIN',
       tenantId: tenant.id,
+      isActive: true,
     },
   });
   console.log(`✓ Tenant admin: ${tenantAdmin.email}`);

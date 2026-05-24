@@ -15,6 +15,48 @@ function generateSubdomain(name: string): string {
     .substring(0, 30);
 }
 
+// GET /admin/check-superadmin?secret=dartbit-seed-2024
+// Diagnostic: reports the superadmin record state WITHOUT exposing the hash, and
+// whether the known password verifies against it. Use this to pin down login failures.
+router.get('/check-superadmin', async (req: Request, res: Response) => {
+  if (req.query.secret !== 'dartbit-seed-2024') return res.status(403).json({ error: 'Forbidden' });
+  try {
+    const u = await prisma.user.findUnique({ where: { email: 'superadmin@dartbit.local' } });
+    if (!u) return res.json({ exists: false, note: 'No superadmin row found for superadmin@dartbit.local' });
+    const verifies = await bcrypt.compare('SuperAdmin123!', u.password);
+    res.json({
+      exists: true,
+      email: u.email,
+      role: u.role,
+      isActive: (u as { isActive?: boolean }).isActive,
+      tenantId: u.tenantId,
+      hashLength: u.password?.length || 0,
+      hashPrefix: u.password?.slice(0, 4),       // e.g. "$2a$" or "$2b$" — bcrypt variant
+      passwordVerifies: verifies,                 // TRUE means "SuperAdmin123!" is correct
+    });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : 'failed' });
+  }
+});
+
+// POST or GET /admin/reset-superadmin?secret=dartbit-seed-2024
+// Force-resets the superadmin password to the known default and ensures active.
+router.get('/reset-superadmin', async (req: Request, res: Response) => {
+  if (req.query.secret !== 'dartbit-seed-2024') return res.status(403).json({ error: 'Forbidden' });
+  try {
+    const hash = await bcrypt.hash('SuperAdmin123!', 10);
+    const u = await prisma.user.upsert({
+      where: { email: 'superadmin@dartbit.local' },
+      update: { password: hash, role: 'SUPERADMIN', isActive: true },
+      create: { email: 'superadmin@dartbit.local', password: hash, name: 'Super Admin', role: 'SUPERADMIN', isActive: true },
+    });
+    const verifies = await bcrypt.compare('SuperAdmin123!', u.password);
+    res.json({ ok: true, email: u.email, role: u.role, passwordVerifies: verifies, message: 'Superadmin reset to superadmin@dartbit.local / SuperAdmin123!' });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : 'failed' });
+  }
+});
+
 // GET /admin/seed?secret=dartbit-seed-2024
 router.get('/seed', async (req: Request, res: Response) => {
   const { secret } = req.query;
@@ -29,15 +71,23 @@ router.get('/seed', async (req: Request, res: Response) => {
     const superHash = await bcrypt.hash('SuperAdmin123!', 10);
     await prisma.user.upsert({
       where: { email: 'superadmin@dartbit.local' },
-      update: {},
+      // Repair on re-seed: reset password, role, and active flag so the known
+      // credentials always work after seeding (previously update was empty, leaving
+      // a stale password in place -> "invalid credentials").
+      update: {
+        password: superHash,
+        role: 'SUPERADMIN',
+        isActive: true,
+      },
       create: {
         email: 'superadmin@dartbit.local',
         password: superHash,
         name: 'Super Admin',
         role: 'SUPERADMIN',
+        isActive: true,
       },
     });
-    results.push('✓ Superadmin created');
+    results.push('✓ Superadmin created/reset');
 
     // Demo Tenant
     const subdomain = 'demo-isp';
