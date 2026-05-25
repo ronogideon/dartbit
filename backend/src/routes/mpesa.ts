@@ -155,6 +155,39 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
     data: { status: 'PAID', mpesaReceipt: receipt || null, username, password, expiresAt, resultDesc: 'Success' },
   });
 
+  // Add the customer to the subscribers list automatically (HOTSPOT service type),
+  // so M-Pesa hotspot buyers appear alongside PPPoE subscribers in the dashboard.
+  // Keyed by username (unique per purchase). If somehow it exists, update it.
+  try {
+    const existing = await prisma.subscriber.findFirst({ where: { tenantId: tx.tenantId, username } });
+    if (!existing) {
+      await prisma.subscriber.create({
+        data: {
+          tenantId: tx.tenantId,
+          routerId: tx.routerId || undefined,
+          packageId: tx.packageId || undefined,
+          username,
+          secret: password,
+          fullName: tx.phone || 'Hotspot Customer',
+          phone: tx.phone || null,
+          service: 'HOTSPOT',
+          isActive: true,
+          expiresAt,
+          macAddress: tx.clientMac || null,
+          ipAddress: tx.clientIp || null,
+        },
+      });
+    } else {
+      await prisma.subscriber.update({
+        where: { id: existing.id },
+        data: { secret: password, expiresAt, isActive: true, packageId: tx.packageId || undefined },
+      });
+    }
+  } catch (e) {
+    // Non-fatal: provisioning + payment already succeeded; subscriber listing is secondary.
+    console.error('subscriber create (hotspot) error:', e instanceof Error ? e.message : e);
+  }
+
   // For Dartbit-collected (manual) methods, disburse the tenant's net share via B2C.
   if (tx.collectedVia === 'DARTBIT' && tx.netToTenant > 0) {
     const cfg = await prisma.paymentConfig.findUnique({ where: { tenantId: tx.tenantId } });

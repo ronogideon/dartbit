@@ -78,6 +78,11 @@ button.primary svg{width:14px;height:14px}
 @keyframes spin{to{transform:rotate(360deg)}}
 .footer{font-size:11px;color:#4b5563;text-align:center;margin-top:18px}
 .empty{text-align:center;padding:24px 12px;color:#6b7280;font-size:13px}
+.linkbtn{background:none;border:none;color:#3b82f6;font-size:13px;padding:0;margin-bottom:14px;cursor:pointer}
+.pay-summary{background:#1e293b;border-radius:12px;padding:14px 16px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center}
+.pay-summary .ps-name{font-weight:600;font-size:15px}
+.pay-summary .ps-meta{font-size:11px;color:#9ca3af;margin-top:2px}
+.pay-summary .ps-price{font-size:20px;font-weight:700;color:#22c55e}
 </style>
 </head>
 <body>
@@ -99,14 +104,20 @@ button.primary svg{width:14px;height:14px}
     </div>
 
     <div class="panel active" id="panel-buy">
-      <h2>Buy a WiFi package</h2>
-      <p class="help">Pick a package below to get a code instantly.</p>
-      <div class="pkg-list" id="pkg-list"><div class="empty">Loading packages...</div></div>
-      <div style="margin-bottom:12px">
-        <label>Phone (optional)</label>
-        <input id="buy-phone" placeholder="e.g. 0712345678" inputmode="tel" autocomplete="tel">
+      <!-- Step 1: package list -->
+      <div id="buy-step-pkg">
+        <h2>Buy a WiFi package</h2>
+        <p class="help">Tap a package to subscribe.</p>
+        <div class="pkg-list" id="pkg-list"><div class="empty">Loading packages...</div></div>
       </div>
-      <button class="primary" id="buy-btn" disabled>Pay with M-Pesa</button>
+      <!-- Step 2: phone entry + pay (shown after a package is tapped) -->
+      <div id="buy-step-pay" style="display:none">
+        <button type="button" id="buy-back" class="linkbtn">&larr; Back to packages</button>
+        <div class="pay-summary" id="pay-summary"></div>
+        <label>M-Pesa Phone Number</label>
+        <input id="buy-phone" placeholder="07XXXXXXXX" inputmode="numeric" pattern="[0-9]*" autocomplete="tel" maxlength="13">
+        <button class="primary" id="buy-btn" style="margin-top:12px">Subscribe Now</button>
+      </div>
     </div>
 
     <div class="panel" id="panel-voucher">
@@ -217,22 +228,34 @@ button.primary svg{width:14px;height:14px}
       d.innerHTML='<div><div class="pkg-name">'+escapeHtml(p.name)+'</div><div class="pkg-meta">'+fmtSpeed(p.speedDownKbps)+'bps · '+fmtDur(p.validityMinutes)+'</div></div>'+
                   '<div class="pkg-price">KES '+p.price.toFixed(0)+'<small>'+fmtDur(p.validityMinutes)+'</small></div>';
       d.addEventListener('click',function(){
-        document.querySelectorAll('.pkg-card').forEach(function(x){x.classList.remove('selected')});
-        this.classList.add('selected');
         selectedPkg=p;
-        document.getElementById('buy-btn').disabled=false;
+        // Fill the pay summary and switch to the phone-entry step
+        document.getElementById('pay-summary').innerHTML=
+          '<div><div class="ps-name">'+escapeHtml(p.name)+'</div><div class="ps-meta">'+fmtSpeed(p.speedDownKbps)+'bps · '+fmtDur(p.validityMinutes)+'</div></div>'+
+          '<div class="ps-price">KES '+p.price.toFixed(0)+'</div>';
+        document.getElementById('buy-step-pkg').style.display='none';
+        document.getElementById('buy-step-pay').style.display='block';
+        clr();
+        var pf=document.getElementById('buy-phone');pf.value='';pf.focus();
       });
       list.appendChild(d);
     });
   }
   function escapeHtml(s){var d=document.createElement('div');d.innerText=s;return d.innerHTML}
 
+  // Back button: return to the package list
+  document.getElementById('buy-back').addEventListener('click',function(){
+    document.getElementById('buy-step-pay').style.display='none';
+    document.getElementById('buy-step-pkg').style.display='block';
+    selectedPkg=null;clr();
+  });
+
   // === BUY: STK push purchase ===
   document.getElementById('buy-btn').addEventListener('click',function(){
     if(!selectedPkg)return;
     var btn=this;
     var phone=document.getElementById('buy-phone').value.trim();
-    if(!phone){show('error','Enter your M-Pesa phone number');return;}
+    if(!phone||phone.replace(/\D/g,'').length<9){show('error','Enter a valid M-Pesa phone number');return;}
     btn.disabled=true;btn.innerHTML=spinner()+' Sending request...';
     clr();
     var xhr=new XMLHttpRequest();
@@ -244,18 +267,18 @@ button.primary svg{width:14px;height:14px}
         var data=JSON.parse(xhr.responseText);
         if(!data.success){
           show('error',data.error||'Could not start payment');
-          btn.disabled=false;btn.textContent='Pay with M-Pesa';
+          btn.disabled=false;btn.textContent='Subscribe Now';
           return;
         }
         show('success','Check your phone — enter your M-Pesa PIN to complete payment.');
         pollStk(data.transactionId,btn);
       }catch(e){
         show('error','Server response error');
-        btn.disabled=false;btn.textContent='Pay with M-Pesa';
+        btn.disabled=false;btn.textContent='Subscribe Now';
       }
     };
-    xhr.onerror=function(){show('error','Cannot reach server. Check connection.');btn.disabled=false;btn.textContent='Pay with M-Pesa'};
-    xhr.ontimeout=function(){show('error','Request timeout. Try again.');btn.disabled=false;btn.textContent='Pay with M-Pesa'};
+    xhr.onerror=function(){show('error','Cannot reach server. Check connection.');btn.disabled=false;btn.textContent='Subscribe Now'};
+    xhr.ontimeout=function(){show('error','Request timeout. Try again.');btn.disabled=false;btn.textContent='Subscribe Now'};
     xhr.send(JSON.stringify({apiKey:API_KEY,packageId:selectedPkg.id,phone:phone,mac:MAC,ip:IP}));
   });
 
@@ -267,7 +290,7 @@ button.primary svg{width:14px;height:14px}
       if(tries>max){
         clearInterval(iv);
         show('error','Payment timed out. If you were charged, use the Account tab with your credentials.');
-        btn.disabled=false;btn.textContent='Pay with M-Pesa';
+        btn.disabled=false;btn.textContent='Subscribe Now';
         return;
       }
       var xhr=new XMLHttpRequest();
@@ -279,17 +302,13 @@ button.primary svg{width:14px;height:14px}
           if(d.status==='PAID'){
             clearInterval(iv);
             var creds='<div class="code-display"><div class="label">Your login</div><div class="code">'+d.username+' / '+d.password+'</div></div>';
-            if(d.autoConnected){
-              show('success',creds+'Payment received! Connecting your device now...');
-              setTimeout(function(){submitMikrotik(d.username,d.password);},2500);
-            } else {
-              show('success',creds+'Payment received! Signing you in...');
-              setTimeout(function(){submitMikrotik(d.username,d.password);},1500);
-            }
+            show('success',creds+'Payment received! Connecting you now...');
+            // Auto-connect immediately — no delay timer.
+            submitMikrotik(d.username,d.password);
           } else if(d.status==='FAILED'){
             clearInterval(iv);
             show('error',d.message||'Payment failed or cancelled.');
-            btn.disabled=false;btn.textContent='Pay with M-Pesa';
+            btn.disabled=false;btn.textContent='Subscribe Now';
           }
           // else still PENDING — keep polling
         }catch(e){}

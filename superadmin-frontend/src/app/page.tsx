@@ -37,13 +37,23 @@ function Login({ onAuthed }: { onAuthed: (role: string) => void }) {
     try {
       const data = await API.login(email, password);
       if (data.user.role !== 'SUPERADMIN' && data.user.role !== 'SUPERADMIN_VIEWER') {
-        toast.error('Not a superadmin account'); setLoading(false); return;
+        toast.error('This account is not a superadmin'); setLoading(false); return;
       }
       localStorage.setItem('dartbit_sa_token', data.token);
       localStorage.setItem('dartbit_sa_role', data.user.role);
       onAuthed(data.user.role);
-    } catch {
-      toast.error('Invalid credentials'); setLoading(false);
+    } catch (err) {
+      // Distinguish the real cause instead of blaming the password for everything.
+      const e = err as { response?: { status?: number; data?: { error?: string } }; message?: string };
+      if (e.response) {
+        // The request reached the backend and it responded with an error status.
+        if (e.response.status === 401) toast.error('Invalid email or password');
+        else toast.error(e.response.data?.error || `Server error (${e.response.status})`);
+      } else {
+        // No response = network/CORS failure (request blocked before/without a reply).
+        toast.error(`Cannot reach the server (${e.message || 'network/CORS error'}). Check API URL and CORS.`);
+      }
+      setLoading(false);
     }
   };
   return (
@@ -54,6 +64,7 @@ function Login({ onAuthed }: { onAuthed: (role: string) => void }) {
         <input className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white mb-3" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} />
         <input type="password" className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white mb-4" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} />
         <button disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2.5 font-medium disabled:opacity-50">{loading ? 'Signing in…' : 'Sign In'}</button>
+        <p className="text-[10px] text-gray-600 mt-4 text-center break-all">API: {process.env.NEXT_PUBLIC_API_URL || 'https://dartbit-production.up.railway.app'}</p>
       </form>
     </div>
   );
