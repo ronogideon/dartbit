@@ -192,26 +192,19 @@ router.post('/:id/reprovision', async (req: AuthRequest, res: Response) => {
     // Backend on Railway is always HTTPS. Hardcode mode=https on the fetch so the
     // reprov task can never fail with "Mode not specified" (which happens when the
     // mode flag is absent — RouterOS 7 can't infer protocol for fetch).
-    const ztpUrl = `${backendUrl.replace(/^http:/, 'https:')}/router/ztp-script?apiKey=${r.apiKey}`;
-
-    // KEY LESSON: a `/tool fetch url="..."` executed DIRECTLY from an imported .rsc line
-    // loses its quoting/host ("Please provide IP address or host"). Fetches must live
-    // inside a script's source={} block (the same place the working dartbit-stats/cmd/sync
-    // fetches live). So the queued command only CREATES a script + scheduler; the actual
-    // fetch+import runs later from inside the script body. The source={} is a FLAT sequence
-    // (no nested do={} braces, which would choke the command-queue import).
-    const command = [
-      `:log info "Dartbit: scheduling reprov"`,
-      `/system script remove [find name="dartbit-reprov"]`,
-      `/system script add name=dartbit-reprov policy=read,write,test,reboot,ftp source={/tool fetch url="${ztpUrl}" dst-path=dartbit-ztp.rsc mode=https check-certificate=no; :delay 5s; /import file-name=dartbit-ztp.rsc; :delay 1s; /file remove [find name="dartbit-ztp.rsc"]; /system scheduler remove [find name="dartbit-reprov-once"]; :log info "Dartbit: reprovision done"}`,
-      `/system scheduler remove [find name="dartbit-reprov-once"]`,
-      `/system scheduler add name=dartbit-reprov-once interval=15s on-event="/system script run dartbit-reprov" comment="reprov"`,
-    ].join('\n');
+    // Reprovision by delivering the FULL ZTP script directly through the command queue.
+    // The router's dartbit-cmd already fetches /router/commands and imports it (proven to
+    // work — see the FINISHED log lines). So instead of telling the router to fetch the
+    // ztp itself (which failed because a bare imported fetch loses its url quoting), we
+    // put the entire ztp script — same content, same embedded apiKey — straight into the
+    // queue. The router imports it directly: no second fetch, no scheduler, nothing to break.
+    const { generateZtpScript } = await import('./routerZtp');
+    const ztpScript = await generateZtpScript(r);
 
     const { enqueueCommand } = await import('../utils/commandQueue');
-    await enqueueCommand(r.id, command);
+    await enqueueCommand(r.id, ztpScript);
 
-    sendSuccess(res, { queued: true, message: 'Reprovision will start within 30 seconds' });
+    sendSuccess(res, { queued: true, message: 'Reprovision queued — the router will apply it within ~10 seconds.' });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);
   }

@@ -35,13 +35,11 @@ async function resolveBackendIps(hostname: string): Promise<string[]> {
   return list;
 }
 
-router.get('/ztp-script', async (req: Request, res: Response) => {
-  try {
-    const apiKey = String(req.query.apiKey || '');
-    if (!apiKey) return res.status(400).type('text/plain').send('# Error: apiKey required');
-
-    const r = await findRouter(apiKey);
-    if (!r) return res.status(404).type('text/plain').send('# Error: Router not found');
+// Generates the full ZTP provisioning script for a router (the same content the
+// /ztp-script endpoint serves). Extracted so reprovision can deliver it directly
+// through the command queue without the router needing a second fetch.
+async function generateZtpScript(r: NonNullable<Awaited<ReturnType<typeof findRouter>>>): Promise<string> {
+    const apiKey = r.apiKey;
 
     let backendUrl = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
     if (backendUrl.startsWith('http://') && backendUrl.includes('railway.app')) {
@@ -311,7 +309,18 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
 
     add(':log info "Dartbit: Provisioning complete"');
 
-    res.type('text/plain').send(lines.join('\n'));
+    return lines.join('\n');
+}
+
+// GET /router/ztp-script?apiKey=xxx — serves the provisioning script for the router to fetch.
+router.get('/ztp-script', async (req: Request, res: Response) => {
+  try {
+    const apiKey = String(req.query.apiKey || '');
+    if (!apiKey) return res.status(400).type('text/plain').send('# Error: apiKey required');
+    const r = await findRouter(apiKey);
+    if (!r) return res.status(404).type('text/plain').send('# Error: Router not found');
+    const script = await generateZtpScript(r);
+    res.type('text/plain').send(script);
   } catch (err) {
     console.error('ZTP error:', err);
     res.status(500).type('text/plain').send(`# Error: ${err instanceof Error ? err.message : 'Unknown'}`);
@@ -882,4 +891,5 @@ router.get('/list-interfaces/:routerId', async (req: Request, res: Response) => 
   }
 });
 
+export { generateZtpScript };
 export default router;
