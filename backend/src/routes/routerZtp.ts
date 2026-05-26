@@ -814,6 +814,32 @@ router.get('/sync-script', async (req: Request, res: Response) => {
   }
 });
 
+// GET /router/debug-list?secret=dartbit-seed-2024 — diagnostic: lists all routers in
+// the database this backend is connected to, with masked API keys + status. Use this to
+// confirm whether a router you "linked" actually exists here, and which apiKey is current.
+router.get('/debug-list', async (req: Request, res: Response) => {
+  if (req.query.secret !== 'dartbit-seed-2024') return res.status(403).json({ error: 'Forbidden' });
+  try {
+    const routers = await prisma.mikrotikRouter.findMany({
+      select: { id: true, name: true, apiKey: true, status: true, tenantId: true, createdAt: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json({
+      count: routers.length,
+      routers: routers.map(r => ({
+        id: r.id,
+        name: r.name,
+        status: r.status,
+        apiKeyFull: r.apiKey,          // full key so you can match your bootstrap command
+        tenantId: r.tenantId,
+        createdAt: r.createdAt,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'failed' });
+  }
+});
+
 // GET /router/queue-status?apiKey=xxx — diagnostic: how many commands are pending for
 // this router, and whether the RouterCommand table is reachable. Helps confirm whether
 // reprovision is actually being queued.

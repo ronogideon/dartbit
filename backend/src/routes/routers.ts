@@ -38,15 +38,13 @@ router.post('/link', async (req: AuthRequest, res: Response) => {
 
     const apiKey = uuidv4();
     let backendUrl = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
-
-    // Force HTTPS for Railway URLs (Railway redirects HTTP -> HTTPS but MikroTik /tool fetch doesn't follow redirects)
-    if (backendUrl.startsWith('http://') && backendUrl.includes('railway.app')) {
-      backendUrl = backendUrl.replace('http://', 'https://');
-    }
-    // If localhost is detected, use Railway URL instead (MikroTik can't reach localhost from the internet)
+    // Normalize to always-https (strip any/no protocol, force https). MikroTik /tool fetch
+    // requires mode=https and won't follow redirects, so the URL and flags must be https.
+    backendUrl = backendUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '');
     if (backendUrl.includes('localhost') || backendUrl.includes('127.0.0.1')) {
-      backendUrl = 'https://dartbit-production.up.railway.app';
+      backendUrl = 'dartbit-production.up.railway.app';
     }
+    backendUrl = 'https://' + backendUrl;
 
     const mikrotikRouter = await prisma.mikrotikRouter.create({
       data: {
@@ -57,9 +55,8 @@ router.post('/link', async (req: AuthRequest, res: Response) => {
       },
     });
 
-    // Build bootstrap with proper HTTPS flags so MikroTik handles Railway's TLS correctly
-    const isHttps = backendUrl.startsWith('https://');
-    const fetchFlags = isHttps ? ' mode=https check-certificate=no' : '';
+    // Bootstrap fetch — always include mode=https (RouterOS errors "Mode not specified" without it).
+    const fetchFlags = ' mode=https check-certificate=no';
     const bootstrapCommand = `/tool fetch url="${backendUrl}/router/ztp-script?apiKey=${apiKey}" dst-path=dartbit-ztp.rsc${fetchFlags}; /import file-name=dartbit-ztp.rsc`;
 
     sendSuccess(res, {
