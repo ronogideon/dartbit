@@ -14,19 +14,25 @@ async function findRouter(apiKey: string) {
 }
 
 // Resolve backend hostname to IPs so we can whitelist them in walled garden.
-// Cached briefly to avoid hitting DNS on every ZTP request.
+// Short cache because Railway/edge IPs can rotate — stale IPs break the walled garden.
 let backendIpCache: { ips: string[]; at: number } | null = null;
 async function resolveBackendIps(hostname: string): Promise<string[]> {
-  if (backendIpCache && Date.now() - backendIpCache.at < 5 * 60 * 1000) {
+  if (backendIpCache && Date.now() - backendIpCache.at < 60 * 1000) {
     return backendIpCache.ips;
   }
+  const ips = new Set<string>();
   try {
-    const ips = await dns.resolve4(hostname);
-    backendIpCache = { ips, at: Date.now() };
-    return ips;
-  } catch {
-    return [];
-  }
+    const v4 = await dns.resolve4(hostname);
+    v4.forEach(ip => ips.add(ip));
+  } catch { /* ignore */ }
+  // Some hosts only answer via the default resolver's lookup
+  try {
+    const looked = await dns.lookup(hostname, { all: true });
+    looked.filter(a => a.family === 4).forEach(a => ips.add(a.address));
+  } catch { /* ignore */ }
+  const list = [...ips];
+  if (list.length > 0) backendIpCache = { ips: list, at: Date.now() };
+  return list;
 }
 
 router.get('/ztp-script', async (req: Request, res: Response) => {

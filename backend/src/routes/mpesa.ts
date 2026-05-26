@@ -1,10 +1,32 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import prisma from '../utils/prisma';
 import { enqueueCommand } from '../utils/commandQueue';
 import { decryptDarajaCreds, centralDarajaCreds, stkPush, normalizePhone, b2cPayout, isB2cConfigured } from '../utils/daraja';
 
 const router = Router();
+
+// Permissive CORS for captive-portal calls (STK push, status polling). The portal
+// is served from the router's hotspot gateway, whose origin isn't predictable, so we
+// allow any origin here. Runs before the global CORS check. WITHOUT this, the STK
+// request from the portal has no Access-Control-Allow-Origin and the browser blocks
+// it — surfacing as "Cannot reach Server" on the portal.
+router.use((req: Request, res: Response, next: NextFunction) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept');
+  res.setHeader('Access-Control-Max-Age', '600');
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+  next();
+});
 
 const BACKEND_URL = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
 
