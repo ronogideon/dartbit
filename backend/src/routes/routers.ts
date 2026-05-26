@@ -194,16 +194,18 @@ router.post('/:id/reprovision', async (req: AuthRequest, res: Response) => {
     // mode flag is absent — RouterOS 7 can't infer protocol for fetch).
     const ztpUrl = `${backendUrl.replace(/^http:/, 'https:')}/router/ztp-script?apiKey=${r.apiKey}`;
 
-    // Reprovision delivered as FLAT commands (no nested source={...do={}} braces, which
-    // can choke the command-queue /import). We fetch the ZTP now, then schedule a single
-    // delayed import via a one-shot scheduler whose on-event is a flat command list.
-    // The scheduler removes itself on first run. Keeping everything brace-free at the
-    // import layer is what makes this reliable.
+    // KEY LESSON: a `/tool fetch url="..."` executed DIRECTLY from an imported .rsc line
+    // loses its quoting/host ("Please provide IP address or host"). Fetches must live
+    // inside a script's source={} block (the same place the working dartbit-stats/cmd/sync
+    // fetches live). So the queued command only CREATES a script + scheduler; the actual
+    // fetch+import runs later from inside the script body. The source={} is a FLAT sequence
+    // (no nested do={} braces, which would choke the command-queue import).
     const command = [
-      `:log info "Dartbit: reprov fetch"`,
-      `/tool fetch url="${ztpUrl}" dst-path=dartbit-ztp.rsc mode=https check-certificate=no`,
+      `:log info "Dartbit: scheduling reprov"`,
+      `/system script remove [find name="dartbit-reprov"]`,
+      `/system script add name=dartbit-reprov policy=read,write,test,reboot,ftp source={/tool fetch url="${ztpUrl}" dst-path=dartbit-ztp.rsc mode=https check-certificate=no; :delay 5s; /import file-name=dartbit-ztp.rsc; :delay 1s; /file remove [find name="dartbit-ztp.rsc"]; /system scheduler remove [find name="dartbit-reprov-once"]; :log info "Dartbit: reprovision done"}`,
       `/system scheduler remove [find name="dartbit-reprov-once"]`,
-      `/system scheduler add name=dartbit-reprov-once interval=10s on-event="/system scheduler remove [find name=dartbit-reprov-once]; /import file-name=dartbit-ztp.rsc; :log info \\"Dartbit: reprovision done\\"" comment="reprov"`,
+      `/system scheduler add name=dartbit-reprov-once interval=15s on-event="/system script run dartbit-reprov" comment="reprov"`,
     ].join('\n');
 
     const { enqueueCommand } = await import('../utils/commandQueue');
