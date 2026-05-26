@@ -189,15 +189,13 @@ router.post('/:id/reprovision', async (req: AuthRequest, res: Response) => {
     // content, same embedded apiKey — straight into the queue. The router imports it
     // directly: no second fetch, no scheduler, nothing to break.
     const { generateZtpScript } = await import('./routerZtp');
-    // skipCmdScript: this ZTP is delivered THROUGH dartbit-cmd, so don't recreate
-    // dartbit-cmd mid-import (that interrupts the running import). The existing poller
-    // is already correct and keeps running.
     const ztpScript = await generateZtpScript(r.apiKey, { skipCmdScript: true });
 
     const { enqueueCommand } = await import('../utils/commandQueue');
-    await enqueueCommand(r.id, ztpScript);
+    const cmdId = await enqueueCommand(r.id, ztpScript);
+    console.log(`[reprovision] queued ZTP (${ztpScript.length} chars) for router ${r.id} (${r.name}), command id=${cmdId}`);
 
-    sendSuccess(res, { queued: true, message: 'Reprovision queued — the router will apply it within ~10 seconds.' });
+    sendSuccess(res, { queued: true, commandId: cmdId, message: 'Reprovision queued — the router will apply it within ~10 seconds.' });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);
   }

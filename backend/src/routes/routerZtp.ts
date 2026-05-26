@@ -814,6 +814,34 @@ router.get('/sync-script', async (req: Request, res: Response) => {
   }
 });
 
+// GET /router/queue-status?apiKey=xxx — diagnostic: how many commands are pending for
+// this router, and whether the RouterCommand table is reachable. Helps confirm whether
+// reprovision is actually being queued.
+router.get('/queue-status', async (req: Request, res: Response) => {
+  try {
+    const apiKey = String(req.query.apiKey || '');
+    const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey } });
+    if (!r) return res.status(404).json({ error: 'Router not found' });
+    const pending = await prisma.routerCommand.count({ where: { routerId: r.id, consumed: false } });
+    const total = await prisma.routerCommand.count({ where: { routerId: r.id } });
+    const recent = await prisma.routerCommand.findMany({
+      where: { routerId: r.id },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+      select: { id: true, consumed: true, createdAt: true, command: true },
+    });
+    res.json({
+      router: r.name,
+      status: r.status,
+      pendingCommands: pending,
+      totalCommands: total,
+      recent: recent.map(c => ({ id: c.id, consumed: c.consumed, createdAt: c.createdAt, length: c.command.length })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'failed', hint: 'If this errors, the RouterCommand table may not exist — check DB patch.' });
+  }
+});
+
 router.get('/commands', async (req: Request, res: Response) => {
   try {
     const apiKey = String(req.query.apiKey || '');
@@ -824,6 +852,7 @@ router.get('/commands', async (req: Request, res: Response) => {
     const cmds = await dequeueAll(r.id);
     if (cmds.length === 0) return res.type('text/plain').send('# No commands\n');
 
+    console.log(`[commands] delivering ${cmds.length} command(s) to router ${r.id} (${r.name}), total ${cmds.reduce((n, c) => n + c.length, 0)} chars`);
     const script = cmds.join('\n') + '\n:log info "Dartbit: Executed ' + cmds.length + ' command(s)"\n';
     res.type('text/plain').send(script);
   } catch {
