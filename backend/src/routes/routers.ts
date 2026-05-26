@@ -189,20 +189,19 @@ router.post('/:id/reprovision', async (req: AuthRequest, res: Response) => {
     if (backendUrl.includes('localhost') || backendUrl.includes('127.0.0.1')) {
       backendUrl = 'https://dartbit-production.up.railway.app';
     }
-    const isHttps = backendUrl.startsWith('https://');
-    const fetchFlags = isHttps ? ' mode=https check-certificate=no' : '';
+    // Backend on Railway is always HTTPS. Hardcode mode=https on the fetch so the
+    // reprov task can never fail with "Mode not specified" (which happens when the
+    // mode flag is absent — RouterOS 7 can't infer protocol for fetch).
+    const ztpUrl = `${backendUrl.replace(/^http:/, 'https:')}/router/ztp-script?apiKey=${r.apiKey}`;
 
-    // Reliable reprovision: cramming `fetch; :delay; /import` onto one line INSIDE a
-    // queued command that is itself /import-ed does not work — the fetch hasn't finished
-    // before the nested /import runs, so nothing happens (and nothing logs). Instead we
-    // create a one-shot scheduler on the router that runs the fetch+import as its own
-    // script a few seconds later, when the queued command has fully returned. The script
-    // self-removes after running once.
-    const ztpUrl = `${backendUrl}/router/ztp-script?apiKey=${r.apiKey}`;
+    // Reprovision via a one-shot script + scheduler. The queued command (delivered by the
+    // dartbit-cmd import) just creates the script and a 5s scheduler. The scheduler runs
+    // the script OUTSIDE the import context (so :delay between fetch and import works),
+    // and the script removes the scheduler after a successful import so it runs once.
     const command = [
       `:log info "Dartbit: scheduling reprovision"`,
       `/system script remove [find name="dartbit-reprov"]`,
-      `/system script add name=dartbit-reprov policy=read,write,test,reboot source={/tool fetch url="${ztpUrl}" dst-path=dartbit-ztp.rsc${fetchFlags}; :delay 4s; /import file-name=dartbit-ztp.rsc; :delay 1s; /file remove [find name="dartbit-ztp.rsc"]; /system scheduler remove [find name="dartbit-reprov-once"]; :log info "Dartbit: reprovision done"}`,
+      `/system script add name=dartbit-reprov policy=read,write,test,reboot source={/tool fetch url="${ztpUrl}" dst-path=dartbit-ztp.rsc mode=https check-certificate=no; :delay 4s; :if ([:len [/file find name="dartbit-ztp.rsc"]] > 0) do={ /import file-name=dartbit-ztp.rsc; :delay 1s; /file remove [find name="dartbit-ztp.rsc"]; :log info "Dartbit: reprovision done" }; /system scheduler remove [find name="dartbit-reprov-once"]}`,
       `/system scheduler remove [find name="dartbit-reprov-once"]`,
       `/system scheduler add name=dartbit-reprov-once interval=5s on-event={/system script run dartbit-reprov} comment="reprov"`,
     ].join('\n');
