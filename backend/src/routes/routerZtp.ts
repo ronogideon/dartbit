@@ -38,8 +38,9 @@ async function resolveBackendIps(hostname: string): Promise<string[]> {
 // Generates the full ZTP provisioning script for a router (the same content the
 // /ztp-script endpoint serves). Extracted so reprovision can deliver it directly
 // through the command queue without the router needing a second fetch.
-async function generateZtpScript(r: NonNullable<Awaited<ReturnType<typeof findRouter>>>): Promise<string> {
-    const apiKey = r.apiKey;
+async function generateZtpScript(apiKey: string): Promise<string> {
+    const r = await findRouter(apiKey);
+    if (!r) throw new Error('Router not found');
 
     let backendUrl = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
     if (backendUrl.startsWith('http://') && backendUrl.includes('railway.app')) {
@@ -319,7 +320,7 @@ router.get('/ztp-script', async (req: Request, res: Response) => {
     if (!apiKey) return res.status(400).type('text/plain').send('# Error: apiKey required');
     const r = await findRouter(apiKey);
     if (!r) return res.status(404).type('text/plain').send('# Error: Router not found');
-    const script = await generateZtpScript(r);
+    const script = await generateZtpScript(apiKey);
     res.type('text/plain').send(script);
   } catch (err) {
     console.error('ZTP error:', err);

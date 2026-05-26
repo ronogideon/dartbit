@@ -182,24 +182,14 @@ router.post('/:id/reprovision', async (req: AuthRequest, res: Response) => {
     if (tenantId && r.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
     if (r.status !== 'ONLINE') return sendError(res, 'Router must be online to reprovision remotely', 400);
 
-    let backendUrl = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
-    if (backendUrl.startsWith('http://') && backendUrl.includes('railway.app')) {
-      backendUrl = backendUrl.replace('http://', 'https://');
-    }
-    if (backendUrl.includes('localhost') || backendUrl.includes('127.0.0.1')) {
-      backendUrl = 'https://dartbit-production.up.railway.app';
-    }
-    // Backend on Railway is always HTTPS. Hardcode mode=https on the fetch so the
-    // reprov task can never fail with "Mode not specified" (which happens when the
-    // mode flag is absent — RouterOS 7 can't infer protocol for fetch).
     // Reprovision by delivering the FULL ZTP script directly through the command queue.
     // The router's dartbit-cmd already fetches /router/commands and imports it (proven to
-    // work — see the FINISHED log lines). So instead of telling the router to fetch the
-    // ztp itself (which failed because a bare imported fetch loses its url quoting), we
-    // put the entire ztp script — same content, same embedded apiKey — straight into the
-    // queue. The router imports it directly: no second fetch, no scheduler, nothing to break.
+    // work). So instead of telling the router to fetch the ztp itself (which failed because
+    // a bare imported fetch loses its url quoting), we put the entire ztp script — same
+    // content, same embedded apiKey — straight into the queue. The router imports it
+    // directly: no second fetch, no scheduler, nothing to break.
     const { generateZtpScript } = await import('./routerZtp');
-    const ztpScript = await generateZtpScript(r);
+    const ztpScript = await generateZtpScript(r.apiKey);
 
     const { enqueueCommand } = await import('../utils/commandQueue');
     await enqueueCommand(r.id, ztpScript);
