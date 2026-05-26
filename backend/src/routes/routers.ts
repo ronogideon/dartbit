@@ -189,7 +189,10 @@ router.post('/:id/reprovision', async (req: AuthRequest, res: Response) => {
     // content, same embedded apiKey — straight into the queue. The router imports it
     // directly: no second fetch, no scheduler, nothing to break.
     const { generateZtpScript } = await import('./routerZtp');
-    const ztpScript = await generateZtpScript(r.apiKey);
+    // skipCmdScript: this ZTP is delivered THROUGH dartbit-cmd, so don't recreate
+    // dartbit-cmd mid-import (that interrupts the running import). The existing poller
+    // is already correct and keeps running.
+    const ztpScript = await generateZtpScript(r.apiKey, { skipCmdScript: true });
 
     const { enqueueCommand } = await import('../utils/commandQueue');
     await enqueueCommand(r.id, ztpScript);

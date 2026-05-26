@@ -38,9 +38,10 @@ async function resolveBackendIps(hostname: string): Promise<string[]> {
 // Generates the full ZTP provisioning script for a router (the same content the
 // /ztp-script endpoint serves). Extracted so reprovision can deliver it directly
 // through the command queue without the router needing a second fetch.
-async function generateZtpScript(apiKey: string): Promise<string> {
+async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolean }): Promise<string> {
     const r = await findRouter(apiKey);
     if (!r) throw new Error('Router not found');
+    const skipCmdScript = opts?.skipCmdScript === true;
 
     let backendUrl = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
     // Normalize: strip any protocol, then force https. The backend is always HTTPS on
@@ -296,10 +297,19 @@ async function generateZtpScript(apiKey: string): Promise<string> {
 
     // === Remote commands ===
     add('# 11. Remote commands');
-    add(`:foreach s in=[/system scheduler find comment="Dartbit cmd"] do={ /system scheduler remove $s }`);
-    add(`:foreach s in=[/system script find name="dartbit-cmd"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-cmd policy=read,write,test,reboot source={/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ /import file-name=dartbit-cmd.rsc; :delay 1s; /file remove [find name="dartbit-cmd.rsc"] }}`);
-    add(`/system scheduler add name=dartbit-cmd interval=5s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`);
+    // dartbit-cmd: the command-queue poller. When this ZTP is itself delivered THROUGH
+    // dartbit-cmd (a reprovision), recreating dartbit-cmd here would delete/replace the
+    // very script doing the import — RouterOS kills it ("interrupted") and the rest of the
+    // ZTP (e.g. dartbit-sessions) never runs. So on reprovision we skip recreating it
+    // (the running one is already correct). On first-time provisioning (fetched directly,
+    // not via the queue) we create it normally. The scheduler removal is also inside the
+    // skip — otherwise reprovision would remove the poller's scheduler and never re-add it.
+    if (!skipCmdScript) {
+      add(`:foreach s in=[/system scheduler find comment="Dartbit cmd"] do={ /system scheduler remove $s }`);
+      add(`:foreach s in=[/system script find name="dartbit-cmd"] do={ /system script remove $s }`);
+      add(`/system script add name=dartbit-cmd policy=read,write,test,reboot source={/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ /import file-name=dartbit-cmd.rsc; :delay 1s; /file remove [find name="dartbit-cmd.rsc"] }}`);
+      add(`/system scheduler add name=dartbit-cmd interval=5s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`);
+    }
     add('');
 
     // === Active session reporter ===
