@@ -192,7 +192,20 @@ router.post('/:id/reprovision', async (req: AuthRequest, res: Response) => {
     const isHttps = backendUrl.startsWith('https://');
     const fetchFlags = isHttps ? ' mode=https check-certificate=no' : '';
 
-    const command = `:log info "Dartbit: Reprovisioning"; /tool fetch url="${backendUrl}/router/ztp-script?apiKey=${r.apiKey}" dst-path=dartbit-ztp.rsc${fetchFlags}; :delay 2s; /import file-name=dartbit-ztp.rsc; :delay 2s; /file remove [find name="dartbit-ztp.rsc"]`;
+    // Reliable reprovision: cramming `fetch; :delay; /import` onto one line INSIDE a
+    // queued command that is itself /import-ed does not work — the fetch hasn't finished
+    // before the nested /import runs, so nothing happens (and nothing logs). Instead we
+    // create a one-shot scheduler on the router that runs the fetch+import as its own
+    // script a few seconds later, when the queued command has fully returned. The script
+    // self-removes after running once.
+    const ztpUrl = `${backendUrl}/router/ztp-script?apiKey=${r.apiKey}`;
+    const command = [
+      `:log info "Dartbit: scheduling reprovision"`,
+      `/system script remove [find name="dartbit-reprov"]`,
+      `/system script add name=dartbit-reprov policy=read,write,test,reboot source={/tool fetch url="${ztpUrl}" dst-path=dartbit-ztp.rsc${fetchFlags}; :delay 4s; /import file-name=dartbit-ztp.rsc; :delay 1s; /file remove [find name="dartbit-ztp.rsc"]; /system scheduler remove [find name="dartbit-reprov-once"]; :log info "Dartbit: reprovision done"}`,
+      `/system scheduler remove [find name="dartbit-reprov-once"]`,
+      `/system scheduler add name=dartbit-reprov-once interval=5s on-event={/system script run dartbit-reprov} comment="reprov"`,
+    ].join('\n');
 
     const { enqueueCommand } = await import('../utils/commandQueue');
     enqueueCommand(r.id, command);
@@ -233,40 +246,6 @@ router.post('/:id/identity', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// POST /mikrotiks/:id/reprovision — returns the bootstrap command for this router so user can re-run it
-router.post('/:id/reprovision', async (req: AuthRequest, res: Response) => {
-  try {
-    const tenantId = req.user?.tenantId;
-    const r = await prisma.mikrotikRouter.findUnique({ where: { id: req.params.id } });
-    if (!r) return sendError(res, 'Router not found', 404);
-    if (tenantId && r.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
-
-    let backendUrl = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
-    if (backendUrl.startsWith('http://') && backendUrl.includes('railway.app')) {
-      backendUrl = backendUrl.replace('http://', 'https://');
-    }
-    if (backendUrl.includes('localhost') || backendUrl.includes('127.0.0.1')) {
-      backendUrl = 'https://dartbit-production.up.railway.app';
-    }
-    const isHttps = backendUrl.startsWith('https://');
-    const fetchFlags = isHttps ? ' mode=https check-certificate=no' : '';
-
-    const bootstrapCommand = `/tool fetch url="${backendUrl}/router/ztp-script?apiKey=${r.apiKey}" dst-path=dartbit-ztp.rsc${fetchFlags}; /import file-name=dartbit-ztp.rsc`;
-
-    // Also queue the reprovision so the router can pick it up automatically if it's online
-    const { enqueueCommand } = await import('../utils/commandQueue');
-    enqueueCommand(r.id, bootstrapCommand);
-
-    sendSuccess(res, {
-      bootstrapCommand,
-      apiKey: r.apiKey,
-      queued: true,
-      message: 'Reprovision queued — router will fetch the updated script within 30 seconds. You can also run the command manually below.',
-    });
-  } catch (err) {
-    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
-  }
-});
 router.post('/:id/lan-ports', async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user?.tenantId;
