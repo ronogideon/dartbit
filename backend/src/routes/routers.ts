@@ -117,7 +117,7 @@ router.post('/:id/reboot', async (req: AuthRequest, res: Response) => {
     if (tenantId && r.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
 
     const { enqueueCommand } = await import('../utils/commandQueue');
-    enqueueCommand(r.id, ':log info "Dartbit: Remote reboot in 5s"; :delay 5s; /system reboot');
+    await enqueueCommand(r.id, ':log info "Dartbit: Remote reboot in 5s"; :delay 5s; /system reboot');
 
     sendSuccess(res, { queued: true, message: 'Reboot scheduled (executes within 30 seconds)' });
   } catch (err) {
@@ -138,7 +138,7 @@ router.post('/:id/command', async (req: AuthRequest, res: Response) => {
     if (tenantId && r.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
 
     const { enqueueCommand } = await import('../utils/commandQueue');
-    enqueueCommand(r.id, command);
+    await enqueueCommand(r.id, command);
 
     sendSuccess(res, { queued: true });
   } catch (err) {
@@ -208,7 +208,7 @@ router.post('/:id/reprovision', async (req: AuthRequest, res: Response) => {
     ].join('\n');
 
     const { enqueueCommand } = await import('../utils/commandQueue');
-    enqueueCommand(r.id, command);
+    await enqueueCommand(r.id, command);
 
     sendSuccess(res, { queued: true, message: 'Reprovision will start within 30 seconds' });
   } catch (err) {
@@ -232,7 +232,7 @@ router.post('/:id/identity', async (req: AuthRequest, res: Response) => {
     if (tenantId && r.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
 
     const { enqueueCommand } = await import('../utils/commandQueue');
-    enqueueCommand(r.id, `/system identity set name="${clean}"`);
+    await enqueueCommand(r.id, `/system identity set name="${clean}"`);
 
     // Save to DB so it persists in the UI; the stats reporter will also pick it up
     await prisma.mikrotikRouter.update({
@@ -293,7 +293,7 @@ router.post('/:id/lan-ports', async (req: AuthRequest, res: Response) => {
     const cmd = cmds.join('\n');
 
     const { enqueueCommand } = await import('../utils/commandQueue');
-    enqueueCommand(r.id, cmd);
+    await enqueueCommand(r.id, cmd);
 
     sendSuccess(res, { queued: true, ports: cleanPorts });
   } catch (err) {

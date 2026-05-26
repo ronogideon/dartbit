@@ -472,6 +472,18 @@ async function patchDatabase() {
     await safeExec(prisma, 'MpesaTx payoutRef', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutRef" TEXT`);
     await safeExec(prisma, 'MpesaTx payoutAt', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutAt" TIMESTAMP(3)`);
 
+    // Persistent router command queue (replaces in-memory queue that lost commands on restart)
+    await safeExec(prisma, 'RouterCommand table',
+      `CREATE TABLE IF NOT EXISTS "RouterCommand" (
+        "id" TEXT NOT NULL,
+        "routerId" TEXT NOT NULL,
+        "command" TEXT NOT NULL,
+        "consumed" BOOLEAN NOT NULL DEFAULT false,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "RouterCommand_pkey" PRIMARY KEY ("id")
+      )`);
+    await safeExec(prisma, 'RouterCommand idx', `CREATE INDEX IF NOT EXISTS "RouterCommand_routerId_consumed_idx" ON "RouterCommand"("routerId","consumed")`);
+
     console.log('✅ Database patch complete');
   } catch (err) {
     console.error('⚠️  Fatal patch error:', err instanceof Error ? err.message : err);

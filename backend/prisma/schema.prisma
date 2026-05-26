@@ -386,3 +386,16 @@ model MpesaTransaction {
   @@index([checkoutRequestId])
   @@index([mpesaReceipt])
 }
+
+// Persistent command queue for routers. Replaces the old in-memory queue, which
+// lost commands across backend restarts / multiple instances (so reprovision and
+// other queued commands silently never reached the router).
+model RouterCommand {
+  id        String   @id @default(cuid())
+  routerId  String
+  command   String                  // the RouterOS command(s) to run
+  consumed  Boolean  @default(false) // set true once delivered to the router
+  createdAt DateTime @default(now())
+
+  @@index([routerId, consumed])
+}

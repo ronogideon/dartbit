@@ -103,7 +103,7 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
           cmds.push(`:if ([:len [/ip hotspot user find name="${v.code}"]] = 0) do={ /ip hotspot user add name=${v.code} password=${v.code} profile=${profileName} limit-uptime=${sessionSec}s comment="Dbv:${shortId}" }`);
         }
         cmds.push(`:log info "Dartbit: pushed ${created.length} new vouchers to router"`);
-        enqueueCommand(r.id, cmds.join('\n'));
+        await enqueueCommand(r.id, cmds.join('\n'));
       }
     } catch (pushErr) {
       // Non-fatal — sync script will eventually push them

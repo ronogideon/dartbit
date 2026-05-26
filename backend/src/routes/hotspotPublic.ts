@@ -190,7 +190,7 @@ router.post('/purchase', async (req: Request, res: Response) => {
       `:if ([:len [/ip hotspot user find name="${code}"]] = 0) do={ /ip hotspot user add name=${code} password=${code} profile=${profileName} limit-uptime=${sessionSec}s comment="Dbv:${voucher.id.slice(-8)}" }`,
       `:log info "Dartbit: purchased voucher ${code} for package ${pkg.name}"`,
     ];
-    enqueueCommand(r.id, commands.join('\n'));
+    await enqueueCommand(r.id, commands.join('\n'));
 
     res.json({
       success: true,

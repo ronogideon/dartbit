@@ -793,7 +793,7 @@ router.get('/commands', async (req: Request, res: Response) => {
     const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey } });
     if (!r) return res.status(404).type('text/plain').send('');
 
-    const cmds = dequeueAll(r.id);
+    const cmds = await dequeueAll(r.id);
     if (cmds.length === 0) return res.type('text/plain').send('# No commands\n');
 
     const script = cmds.join('\n') + '\n:log info "Dartbit: Executed ' + cmds.length + ' command(s)"\n';
@@ -810,7 +810,7 @@ router.post('/enqueue-command/:routerId', async (req: Request, res: Response) =>
     if (!command) return sendError(res, 'command required', 400);
     const r = await prisma.mikrotikRouter.findUnique({ where: { id: routerId } });
     if (!r) return sendError(res, 'Router not found', 404);
-    const queued = enqueueCommand(routerId, command);
+    const queued = await enqueueCommand(routerId, command);
     res.json({ success: true, queued });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);

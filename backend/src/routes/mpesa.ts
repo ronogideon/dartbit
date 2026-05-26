@@ -148,7 +148,7 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
     cmds.push(`:do { /ip hotspot active login user=${username} mac-address=${tx.clientMac} } on-error={}`);
   }
 
-  if (tx.routerId) enqueueCommand(tx.routerId, cmds.join('\n'));
+  if (tx.routerId) await enqueueCommand(tx.routerId, cmds.join('\n'));
 
   await prisma.mpesaTransaction.update({
     where: { id: txId },
