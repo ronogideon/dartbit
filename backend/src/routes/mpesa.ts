@@ -28,7 +28,16 @@ router.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-const BACKEND_URL = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
+// Backend base URL for Daraja callbacks. Daraja REQUIRES a fully-qualified https URL —
+// if BACKEND_URL is set without a protocol (just the hostname), the callback comes out
+// schemeless and Safaricom rejects it as "Invalid Callback URL". Normalize to https.
+function normalizeBackendUrl(): string {
+  let u = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
+  u = u.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  if (u.includes('localhost') || u.includes('127.0.0.1')) u = 'dartbit-production.up.railway.app';
+  return 'https://' + u;
+}
+const BACKEND_URL = normalizeBackendUrl();
 
 function genCreds() {
   const num = crypto.randomBytes(3).toString('hex'); // 6 hex chars

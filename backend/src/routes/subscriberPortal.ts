@@ -7,6 +7,15 @@ import { resolveTenantBySubdomain } from '../utils/tenantResolve';
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'dartbit-dev-secret';
 
+// Daraja requires a fully-qualified https callback URL. Normalize in case BACKEND_URL
+// is set without a protocol (which Safaricom rejects as "Invalid Callback URL").
+function normalizeBackendUrl(): string {
+  let u = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
+  u = u.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  if (u.includes('localhost') || u.includes('127.0.0.1')) u = 'dartbit-production.up.railway.app';
+  return 'https://' + u;
+}
+
 // Resolve the tenant from the request (subdomain, ?t=, or header).
 async function resolveTenant(req: Request) {
   return resolveTenantBySubdomain(req);
@@ -201,7 +210,7 @@ router.post('/renew', authSubscriber, async (req: SubReq, res: Response) => {
       const result = await stkPush({
         creds, phone, amount: pkg.price,
         accountRef: 'Dartbit', description: 'Renewal',
-        callbackUrl: `${process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app'}/hotspot/stk-callback/${tx.id}`,
+        callbackUrl: `${normalizeBackendUrl()}/hotspot/stk-callback/${tx.id}`,
       });
       await prisma.mpesaTransaction.update({ where: { id: tx.id }, data: { checkoutRequestId: result.checkoutRequestId, merchantRequestId: result.merchantRequestId } });
       res.json({ success: true, transactionId: tx.id });
