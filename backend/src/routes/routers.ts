@@ -153,14 +153,12 @@ router.get('/:id/ztp-command', async (req: AuthRequest, res: Response) => {
     if (tenantId && r.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
 
     let backendUrl = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
-    if (backendUrl.startsWith('http://') && backendUrl.includes('railway.app')) {
-      backendUrl = backendUrl.replace('http://', 'https://');
-    }
+    backendUrl = backendUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '');
     if (backendUrl.includes('localhost') || backendUrl.includes('127.0.0.1')) {
-      backendUrl = 'https://dartbit-production.up.railway.app';
+      backendUrl = 'dartbit-production.up.railway.app';
     }
-    const isHttps = backendUrl.startsWith('https://');
-    const fetchFlags = isHttps ? ' mode=https check-certificate=no' : '';
+    backendUrl = 'https://' + backendUrl;
+    const fetchFlags = ' mode=https check-certificate=no';
 
     const command = `/tool fetch url="${backendUrl}/router/ztp-script?apiKey=${r.apiKey}" dst-path=dartbit-ztp.rsc${fetchFlags}; /import file-name=dartbit-ztp.rsc`;
 
