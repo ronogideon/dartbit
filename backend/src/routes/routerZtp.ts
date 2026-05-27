@@ -131,18 +131,21 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:if ([:len [/interface find name="${wan}"]] > 0 && [:len [/ip firewall nat find comment="Dartbit WAN NAT"]] = 0) do={ /ip firewall nat add chain=srcnat out-interface=${wan} action=masquerade comment="Dartbit WAN NAT" }`);
     add('');
 
-    // 4b. ANTI-TETHERING (block hotspot/USB sharing).
-    // When a paying device shares its connection (phone hotspot / USB tether), traffic from
-    // the SECONDARY devices passes through the paying device, which decrements the IP TTL by
-    // one. Direct traffic from the paying device itself leaves with the OS default TTL
-    // (64 for Android/iOS/Linux, 128 for Windows). Tethered traffic therefore arrives at the
-    // router with TTL 63 or 127. We drop forwarded LAN→WAN packets carrying those "one hop
-    // extra" TTLs, so only the device that actually logged in can use the connection.
-    add('# 4b. Anti-tethering (TTL)');
+    // 4b. ANTI-TETHERING (block hotspot/USB sharing) — TTL based, DISABLED BY DEFAULT.
+    // Tethered/secondary devices' packets pass through the paying device, which decrements
+    // IP TTL by one (arriving as 63/127 vs OS defaults 64/128). The rules below drop those.
+    // They are created DISABLED so they can never break the captive-portal/package flow by
+    // accident; enable them deliberately once validated on your network with:
+    //   /ip firewall filter enable [find comment~"Dartbit anti-tether"]
+    // They also exclude the dartbit-backend address-list so the walled-garden/portal traffic
+    // (packages, STK, status) is never affected even when enabled.
+    add('# 4b. Anti-tethering (TTL) — disabled by default');
     add(`:foreach f in=[/ip firewall filter find comment~"Dartbit anti-tether"] do={ /ip firewall filter remove \$f }`);
-    // Drop tethered traffic (TTL decremented by one hop) heading out to the internet.
-    add(`/ip firewall filter add chain=forward in-interface-list=LAN out-interface=${wan} ttl=equal:63 action=drop comment="Dartbit anti-tether 63"`);
-    add(`/ip firewall filter add chain=forward in-interface-list=LAN out-interface=${wan} ttl=equal:127 action=drop comment="Dartbit anti-tether 127"`);
+    add(`:foreach f in=[/ip firewall mangle find comment~"Dartbit ttl"] do={ /ip firewall mangle remove \$f }`);
+    // Drop tethered traffic to the INTERNET only — exclude our backend so the portal works
+    // even before login. dst-address-list inversion (!dartbit-backend) keeps walled-garden alive.
+    add(`/ip firewall filter add chain=forward in-interface-list=LAN out-interface=${wan} ttl=equal:63 dst-address-list=!dartbit-backend action=drop comment="Dartbit anti-tether 63" disabled=yes`);
+    add(`/ip firewall filter add chain=forward in-interface-list=LAN out-interface=${wan} ttl=equal:127 dst-address-list=!dartbit-backend action=drop comment="Dartbit anti-tether 127" disabled=yes`);
     add('');
 
     // 5. PPPoE server
