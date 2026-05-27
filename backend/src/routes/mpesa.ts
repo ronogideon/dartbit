@@ -220,20 +220,19 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
     cmds.push(`/ip hotspot user add name=${receiptCode} password=${receiptCode} profile=${profileName} limit-uptime=${sessionSec}s${macBind} comment="Dbv:${receiptCode.slice(-8)}"`);
   }
 
-  if (tx.routerId) await enqueueCommand(tx.routerId, cmds.join('\n'));
-
   // Auto-login the captured device so the customer goes online WITHOUT retyping anything.
-  // Run as a SEPARATE queued command (after the user-creation command is imported). We pass
-  // BOTH ip and mac — `/ip hotspot active login` needs the client to be a known host; giving
-  // the ip+mac makes it reliable. add-mac-cookie on the profile keeps them online after.
-  if (tx.routerId && tx.clientMac) {
+  // Put it in the SAME command as user-creation, after a short delay, so the user is
+  // guaranteed to exist when the login runs (separate queue items are separate poll cycles,
+  // which can race; a delay inside one imported command is reliable). We try the active
+  // login, and if the client host isn't known yet, make it known then retry.
+  if (tx.clientMac) {
     const ipPart = tx.clientIp ? ` ip=${tx.clientIp}` : '';
-    const loginCmds = [
-      `:do { /ip hotspot active login user=${loginUser}${ipPart} mac-address=${tx.clientMac} } on-error={ :log warning "Dartbit: auto-login retry ${loginUser}" }`,
-      `:log info "Dartbit: auto-login ${loginUser} (${displayName})"`,
-    ];
-    await enqueueCommand(tx.routerId, loginCmds.join('\n'));
+    cmds.push(`:delay 1s`);
+    cmds.push(`:do { /ip hotspot active login user=${loginUser}${ipPart} mac-address=${tx.clientMac} } on-error={ :log warning "Dartbit: auto-login failed ${loginUser}" }`);
+    cmds.push(`:log info "Dartbit: auto-login ${loginUser} (${displayName})"`);
   }
+
+  if (tx.routerId) await enqueueCommand(tx.routerId, cmds.join('\n'));
 
   await prisma.mpesaTransaction.update({
     where: { id: txId },
