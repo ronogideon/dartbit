@@ -203,18 +203,21 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   const profileName = pkg ? `db-h-${pkg.id.substring(0, 8)}` : 'dartbit-default';
   const speed = pkg ? `${pkg.speedDownKbps || 5120}k/${pkg.speedUpKbps || 5120}k` : '5120k/5120k';
 
-  // Build router commands. The profile MUST have address-pool=dhcp-pool (without it the
-  // client gets no routable IP after login → connected but no internet). User creation and
-  // the active-login are SEPARATE queued commands so the user exists before login runs.
+  // Build router commands. The profile MUST have address-pool=dhcp-pool. CRITICAL for the
+  // "only the purchasing device" requirement: each hotspot user is bound to tx.clientMac via
+  // the user's mac-address field — MikroTik then ONLY authenticates that user from that exact
+  // MAC. shared-users=1 means one simultaneous session. Together these stop credential sharing.
+  const macBind = tx.clientMac ? ` mac-address=${tx.clientMac}` : '';
   const cmds: string[] = [];
   cmds.push(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} address-pool=dhcp-pool }`);
   cmds.push(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=yes address-pool=dhcp-pool`);
-  // Primary user (D-name + 4-digit pwd). Recreate it fresh so the password is current.
+  // Primary user (D-name + 4-digit pwd), bound to the purchasing MAC. Recreate fresh.
   cmds.push(`:foreach u in=[/ip hotspot user find name="${loginUser}"] do={ /ip hotspot user remove \$u }`);
-  cmds.push(`/ip hotspot user add name=${loginUser} password=${password} profile=${profileName} limit-uptime=${sessionSec}s comment="Dbm:${displayName}"`);
-  // Receipt user (for voucher-tab re-login by the same device).
+  cmds.push(`/ip hotspot user add name=${loginUser} password=${password} profile=${profileName} limit-uptime=${sessionSec}s${macBind} comment="Dbm:${displayName}"`);
+  // Receipt user (voucher-tab re-login), also bound to the same MAC.
   if (receiptCode && receiptCode.length >= 4) {
-    cmds.push(`:if ([:len [/ip hotspot user find name="${receiptCode}"]] = 0) do={ /ip hotspot user add name=${receiptCode} password=${receiptCode} profile=${profileName} limit-uptime=${sessionSec}s comment="Dbv:${receiptCode.slice(-8)}" }`);
+    cmds.push(`:foreach u in=[/ip hotspot user find name="${receiptCode}"] do={ /ip hotspot user remove \$u }`);
+    cmds.push(`/ip hotspot user add name=${receiptCode} password=${receiptCode} profile=${profileName} limit-uptime=${sessionSec}s${macBind} comment="Dbv:${receiptCode.slice(-8)}"`);
   }
 
   if (tx.routerId) await enqueueCommand(tx.routerId, cmds.join('\n'));

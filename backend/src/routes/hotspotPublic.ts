@@ -54,12 +54,18 @@ router.post('/redeem', async (req: Request, res: Response) => {
 
     const now = new Date();
 
+    const reqMac = typeof mac === 'string' ? mac.replace(/[^A-Fa-f0-9:.\-]/g, '').substring(0, 20).toUpperCase() : null;
+
     // Re-login support: if the voucher is already used but still within its validity
     // window (session not expired), allow re-entry so a disconnected client can log
-    // back in and resume their remaining time. The voucher user is still on the router
-    // (sync keeps it until expiresAt + grace), and limit-uptime is cumulative.
+    // back in and resume their remaining time — BUT only from the SAME device it was
+    // bound to (the MAC that originally redeemed/purchased it). This enforces "only the
+    // device that requested the M-Pesa prompt can use this code".
     if (voucher.isUsed) {
       if (voucher.expiresAt && voucher.expiresAt > now) {
+        if (voucher.usedByMac && reqMac && voucher.usedByMac.toUpperCase() !== reqMac) {
+          return res.status(403).json({ success: false, error: 'This code is locked to the device that purchased it.' });
+        }
         return res.json({
           success: true,
           username: voucher.code,
@@ -224,6 +230,13 @@ router.post('/verify', async (req: Request, res: Response) => {
     if (sub.secret !== String(password)) return res.status(401).json({ success: false, error: 'Invalid username or password' });
     if (!sub.isActive) return res.status(403).json({ success: false, error: 'Account inactive' });
     if (sub.expiresAt && sub.expiresAt < new Date()) return res.status(403).json({ success: false, error: 'Account expired' });
+
+    // Device lock: hotspot credentials only work on the device they were issued to (the MAC
+    // that made the purchase). This stops one customer sharing username/password with others.
+    const reqMac = typeof mac === 'string' ? mac.replace(/[^A-Fa-f0-9:.\-]/g, '').substring(0, 20).toUpperCase() : null;
+    if (sub.macAddress && reqMac && sub.macAddress.toUpperCase() !== reqMac) {
+      return res.status(403).json({ success: false, error: 'These credentials are locked to the device that purchased them.' });
+    }
 
     // Update last seen
     await prisma.subscriber.update({

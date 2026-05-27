@@ -131,6 +131,20 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:if ([:len [/interface find name="${wan}"]] > 0 && [:len [/ip firewall nat find comment="Dartbit WAN NAT"]] = 0) do={ /ip firewall nat add chain=srcnat out-interface=${wan} action=masquerade comment="Dartbit WAN NAT" }`);
     add('');
 
+    // 4b. ANTI-TETHERING (block hotspot/USB sharing).
+    // When a paying device shares its connection (phone hotspot / USB tether), traffic from
+    // the SECONDARY devices passes through the paying device, which decrements the IP TTL by
+    // one. Direct traffic from the paying device itself leaves with the OS default TTL
+    // (64 for Android/iOS/Linux, 128 for Windows). Tethered traffic therefore arrives at the
+    // router with TTL 63 or 127. We drop forwarded LAN→WAN packets carrying those "one hop
+    // extra" TTLs, so only the device that actually logged in can use the connection.
+    add('# 4b. Anti-tethering (TTL)');
+    add(`:foreach f in=[/ip firewall filter find comment~"Dartbit anti-tether"] do={ /ip firewall filter remove \$f }`);
+    // Drop tethered traffic (TTL decremented by one hop) heading out to the internet.
+    add(`/ip firewall filter add chain=forward in-interface-list=LAN out-interface=${wan} ttl=equal:63 action=drop comment="Dartbit anti-tether 63"`);
+    add(`/ip firewall filter add chain=forward in-interface-list=LAN out-interface=${wan} ttl=equal:127 action=drop comment="Dartbit anti-tether 127"`);
+    add('');
+
     // 5. PPPoE server
     add('# 5. PPPoE server');
     add(`:if ([:len [/ip pool find name="${pppoePool}"]] = 0) do={ /ip pool add name=${pppoePool} ranges=${pppoeStart}-${pppoeEnd} }`);
@@ -704,16 +718,18 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       const profileName = sub.package ? `db-h-${sub.package.id.substring(0, 8)}` : 'dartbit-default';
       const expired = sub.expiresAt && sub.expiresAt <= now;
       const disabled = !sub.isActive || expired;
+      // Bind to the subscriber's device MAC so the credentials only work on that one device.
+      const macBind = sub.macAddress ? ` mac-address=${sub.macAddress}` : '';
 
-      // Profile: split add+set so each line is short
-      add(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} }`);
-      add(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=yes`);
-      add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] = 0) do={ /ip hotspot user add name="${sub.username}" password="${sub.secret}" profile=${profileName} comment="Dartbit:${sub.id}" }`);
-      add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] > 0) do={ /ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} }`);
+      // Profile: split add+set so each line is short. Ensure address-pool so logins route.
+      add(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} address-pool=dhcp-pool }`);
+      add(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=yes address-pool=dhcp-pool`);
+      add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] = 0) do={ /ip hotspot user add name="${sub.username}" password="${sub.secret}" profile=${profileName}${macBind} comment="Dartbit:${sub.id}" }`);
+      add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] > 0) do={ /ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'}${macBind} }`);
       if (expired) {
         add(`:foreach a in=[/ip hotspot active find user="${sub.username}"] do={ /ip hotspot active remove \$a }`);
+        add(`:foreach c in=[/ip hotspot cookie find user="${sub.username}"] do={ /ip hotspot cookie remove \$c }`);
       }
-      // Note: per-subscriber expiry is enforced by the sync script (runs every 60s).
     }
 
     const staticUsers = subscribers.filter(s => s.service === 'STATIC' && s.ipAddress);
@@ -788,7 +804,15 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       const sessionSec = v.durationMinutes * 60;
       const shortId = v.id.slice(-8);
       const expired = !!(v.expiresAt && v.expiresAt <= now);
-      add(`:if ([:len [/ip hotspot user find name="${v.code}"]] = 0) do={ /ip hotspot user add name=${v.code} password=${v.code} profile=${profileName} limit-uptime=${sessionSec}s comment="Dbv:${shortId}" }`);
+      // Bind the voucher user to the MAC that redeemed/purchased it (usedByMac), so the
+      // code only works on that one device. Unredeemed vouchers (no usedByMac) stay open
+      // until first use, then get bound on next sync after redemption captures the MAC.
+      const macBind = v.usedByMac ? ` mac-address=${v.usedByMac}` : '';
+      add(`:if ([:len [/ip hotspot user find name="${v.code}"]] = 0) do={ /ip hotspot user add name=${v.code} password=${v.code} profile=${profileName} limit-uptime=${sessionSec}s${macBind} comment="Dbv:${shortId}" }`);
+      // Keep the binding current on existing users (in case the MAC was captured after creation).
+      if (v.usedByMac) {
+        add(`:if ([:len [/ip hotspot user find name="${v.code}"]] > 0) do={ /ip hotspot user set [find name="${v.code}"] mac-address=${v.usedByMac} }`);
+      }
       if (expired) {
         // Wall-clock expired: disable the user and remove any active session + mac-cookie
         // so the device is dropped and cannot auto-reconnect.
@@ -796,8 +820,6 @@ router.get('/sync-script', async (req: Request, res: Response) => {
         add(`:foreach a in=[/ip hotspot active find user="${v.code}"] do={ /ip hotspot active remove \$a }`);
         add(`:foreach c in=[/ip hotspot cookie find user="${v.code}"] do={ /ip hotspot cookie remove \$c }`);
       } else {
-        // Still valid: make sure it's enabled (in case a previous expiry disabled it and
-        // it was later extended/renewed).
         add(`:if ([:len [/ip hotspot user find name="${v.code}"]] > 0) do={ /ip hotspot user set [find name="${v.code}"] disabled=no }`);
       }
     }
