@@ -42,8 +42,7 @@ export const getPayments = () => api.get('/payments').then((r) => r.data.data);
 export const createPayment = (data: unknown) => api.post('/payments', data).then((r) => r.data.data);
 export const deletePayment = (id: string) => api.delete(`/payments/${id}`).then((r) => r.data.data);
 
-export const getMessages = () => api.get('/messages').then((r) => r.data.data);
-export const sendMessage = (data: unknown) => api.post('/messages', data).then((r) => r.data.data);
+// (Messages helpers — see bottom of file for the typed versions)
 
 export const getRouters = () => api.get('/mikrotiks').then((r) => r.data.data);
 export const linkRouter = (data: unknown) => api.post('/mikrotiks/link', data).then((r) => r.data.data);
@@ -98,3 +97,47 @@ export const generateVouchers = (data: { count: number; packageId?: string; rout
   api.post('/vouchers/generate', data).then(r => r.data.data);
 export const deleteVoucher = (id: string) => api.delete(`/vouchers/${id}`).then(r => r.data.data);
 export const deleteVoucherBatch = (batchId: string) => api.delete(`/vouchers/batch/${batchId}`).then(r => r.data.data);
+
+// Notifications / SMS
+export interface NotificationConfig {
+  gateway: 'DARTBIT' | 'CUSTOM';
+  apiKey: string | null;
+  apiKeyMasked: string | null;
+  senderId: string | null;
+  sendWelcome: boolean;
+  sendPaymentReceipt: boolean;
+  sendExpiryReminders: boolean;
+  reminderOffsets: number[];
+  dartbitAvailable: boolean;
+}
+export const getNotificationConfig = () =>
+  api.get('/notifications/config').then(r => r.data.data as NotificationConfig);
+export const saveNotificationConfig = (data: Partial<NotificationConfig>) =>
+  api.put('/notifications/config', data).then(r => r.data.data as NotificationConfig);
+export const getSmsBalance = () =>
+  api.get('/notifications/balance').then(r => r.data.data as { balance: number; ok: boolean });
+export const topupSms = (amount: number, phoneNumber?: string) =>
+  api.post('/notifications/topup', { amount, phoneNumber }).then(r => r.data.data as { message: string });
+export const sendTestSms = (phone: string, message: string) =>
+  api.post('/notifications/test', { phone, message }).then(r => r.data.data);
+
+// Messages (extended fields)
+export interface MessageRow {
+  id: string;
+  type: string;
+  recipient: string;
+  body: string;
+  status: string;
+  gateway?: string | null;
+  gatewayMsgId?: string | null;
+  cost: number;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  subscriberId?: string | null;
+  username?: string | null;
+  category?: string | null;
+  createdAt: string;
+}
+export const getMessages = () => api.get('/messages').then(r => r.data.data as MessageRow[]);
+export const sendMessage = (recipient: string, body: string) =>
+  api.post('/messages', { type: 'SMS', recipient, body }).then(r => r.data.data as MessageRow);

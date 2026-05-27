@@ -2,12 +2,12 @@
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getSettings, updateSettings, getBillingCurrent, getBillingHistory, billingCheckout, getSystemUsers, createSystemUser, updateSystemUser, resetSystemUserPassword, deleteSystemUser, getPaymentConfig, updatePaymentConfig } from '@/lib/api';
+import { getSettings, updateSettings, getBillingCurrent, getBillingHistory, billingCheckout, getSystemUsers, createSystemUser, updateSystemUser, resetSystemUserPassword, deleteSystemUser, getPaymentConfig, updatePaymentConfig, getNotificationConfig, saveNotificationConfig, getSmsBalance, sendTestSms, type NotificationConfig } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import toast from 'react-hot-toast';
-import { Settings as SettingsIcon, CreditCard, Users, Plus, Trash2, KeyRound, Copy, Check, Wallet } from 'lucide-react';
+import { Settings as SettingsIcon, CreditCard, Users, Plus, Trash2, KeyRound, Copy, Check, Wallet, Bell, Send } from 'lucide-react';
 
-type Tab = 'general' | 'billing' | 'payments' | 'users';
+type Tab = 'general' | 'notifications' | 'billing' | 'payments' | 'users';
 
 interface Settings {
   currency?: string; timezone?: string; backendUrl?: string;
@@ -33,7 +33,7 @@ export default function SettingsPage() {
 function SettingsContent() {
   const searchParams = useSearchParams();
   const initialTab = (searchParams.get('tab') as Tab) || 'general';
-  const [tab, setTab] = useState<Tab>(['general', 'billing', 'payments', 'users'].includes(initialTab) ? initialTab : 'general');
+  const [tab, setTab] = useState<Tab>(['general', 'notifications', 'billing', 'payments', 'users'].includes(initialTab) ? initialTab : 'general');
 
   return (
     <AppLayout>
@@ -45,12 +45,14 @@ function SettingsContent() {
       {/* Tabs */}
       <div className="flex gap-1 border-b border-gray-200 dark:border-gray-800 mb-6">
         <TabButton active={tab === 'general'} onClick={() => setTab('general')} icon={<SettingsIcon size={16} />} label="General" />
+        <TabButton active={tab === 'notifications'} onClick={() => setTab('notifications')} icon={<Bell size={16} />} label="Notifications" />
         <TabButton active={tab === 'billing'} onClick={() => setTab('billing')} icon={<CreditCard size={16} />} label="Billing" />
         <TabButton active={tab === 'payments'} onClick={() => setTab('payments')} icon={<Wallet size={16} />} label="Payments" />
         <TabButton active={tab === 'users'} onClick={() => setTab('users')} icon={<Users size={16} />} label="System Users" />
       </div>
 
       {tab === 'general' && <GeneralTab />}
+      {tab === 'notifications' && <NotificationsTab />}
       {tab === 'billing' && <BillingTab />}
       {tab === 'payments' && <PaymentsTab />}
       {tab === 'users' && <UsersTab />}
@@ -122,6 +124,233 @@ function GeneralTab() {
 
       <button onClick={() => updateMut.mutate(form)} disabled={updateMut.isPending} className="btn-primary w-full">
         {updateMut.isPending ? 'Saving...' : 'Save Settings'}
+      </button>
+    </div>
+  );
+}
+
+/* ---------------- Notifications ---------------- */
+function NotificationsTab() {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({ queryKey: ['notification-config'], queryFn: getNotificationConfig });
+  const { data: balanceData } = useQuery({
+    queryKey: ['sms-balance'],
+    queryFn: getSmsBalance,
+    enabled: !!data,
+    refetchInterval: 60000,
+    retry: false,
+  });
+
+  const [form, setForm] = useState<NotificationConfig | null>(null);
+  const [newApiKey, setNewApiKey] = useState('');
+  const [testPhone, setTestPhone] = useState('');
+  const [testMessage, setTestMessage] = useState('Test SMS from Dartbit');
+
+  useEffect(() => { if (data) setForm(data); }, [data]);
+
+  const saveMut = useMutation({
+    mutationFn: (payload: Partial<NotificationConfig> & { apiKey?: string }) => saveNotificationConfig(payload),
+    onSuccess: () => {
+      toast.success('Notification settings saved');
+      setNewApiKey('');
+      qc.invalidateQueries({ queryKey: ['notification-config'] });
+      qc.invalidateQueries({ queryKey: ['sms-balance'] });
+    },
+    onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Save failed'),
+  });
+
+  const testMut = useMutation({
+    mutationFn: () => sendTestSms(testPhone, testMessage),
+    onSuccess: () => {
+      toast.success('Test SMS sent');
+      qc.invalidateQueries({ queryKey: ['sms-balance'] });
+    },
+    onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Send failed'),
+  });
+
+  if (isLoading || !form) {
+    return <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-6 text-sm text-gray-500">Loading…</div>;
+  }
+
+  function onSave() {
+    const payload: Partial<NotificationConfig> & { apiKey?: string } = {
+      gateway: form!.gateway,
+      sendWelcome: form!.sendWelcome,
+      sendPaymentReceipt: form!.sendPaymentReceipt,
+      sendExpiryReminders: form!.sendExpiryReminders,
+      reminderOffsets: form!.reminderOffsets,
+    };
+    if (form!.gateway === 'CUSTOM') {
+      payload.senderId = form!.senderId || null;
+      if (newApiKey) payload.apiKey = newApiKey;
+    }
+    saveMut.mutate(payload);
+  }
+
+  function fmtOffset(m: number) {
+    if (m >= 1440) return `${Math.round((m / 1440) * 10) / 10} day${m >= 2880 ? 's' : ''}`;
+    if (m >= 60) return `${Math.round((m / 60) * 10) / 10} hr`;
+    return `${m} min`;
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-6">
+        <h2 className="text-lg font-semibold mb-1">SMS Gateway</h2>
+        <p className="text-sm text-gray-500 mb-4">Choose how SMS notifications are sent to your customers.</p>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+          <button
+            type="button"
+            onClick={() => setForm({ ...form, gateway: 'DARTBIT' })}
+            className={`text-left p-4 rounded-lg border-2 transition ${form.gateway === 'DARTBIT' ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'}`}
+          >
+            <div className="font-medium flex items-center gap-2"><Send size={16} /> Dartbit (default)</div>
+            <div className="text-xs text-gray-500 mt-1">Use Dartbit&apos;s shared SMS account. Credit is deducted from your SMS balance with us.</div>
+            {!form.dartbitAvailable && <div className="text-xs text-amber-600 mt-2">⚠ Dartbit gateway not configured by the platform admin.</div>}
+          </button>
+          <button
+            type="button"
+            onClick={() => setForm({ ...form, gateway: 'CUSTOM' })}
+            className={`text-left p-4 rounded-lg border-2 transition ${form.gateway === 'CUSTOM' ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'}`}
+          >
+            <div className="font-medium flex items-center gap-2"><KeyRound size={16} /> Your own API key</div>
+            <div className="text-xs text-gray-500 mt-1">Connect your own BlessedTexts account — direct billing, your own sender ID.</div>
+          </button>
+        </div>
+
+        {form.gateway === 'CUSTOM' && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">BlessedTexts API key</label>
+              <input
+                type="password"
+                placeholder={form.apiKeyMasked ? form.apiKeyMasked : 'Paste your API key'}
+                value={newApiKey}
+                onChange={e => setNewApiKey(e.target.value)}
+                className="input w-full"
+              />
+              {form.apiKeyMasked && !newApiKey && <div className="text-xs text-gray-500 mt-1">Saved key on file. Leave blank to keep it.</div>}
+            </div>
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block">Sender ID</label>
+              <input
+                type="text"
+                placeholder="e.g. 23107"
+                value={form.senderId || ''}
+                onChange={e => setForm({ ...form, senderId: e.target.value })}
+                className="input w-full"
+              />
+            </div>
+          </div>
+        )}
+
+        <div className="mt-4 flex items-center justify-between">
+          <div className="text-sm">
+            SMS balance:{' '}
+            {balanceData ? (
+              <span className="font-semibold">{balanceData.balance.toLocaleString()} credits</span>
+            ) : (
+              <span className="text-gray-400">—</span>
+            )}
+          </div>
+          <button onClick={onSave} disabled={saveMut.isPending} className="btn-primary text-sm">
+            {saveMut.isPending ? 'Saving…' : 'Save settings'}
+          </button>
+        </div>
+      </div>
+
+      {/* Automatic notifications */}
+      <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-6">
+        <h2 className="text-lg font-semibold mb-1">Automatic notifications</h2>
+        <p className="text-sm text-gray-500 mb-4">Choose which messages Dartbit sends to your customers automatically.</p>
+
+        <div className="space-y-3">
+          <ToggleRow
+            label="Welcome SMS on first purchase"
+            description="Sent the first time a customer pays for a package."
+            value={form.sendWelcome}
+            onChange={v => setForm({ ...form, sendWelcome: v })}
+          />
+          <ToggleRow
+            label="Payment receipt SMS"
+            description="Sent after every successful payment, includes their login credentials."
+            value={form.sendPaymentReceipt}
+            onChange={v => setForm({ ...form, sendPaymentReceipt: v })}
+          />
+          <ToggleRow
+            label="Expiry reminders"
+            description="Reminds customers before their subscription expires."
+            value={form.sendExpiryReminders}
+            onChange={v => setForm({ ...form, sendExpiryReminders: v })}
+          />
+        </div>
+
+        {form.sendExpiryReminders && (
+          <div className="mt-4 p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+            <div className="text-sm font-medium mb-2">Reminder schedule</div>
+            <div className="text-xs text-gray-500 mb-3">Send a reminder this much time before expiry:</div>
+            <div className="flex flex-wrap gap-2">
+              {form.reminderOffsets.map((m, i) => (
+                <span key={i} className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 text-xs font-medium">
+                  {fmtOffset(m)}
+                  <button
+                    type="button"
+                    onClick={() => setForm({ ...form, reminderOffsets: form.reminderOffsets.filter((_, j) => j !== i) })}
+                    className="ml-1 hover:text-red-500"
+                    aria-label="Remove"
+                  >×</button>
+                </span>
+              ))}
+            </div>
+            <div className="text-xs text-gray-500 mt-3">Defaults: 5 days, 3 days, 4 hours before expiry.</div>
+          </div>
+        )}
+
+        <div className="mt-5 flex justify-end">
+          <button onClick={onSave} disabled={saveMut.isPending} className="btn-primary text-sm">
+            {saveMut.isPending ? 'Saving…' : 'Save settings'}
+          </button>
+        </div>
+      </div>
+
+      {/* Test send */}
+      <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-6">
+        <h2 className="text-lg font-semibold mb-1">Send a test SMS</h2>
+        <p className="text-sm text-gray-500 mb-4">Verify your settings by sending a one-off message.</p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <input className="input" placeholder="Phone (e.g. 0712345678)" value={testPhone} onChange={e => setTestPhone(e.target.value)} />
+          <input className="input md:col-span-2" placeholder="Message" value={testMessage} onChange={e => setTestMessage(e.target.value)} />
+        </div>
+        <div className="mt-3 flex justify-end">
+          <button
+            onClick={() => testMut.mutate()}
+            disabled={testMut.isPending || !testPhone || !testMessage}
+            className="btn-primary text-sm"
+          >
+            {testMut.isPending ? 'Sending…' : 'Send test'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ToggleRow({ label, description, value, onChange }: { label: string; description: string; value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <div className="flex items-start justify-between gap-4 p-3 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800/50">
+      <div>
+        <div className="text-sm font-medium">{label}</div>
+        <div className="text-xs text-gray-500 mt-0.5">{description}</div>
+      </div>
+      <button
+        type="button"
+        onClick={() => onChange(!value)}
+        className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full transition ${value ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-700'}`}
+        role="switch"
+        aria-checked={value}
+      >
+        <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition ${value ? 'translate-x-5' : 'translate-x-0.5'} mt-0.5`} />
       </button>
     </div>
   );

@@ -9,6 +9,8 @@ import subscriberRoutes from './routes/subscribers';
 import packageRoutes from './routes/packages';
 import paymentRoutes from './routes/payments';
 import messageRoutes from './routes/messages';
+import notificationsRoutes from './routes/notifications';
+import { startReminderScheduler } from './utils/reminderScheduler';
 import routerRoutes from './routes/routers';
 import onlineSessionRoutes from './routes/onlineSessions';
 import routerZtpRoutes from './routes/routerZtp';
@@ -84,8 +86,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.7.6', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.7.6', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.7.7', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.7.7', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -95,6 +97,7 @@ app.use('/subscribers', subscriberRoutes);
 app.use('/packages', packageRoutes);
 app.use('/payments', paymentRoutes);
 app.use('/messages', messageRoutes);
+app.use('/notifications', notificationsRoutes);
 app.use('/mikrotiks', routerRoutes);
 app.use('/online-sessions', onlineSessionRoutes);
 app.use('/tenants', tenantRoutes);
@@ -112,10 +115,11 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.7.6 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.7.7 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
+  startReminderScheduler();
 });
 
 // Prune SessionRecords older than 30 days. Before deleting, ensure each subscriber's
@@ -464,7 +468,7 @@ async function patchDatabase() {
       )`);
     await safeExec(prisma, 'MpesaTx checkout unique', `CREATE UNIQUE INDEX IF NOT EXISTS "MpesaTransaction_checkoutRequestId_key" ON "MpesaTransaction"("checkoutRequestId")`);
     await safeExec(prisma, 'MpesaTx tenant idx', `CREATE INDEX IF NOT EXISTS "MpesaTransaction_tenantId_status_idx" ON "MpesaTransaction"("tenantId","status")`);
-    // v1.7.6 payout/fee columns
+    // v1.7.7 payout/fee columns
     await safeExec(prisma, 'MpesaTx collectedVia', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "collectedVia" TEXT DEFAULT 'TENANT'`);
     await safeExec(prisma, 'MpesaTx platformFee', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "platformFee" DOUBLE PRECISION NOT NULL DEFAULT 0`);
     await safeExec(prisma, 'MpesaTx netToTenant', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "netToTenant" DOUBLE PRECISION NOT NULL DEFAULT 0`);
@@ -483,6 +487,40 @@ async function patchDatabase() {
         CONSTRAINT "RouterCommand_pkey" PRIMARY KEY ("id")
       )`);
     await safeExec(prisma, 'RouterCommand idx', `CREATE INDEX IF NOT EXISTS "RouterCommand_routerId_consumed_idx" ON "RouterCommand"("routerId","consumed")`);
+
+    // Notifications config table (per-tenant SMS gateway + automatic notification settings).
+    await safeExec(prisma, 'NotificationConfig table',
+      `CREATE TABLE IF NOT EXISTS "NotificationConfig" (
+        "id" TEXT NOT NULL,
+        "tenantId" TEXT NOT NULL,
+        "gateway" TEXT NOT NULL DEFAULT 'DARTBIT',
+        "apiKey" TEXT,
+        "senderId" TEXT,
+        "sendWelcome" BOOLEAN NOT NULL DEFAULT true,
+        "sendPaymentReceipt" BOOLEAN NOT NULL DEFAULT true,
+        "sendExpiryReminders" BOOLEAN NOT NULL DEFAULT true,
+        "reminderOffsets" INTEGER[] NOT NULL DEFAULT ARRAY[7200, 4320, 240]::INTEGER[],
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "NotificationConfig_pkey" PRIMARY KEY ("id")
+      )`);
+    await safeExec(prisma, 'NotificationConfig tenant unique', `CREATE UNIQUE INDEX IF NOT EXISTS "NotificationConfig_tenantId_key" ON "NotificationConfig"("tenantId")`);
+
+    // Extend Message with phone/cost/delivery/dedup columns (idempotent ALTERs).
+    for (const col of [
+      `ADD COLUMN IF NOT EXISTS "gateway" TEXT`,
+      `ADD COLUMN IF NOT EXISTS "gatewayMsgId" TEXT`,
+      `ADD COLUMN IF NOT EXISTS "cost" DOUBLE PRECISION NOT NULL DEFAULT 0`,
+      `ADD COLUMN IF NOT EXISTS "errorCode" TEXT`,
+      `ADD COLUMN IF NOT EXISTS "errorMessage" TEXT`,
+      `ADD COLUMN IF NOT EXISTS "subscriberId" TEXT`,
+      `ADD COLUMN IF NOT EXISTS "username" TEXT`,
+      `ADD COLUMN IF NOT EXISTS "category" TEXT`,
+      `ADD COLUMN IF NOT EXISTS "dedupKey" TEXT`,
+    ]) {
+      await safeExec(prisma, `Message ${col.replace(/.*"([^"]+)".*/, '$1')}`, `ALTER TABLE "Message" ${col}`);
+    }
+    await safeExec(prisma, 'Message dedupKey unique', `CREATE UNIQUE INDEX IF NOT EXISTS "Message_dedupKey_key" ON "Message"("dedupKey") WHERE "dedupKey" IS NOT NULL`);
 
     console.log('✅ Database patch complete');
   } catch (err) {

@@ -255,15 +255,30 @@ model Payment {
 }
 
 model Message {
-  id        String   @id @default(cuid())
-  type      String   @default("SMS")
-  recipient String
-  body      String
-  status    String   @default("PENDING")
-  tenantId  String
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id            String   @id @default(cuid())
+  type          String   @default("SMS")
+  recipient     String                              // phone number (full, normalized)
+  body          String
+  status        String   @default("PENDING")        // PENDING | SENT | FAILED | DELIVERED
+  // SMS-gateway details
+  gateway       String?                              // "BLESSEDTEXTS" etc.
+  gatewayMsgId  String?                              // provider message_id (for delivery report lookup)
+  cost          Float    @default(0)                 // KES cost reported by gateway
+  errorCode     String?                              // gateway status_code on failure
+  errorMessage  String?                              // gateway status_desc on failure
+  // Linkage so the Messages tab can show username
+  subscriberId  String?
+  username      String?                              // denormalized for display
+  // Categorization + deduplication for automatic notifications
+  category      String?                              // WELCOME | RECEIPT | REMINDER | MANUAL | OTHER
+  dedupKey      String?  @unique                     // e.g. "REMINDER:<subId>:7200" prevents double-sends
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([tenantId, createdAt])
+  @@index([subscriberId])
 }
 
 model OnlineSession {
@@ -398,4 +413,25 @@ model RouterCommand {
   createdAt DateTime @default(now())
 
   @@index([routerId, consumed])
+}
+
+// Per-tenant SMS / notifications configuration. Stores which gateway to use (Dartbit's
+// shared BlessedTexts account by default, or the tenant's own API key) and which automated
+// notifications to send (welcome, payment receipt, expiry reminders).
+model NotificationConfig {
+  id                String   @id @default(cuid())
+  tenantId          String   @unique
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  // Gateway
+  gateway           String   @default("DARTBIT")    // DARTBIT (shared) | CUSTOM (tenant's own)
+  apiKey            String?                          // encrypted; only used when gateway=CUSTOM
+  senderId          String?                          // tenant's BlessedTexts sender ID
+  // Auto notifications (defaults: on for welcome/receipt/expiry-reminders)
+  sendWelcome       Boolean  @default(true)
+  sendPaymentReceipt Boolean @default(true)
+  sendExpiryReminders Boolean @default(true)
+  // Expiry reminder offsets in minutes-before-expiry. Defaults: 5d, 3d, 4h.
+  reminderOffsets   Int[]    @default([7200, 4320, 240])
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 }

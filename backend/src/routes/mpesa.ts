@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import prisma from '../utils/prisma';
 import { enqueueCommand } from '../utils/commandQueue';
 import { decryptDarajaCreds, centralDarajaCreds, stkPush, normalizePhone, b2cPayout, isB2cConfigured } from '../utils/daraja';
+import { sendNotification } from '../utils/notifications';
 
 const router = Router();
 
@@ -322,6 +323,42 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
       });
     } catch (e) {
       console.error('payment record (hotspot) error:', e instanceof Error ? e.message : e);
+    }
+  }
+
+  // Send notification SMS to the customer: a payment receipt (with login creds) every
+  // purchase; plus a welcome SMS on the first ever purchase from this phone. Both respect
+  // the tenant's NotificationConfig toggles. Dedup via Message.dedupKey so retries don't
+  // double-send.
+  if (tx.phone && tenant) {
+    try {
+      // Welcome: only when this is a NEW subscriber (no existingSub at provision-start).
+      if (!existingSub) {
+        const welcome = `Welcome to ${tenant.name}! Your account ${displayName} has been created. Enjoy your internet.`;
+        await sendNotification({
+          tenantId: tx.tenantId,
+          phone: tx.phone,
+          body: welcome,
+          category: 'WELCOME',
+          dedupKey: `WELCOME:${tx.tenantId}:${tx.phone}`,
+          subscriberId,
+          username: displayName,
+        }).catch(err => console.error('welcome SMS error:', err instanceof Error ? err.message : err));
+      }
+      // Receipt: per transaction. Includes login (D-name + 4-digit pwd) and amount.
+      const validity = pkg?.name ? `(${pkg.name})` : `(${tx.durationMinutes}min)`;
+      const receiptBody = `${tenant.name}: Paid KES ${tx.amount} ${validity}. Login: ${displayName} / ${password}. Ref ${receipt || txId.slice(-6)}. Thank you!`;
+      await sendNotification({
+        tenantId: tx.tenantId,
+        phone: tx.phone,
+        body: receiptBody,
+        category: 'RECEIPT',
+        dedupKey: `RECEIPT:${txId}`,
+        subscriberId,
+        username: displayName,
+      }).catch(err => console.error('receipt SMS error:', err instanceof Error ? err.message : err));
+    } catch (e) {
+      console.error('notification SMS error:', e instanceof Error ? e.message : e);
     }
   }
 
