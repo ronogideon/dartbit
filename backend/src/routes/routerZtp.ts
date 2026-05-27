@@ -777,13 +777,29 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       add(`/ip hotspot user profile set [find name="${prof.name}"] rate-limit="${prof.speed}" shared-users=1 add-mac-cookie=yes`);
     }
     // Add each voucher as a hotspot user — username and password = code.
-    // limit-uptime starts counting from first login (MikroTik behavior).
+    // limit-uptime caps cumulative active time, BUT we ALSO enforce wall-clock expiry:
+    // when a voucher's expiresAt has passed, we disable the user and kick any active
+    // session so the device cannot stay/reconnect after its time window — even if the
+    // cumulative uptime limit wasn't reached (intermittent use). This is the fix for
+    // "expired voucher still reconnects".
     add(`:log info "Dartbit: sync pushing ${vouchers.length} vouchers"`);
     for (const v of vouchers) {
       const profileName = v.package ? `db-v-${v.package.id.substring(0, 8)}` : 'dartbit-default';
       const sessionSec = v.durationMinutes * 60;
       const shortId = v.id.slice(-8);
+      const expired = !!(v.expiresAt && v.expiresAt <= now);
       add(`:if ([:len [/ip hotspot user find name="${v.code}"]] = 0) do={ /ip hotspot user add name=${v.code} password=${v.code} profile=${profileName} limit-uptime=${sessionSec}s comment="Dbv:${shortId}" }`);
+      if (expired) {
+        // Wall-clock expired: disable the user and remove any active session + mac-cookie
+        // so the device is dropped and cannot auto-reconnect.
+        add(`:if ([:len [/ip hotspot user find name="${v.code}"]] > 0) do={ /ip hotspot user set [find name="${v.code}"] disabled=yes }`);
+        add(`:foreach a in=[/ip hotspot active find user="${v.code}"] do={ /ip hotspot active remove \$a }`);
+        add(`:foreach c in=[/ip hotspot cookie find user="${v.code}"] do={ /ip hotspot cookie remove \$c }`);
+      } else {
+        // Still valid: make sure it's enabled (in case a previous expiry disabled it and
+        // it was later extended/renewed).
+        add(`:if ([:len [/ip hotspot user find name="${v.code}"]] > 0) do={ /ip hotspot user set [find name="${v.code}"] disabled=no }`);
+      }
     }
     // Clean up voucher-users for vouchers that are no longer in our active list.
     // Comment format on router: "Dbv:<shortId>" — short to fit in 200-char line limit.

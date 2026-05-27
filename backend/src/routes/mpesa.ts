@@ -163,17 +163,27 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   const pkg = tx.packageId ? await prisma.package.findUnique({ where: { id: tx.packageId } }) : null;
   const tenant = await prisma.tenant.findUnique({ where: { id: tx.tenantId } });
 
-  // Username scheme for the SUBSCRIBER (dashboard display): first letter of tenant name
-  // (uppercased) + incrementing number, e.g. "D1", "D2". The counter is the number of
-  // existing HOTSPOT subscribers for the tenant + 1.
-  const prefix = (tenant?.name?.trim()?.[0] || 'H').toUpperCase().replace(/[^A-Z0-9]/, 'H');
-  let seq = await prisma.subscriber.count({ where: { tenantId: tx.tenantId, service: 'HOTSPOT' } }) + 1;
-  let displayName = `${prefix}${seq}`;
-  for (let i = 0; i < 50; i++) {
-    const clash = await prisma.subscriber.findFirst({ where: { tenantId: tx.tenantId, username: displayName } });
-    if (!clash) break;
-    seq++;
+  // Reuse an existing HOTSPOT subscriber for the SAME phone number (no duplicates). On a
+  // repeat purchase we keep their original display name (D1/D2…) and just extend the
+  // subscription, rather than creating a new D-number each time.
+  const existingSub = tx.phone
+    ? await prisma.subscriber.findFirst({ where: { tenantId: tx.tenantId, service: 'HOTSPOT', phone: tx.phone } })
+    : null;
+
+  let displayName: string;
+  if (existingSub) {
+    displayName = existingSub.username;
+  } else {
+    // New phone → assign first letter of tenant name (uppercased) + next number, e.g. D1, D2.
+    const prefix = (tenant?.name?.trim()?.[0] || 'H').toUpperCase().replace(/[^A-Z0-9]/, 'H');
+    let seq = await prisma.subscriber.count({ where: { tenantId: tx.tenantId, service: 'HOTSPOT' } }) + 1;
     displayName = `${prefix}${seq}`;
+    for (let i = 0; i < 50; i++) {
+      const clash = await prisma.subscriber.findFirst({ where: { tenantId: tx.tenantId, username: displayName } });
+      if (!clash) break;
+      seq++;
+      displayName = `${prefix}${seq}`;
+    }
   }
 
   // The ROUTER hotspot user is named after the M-Pesa receipt (uppercased alphanumeric),
@@ -213,7 +223,6 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
     await enqueueCommand(tx.routerId, loginCmds.join('\n'));
   }
 
-  const username = displayName;
   await prisma.mpesaTransaction.update({
     where: { id: txId },
     data: { status: 'PAID', mpesaReceipt: receipt || null, username: displayName, password, expiresAt, resultDesc: 'Success' },
@@ -246,17 +255,17 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
     }
   }
 
-  // Add the customer to the subscribers list (HOTSPOT). Keyed by username.
+  // Add/refresh the customer in the subscribers list (HOTSPOT). Reuse the existing record
+  // for this phone (found above) so we never create a duplicate for the same number.
   let subscriberId: string | null = null;
   try {
-    const existing = await prisma.subscriber.findFirst({ where: { tenantId: tx.tenantId, username } });
-    if (!existing) {
+    if (!existingSub) {
       const created = await prisma.subscriber.create({
         data: {
           tenantId: tx.tenantId,
           routerId: tx.routerId || undefined,
           packageId: tx.packageId || undefined,
-          username,
+          username: displayName,
           secret: password,
           fullName: tx.phone || 'Hotspot Customer',
           phone: tx.phone || null,
@@ -270,10 +279,17 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
       subscriberId = created.id;
     } else {
       await prisma.subscriber.update({
-        where: { id: existing.id },
-        data: { secret: password, expiresAt, isActive: true, packageId: tx.packageId || undefined },
+        where: { id: existingSub.id },
+        data: {
+          secret: password,
+          expiresAt,
+          isActive: true,
+          packageId: tx.packageId || undefined,
+          macAddress: tx.clientMac || existingSub.macAddress,
+          ipAddress: tx.clientIp || existingSub.ipAddress,
+        },
       });
-      subscriberId = existing.id;
+      subscriberId = existingSub.id;
     }
   } catch (e) {
     console.error('subscriber create (hotspot) error:', e instanceof Error ? e.message : e);

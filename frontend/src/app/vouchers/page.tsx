@@ -116,7 +116,7 @@ export default function VouchersPage() {
     <AppLayout>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2"><Ticket size={24} /> Vouchers</h1>
+          <h1 className="text-2xl font-bold flex items-center gap-2"><Ticket size={24} /> Voucher / Receipt</h1>
           <p className="text-sm text-gray-500 mt-1">{list.length} total · {list.filter(v => !v.isUsed).length} unused · {list.filter(v => v.isUsed).length} used</p>
         </div>
         <button onClick={() => setModalOpen(true)} className="btn-primary flex items-center gap-2">

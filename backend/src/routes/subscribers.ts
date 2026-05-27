@@ -179,6 +179,7 @@ router.get('/:id/detail', async (req: AuthRequest, res: Response) => {
       subscriber: {
         id: sub.id, username: sub.username, fullName: sub.fullName,
         phone: sub.phone, email: sub.email, service: sub.service,
+        password: sub.secret,
         isActive: sub.isActive, expiresAt: sub.expiresAt,
         lastOnlineAt: sub.lastOnlineAt, ipAddress: sub.ipAddress,
         macAddress: sub.macAddress, createdAt: sub.createdAt,

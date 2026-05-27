@@ -101,7 +101,7 @@ button.primary svg{width:14px;height:14px}
   <div class="card">
     <div class="tabs">
       <div class="tab active" data-tab="buy">Buy</div>
-      <div class="tab" data-tab="voucher">Voucher</div>
+      <div class="tab" data-tab="voucher">Voucher / Receipt</div>
       <div class="tab" data-tab="account">Account</div>
     </div>
 
@@ -126,7 +126,7 @@ button.primary svg{width:14px;height:14px}
       <h2>Got a voucher?</h2>
       <p class="help">Enter the code from your ticket below.</p>
       <form id="voucher-form">
-        <label>Voucher code</label>
+        <label>Voucher / M-Pesa Receipt code</label>
         <input class="code" id="voucher-code" placeholder="XXXXXXXX" maxlength="16" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" required>
         <button type="submit" class="primary" id="voucher-btn">Connect</button>
       </form>

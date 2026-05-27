@@ -1,7 +1,7 @@
 'use client';
 import { useQuery } from '@tanstack/react-query';
 import { getSubscriberDetail } from '@/lib/api';
-import { X, Wifi, Download, Upload, Clock, Calendar, Phone, Mail, Router as RouterIcon, Package as PackageIcon } from 'lucide-react';
+import { X, Wifi, Download, Upload, Clock, Calendar, Phone, Mail, Router as RouterIcon, Package as PackageIcon, Key } from 'lucide-react';
 
 interface Props {
   subscriberId: string | null;
@@ -74,6 +74,7 @@ export default function SubscriberDetail({ subscriberId, onClose }: Props) {
                 {data.subscriber.phone && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-300"><Phone size={14} className="text-gray-400" /> {data.subscriber.phone}</div>}
                 {data.subscriber.email && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-300"><Mail size={14} className="text-gray-400" /> {data.subscriber.email}</div>}
                 <div className="flex items-center gap-2 text-gray-600 dark:text-gray-300"><Wifi size={14} className="text-gray-400" /> {data.subscriber.service}</div>
+                {data.subscriber.password && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-300 col-span-2"><Key size={14} className="text-gray-400" /> <span className="text-gray-500">Password:</span> <span className="font-mono font-medium text-gray-800 dark:text-gray-100 select-all">{data.subscriber.password}</span></div>}
                 {data.subscriber.package && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-300"><PackageIcon size={14} className="text-gray-400" /> {data.subscriber.package.name}</div>}
                 {data.subscriber.router && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-300"><RouterIcon size={14} className="text-gray-400" /> {data.subscriber.router.name}</div>}
                 {data.subscriber.ipAddress && <div className="flex items-center gap-2 text-gray-600 dark:text-gray-300 font-mono text-xs">{data.subscriber.ipAddress}</div>}
