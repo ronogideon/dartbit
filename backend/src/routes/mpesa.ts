@@ -161,38 +161,97 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   const tx = await prisma.mpesaTransaction.findUnique({ where: { id: txId } });
   if (!tx || tx.status === 'PAID') return;
   const pkg = tx.packageId ? await prisma.package.findUnique({ where: { id: tx.packageId } }) : null;
+  const tenant = await prisma.tenant.findUnique({ where: { id: tx.tenantId } });
 
-  const { username, password } = genCreds();
+  // Username scheme for the SUBSCRIBER (dashboard display): first letter of tenant name
+  // (uppercased) + incrementing number, e.g. "D1", "D2". The counter is the number of
+  // existing HOTSPOT subscribers for the tenant + 1.
+  const prefix = (tenant?.name?.trim()?.[0] || 'H').toUpperCase().replace(/[^A-Z0-9]/, 'H');
+  let seq = await prisma.subscriber.count({ where: { tenantId: tx.tenantId, service: 'HOTSPOT' } }) + 1;
+  let displayName = `${prefix}${seq}`;
+  for (let i = 0; i < 50; i++) {
+    const clash = await prisma.subscriber.findFirst({ where: { tenantId: tx.tenantId, username: displayName } });
+    if (!clash) break;
+    seq++;
+    displayName = `${prefix}${seq}`;
+  }
+
+  // The ROUTER hotspot user is named after the M-Pesa receipt (uppercased alphanumeric),
+  // with password = same receipt. This lets the SAME receipt act as a voucher: the
+  // /redeem flow returns username=code,password=code and logs the device back in against
+  // this exact user. If no receipt (shouldn't happen on success), fall back to a random code.
+  const receiptCode = (receipt || '').toUpperCase().trim().replace(/[^A-Z0-9]/g, '');
+  const loginUser = receiptCode && receiptCode.length >= 4 ? receiptCode : genCreds().username.toUpperCase();
+  const password = loginUser;
+
   const sessionSec = tx.durationMinutes * 60;
   const expiresAt = new Date(Date.now() + tx.durationMinutes * 60 * 1000);
   const profileName = pkg ? `db-h-${pkg.id.substring(0, 8)}` : 'dartbit-default';
   const speed = pkg ? `${pkg.speedDownKbps || 5120}k/${pkg.speedUpKbps || 5120}k` : '5120k/5120k';
 
-  // Build router commands: ensure profile, add the user, then auto-login the MAC if we have it.
+  // Build router commands. CRITICAL FIXES for "no internet":
+  // 1. The package profile MUST have address-pool=dhcp-pool (without it the client gets
+  //    no routable IP after login → connected but no internet). The previous code created
+  //    the profile with a bare `add name=X` and never set address-pool.
+  // 2. Create the user FIRST in its own command, then do the active-login in a SEPARATE
+  //    command so the user definitely exists when we log it in (avoids the timing race).
   const cmds: string[] = [];
-  cmds.push(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} }`);
-  cmds.push(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=yes`);
-  cmds.push(`:if ([:len [/ip hotspot user find name="${username}"]] = 0) do={ /ip hotspot user add name=${username} password=${password} profile=${profileName} limit-uptime=${sessionSec}s comment="Dbm:${txId.slice(-8)}" }`);
-  // Auto-connect: log the captured MAC straight into the hotspot so the customer is online
-  // without manually signing in. Falls back to username/password if MAC missing/changed.
-  if (tx.clientMac) {
-    cmds.push(`:do { /ip hotspot active login user=${username} mac-address=${tx.clientMac} } on-error={}`);
-  }
+  cmds.push(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} address-pool=dhcp-pool }`);
+  cmds.push(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=yes address-pool=dhcp-pool`);
+  cmds.push(`:if ([:len [/ip hotspot user find name="${loginUser}"]] = 0) do={ /ip hotspot user add name=${loginUser} password=${password} profile=${profileName} limit-uptime=${sessionSec}s comment="Dbm:${displayName}" }`);
 
   if (tx.routerId) await enqueueCommand(tx.routerId, cmds.join('\n'));
 
+  // Auto-login the captured MAC in a SEPARATE queued command so it runs after the user
+  // creation above has been imported (the poller imports each queued command in order).
+  // This makes the customer go online automatically after payment.
+  if (tx.routerId && tx.clientMac) {
+    const loginCmds = [
+      `:do { /ip hotspot active login user=${loginUser} mac-address=${tx.clientMac} } on-error={}`,
+      `:log info "Dartbit: auto-login ${loginUser} (${displayName})"`,
+    ];
+    await enqueueCommand(tx.routerId, loginCmds.join('\n'));
+  }
+
+  const username = displayName;
   await prisma.mpesaTransaction.update({
     where: { id: txId },
-    data: { status: 'PAID', mpesaReceipt: receipt || null, username, password, expiresAt, resultDesc: 'Success' },
+    data: { status: 'PAID', mpesaReceipt: receipt || null, username: displayName, password, expiresAt, resultDesc: 'Success' },
   });
 
-  // Add the customer to the subscribers list automatically (HOTSPOT service type),
-  // so M-Pesa hotspot buyers appear alongside PPPoE subscribers in the dashboard.
-  // Keyed by username (unique per purchase). If somehow it exists, update it.
+  // Record the M-Pesa receipt as a VOUCHER (code = receipt) bound to this device's MAC.
+  // Since the router hotspot user is named after the receipt, redeeming the receipt on the
+  // Voucher tab logs the same device back in (the /redeem flow returns username=code).
+  if (receiptCode) {
+    try {
+      await prisma.voucher.upsert({
+        where: { code: receiptCode },
+        create: {
+          tenantId: tx.tenantId,
+          code: receiptCode,
+          packageId: tx.packageId || undefined,
+          routerId: tx.routerId || undefined,
+          durationMinutes: tx.durationMinutes,
+          isUsed: true,
+          usedAt: new Date(),
+          usedByMac: tx.clientMac || null,
+          usedByIp: tx.clientIp || null,
+          expiresAt,
+          notes: `M-Pesa ${receiptCode} • ${displayName} • ${tx.phone || ''}`,
+        },
+        update: { expiresAt, usedByMac: tx.clientMac || null },
+      });
+    } catch (e) {
+      console.error('voucher-from-receipt error:', e instanceof Error ? e.message : e);
+    }
+  }
+
+  // Add the customer to the subscribers list (HOTSPOT). Keyed by username.
+  let subscriberId: string | null = null;
   try {
     const existing = await prisma.subscriber.findFirst({ where: { tenantId: tx.tenantId, username } });
     if (!existing) {
-      await prisma.subscriber.create({
+      const created = await prisma.subscriber.create({
         data: {
           tenantId: tx.tenantId,
           routerId: tx.routerId || undefined,
@@ -208,15 +267,36 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
           ipAddress: tx.clientIp || null,
         },
       });
+      subscriberId = created.id;
     } else {
       await prisma.subscriber.update({
         where: { id: existing.id },
         data: { secret: password, expiresAt, isActive: true, packageId: tx.packageId || undefined },
       });
+      subscriberId = existing.id;
     }
   } catch (e) {
-    // Non-fatal: provisioning + payment already succeeded; subscriber listing is secondary.
     console.error('subscriber create (hotspot) error:', e instanceof Error ? e.message : e);
+  }
+
+  // Record a Payment row so the purchase shows on the Payments tab (which reads the
+  // Payment table, not MpesaTransaction). Linked to the subscriber created above.
+  if (subscriberId) {
+    try {
+      await prisma.payment.create({
+        data: {
+          amount: tx.amount,
+          method: 'MPESA',
+          reference: receipt || tx.checkoutRequestId || txId,
+          mpesaCode: receipt || null,
+          notes: `Hotspot ${pkg?.name || 'package'} • ${tx.phone || ''}`,
+          subscriberId,
+          tenantId: tx.tenantId,
+        },
+      });
+    } catch (e) {
+      console.error('payment record (hotspot) error:', e instanceof Error ? e.message : e);
+    }
   }
 
   // For Dartbit-collected (manual) methods, disburse the tenant's net share via B2C.
@@ -239,7 +319,6 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
           data: { payoutStatus: 'PENDING', payoutRef: result.conversationId },
         });
       } catch (e) {
-        // Payout failed/not enabled — leave as PENDING for manual settlement, log it.
         console.error('B2C payout error:', e instanceof Error ? e.message : e);
         await prisma.mpesaTransaction.update({
           where: { id: txId },
@@ -247,7 +326,6 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
         });
       }
     } else {
-      // No B2C configured — mark payout PENDING so it can be settled manually/periodically.
       await prisma.mpesaTransaction.update({ where: { id: txId }, data: { payoutStatus: 'PENDING' } });
     }
   }

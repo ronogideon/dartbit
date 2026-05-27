@@ -75,7 +75,11 @@ async function getAccessToken(creds: DarajaCreds): Promise<string> {
     Authorization: `Basic ${auth}`,
   });
   const token = json.access_token as string | undefined;
-  if (!token) throw new Error('Failed to get Daraja access token');
+  if (!token) {
+    console.error('[daraja] OAuth failed:', JSON.stringify(json), `(consumerKey ends ...${creds.consumerKey.slice(-4)})`);
+    throw new Error('Failed to get Daraja access token');
+  }
+  console.log(`[daraja] OAuth ok (consumerKey ...${creds.consumerKey.slice(-4)})`);
   return token;
 }
 
@@ -125,13 +129,19 @@ export async function stkPush(params: {
     TransactionDesc: params.description.slice(0, 13),
   });
 
+  // Diagnostic logging (no secrets) so "Merchant does not exist" etc. can be traced:
+  // shows which shortcode + transaction type were used and the raw Daraja response.
+  console.log(`[stkPush] env=${DARAJA_ENV} shortcode=${params.creds.shortcode} type=${params.creds.type} txType=${transactionType} amount=${Math.round(params.amount)} phone=${phone}`);
+
   const { json } = await httpsRequest('POST', '/mpesa/stkpush/v1/processrequest', {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
   }, payload);
 
+  console.log(`[stkPush] Daraja response:`, JSON.stringify(json));
+
   if (!json.CheckoutRequestID) {
-    throw new Error((json.errorMessage as string) || (json.ResponseDescription as string) || 'STK push failed');
+    throw new Error((json.errorMessage as string) || (json.ResponseDescription as string) || (json.CustomerMessage as string) || 'STK push failed');
   }
   return {
     checkoutRequestId: json.CheckoutRequestID as string,
