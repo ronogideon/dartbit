@@ -145,9 +145,9 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // how long the MAC binding survives a disconnect (1 day here). On reconnect within
     // that window, RouterOS auto-logs them back in; after it expires, the portal voucher
     // form is the fallback.
-    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,http-chap,http-pap http-cookie-lifetime=1d use-radius=no }`);
+    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,http-pap http-cookie-lifetime=1d use-radius=no }`);
     // Always sync the profile settings (idempotent — no disruption)
-    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,http-chap,http-pap http-cookie-lifetime=1d use-radius=no`);
+    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,http-pap http-cookie-lifetime=1d use-radius=no`);
     // User profile — one device per credential, with MAC cookie so reconnects auto-login
     add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 address-pool=dhcp-pool }`);
     add(`:do { /ip hotspot user profile set [find name="dartbit-default"] add-mac-cookie=yes } on-error={}`);

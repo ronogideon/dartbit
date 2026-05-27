@@ -40,8 +40,9 @@ function normalizeBackendUrl(): string {
 const BACKEND_URL = normalizeBackendUrl();
 
 function genCreds() {
-  const num = crypto.randomBytes(3).toString('hex'); // 6 hex chars
-  const pwd = crypto.randomBytes(3).toString('hex');
+  const num = crypto.randomBytes(3).toString('hex'); // 6 hex chars for username uniqueness
+  // 4-digit numeric password (1000–9999) — easy for customers to type on the Account tab.
+  const pwd = String(1000 + (crypto.randomBytes(2).readUInt16BE(0) % 9000));
   return { username: `hs${num}`, password: pwd };
 }
 
@@ -186,38 +187,46 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
     }
   }
 
-  // The ROUTER hotspot user is named after the M-Pesa receipt (uppercased alphanumeric),
-  // with password = same receipt. This lets the SAME receipt act as a voucher: the
-  // /redeem flow returns username=code,password=code and logs the device back in against
-  // this exact user. If no receipt (shouldn't happen on success), fall back to a random code.
+  // PRIMARY login user: the display name (D1, D2…) with a 4-digit password. This is what
+  // shows on the subscriber detail page and works on the portal Account tab. On a repeat
+  // purchase by the same phone we reuse the existing 4-digit secret so the customer's
+  // password doesn't change under them.
+  const password = existingSub?.secret && /^\d{4}$/.test(existingSub.secret) ? existingSub.secret : genCreds().password;
+  const loginUser = displayName;
+
+  // The M-Pesa receipt (uppercased alphanumeric) is also added as its OWN hotspot user
+  // (username=password=receipt) so the receipt works as a voucher via the Voucher tab.
   const receiptCode = (receipt || '').toUpperCase().trim().replace(/[^A-Z0-9]/g, '');
-  const loginUser = receiptCode && receiptCode.length >= 4 ? receiptCode : genCreds().username.toUpperCase();
-  const password = loginUser;
 
   const sessionSec = tx.durationMinutes * 60;
   const expiresAt = new Date(Date.now() + tx.durationMinutes * 60 * 1000);
   const profileName = pkg ? `db-h-${pkg.id.substring(0, 8)}` : 'dartbit-default';
   const speed = pkg ? `${pkg.speedDownKbps || 5120}k/${pkg.speedUpKbps || 5120}k` : '5120k/5120k';
 
-  // Build router commands. CRITICAL FIXES for "no internet":
-  // 1. The package profile MUST have address-pool=dhcp-pool (without it the client gets
-  //    no routable IP after login → connected but no internet). The previous code created
-  //    the profile with a bare `add name=X` and never set address-pool.
-  // 2. Create the user FIRST in its own command, then do the active-login in a SEPARATE
-  //    command so the user definitely exists when we log it in (avoids the timing race).
+  // Build router commands. The profile MUST have address-pool=dhcp-pool (without it the
+  // client gets no routable IP after login → connected but no internet). User creation and
+  // the active-login are SEPARATE queued commands so the user exists before login runs.
   const cmds: string[] = [];
   cmds.push(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} address-pool=dhcp-pool }`);
   cmds.push(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=yes address-pool=dhcp-pool`);
-  cmds.push(`:if ([:len [/ip hotspot user find name="${loginUser}"]] = 0) do={ /ip hotspot user add name=${loginUser} password=${password} profile=${profileName} limit-uptime=${sessionSec}s comment="Dbm:${displayName}" }`);
+  // Primary user (D-name + 4-digit pwd). Recreate it fresh so the password is current.
+  cmds.push(`:foreach u in=[/ip hotspot user find name="${loginUser}"] do={ /ip hotspot user remove \$u }`);
+  cmds.push(`/ip hotspot user add name=${loginUser} password=${password} profile=${profileName} limit-uptime=${sessionSec}s comment="Dbm:${displayName}"`);
+  // Receipt user (for voucher-tab re-login by the same device).
+  if (receiptCode && receiptCode.length >= 4) {
+    cmds.push(`:if ([:len [/ip hotspot user find name="${receiptCode}"]] = 0) do={ /ip hotspot user add name=${receiptCode} password=${receiptCode} profile=${profileName} limit-uptime=${sessionSec}s comment="Dbv:${receiptCode.slice(-8)}" }`);
+  }
 
   if (tx.routerId) await enqueueCommand(tx.routerId, cmds.join('\n'));
 
-  // Auto-login the captured MAC in a SEPARATE queued command so it runs after the user
-  // creation above has been imported (the poller imports each queued command in order).
-  // This makes the customer go online automatically after payment.
+  // Auto-login the captured device so the customer goes online WITHOUT retyping anything.
+  // Run as a SEPARATE queued command (after the user-creation command is imported). We pass
+  // BOTH ip and mac — `/ip hotspot active login` needs the client to be a known host; giving
+  // the ip+mac makes it reliable. add-mac-cookie on the profile keeps them online after.
   if (tx.routerId && tx.clientMac) {
+    const ipPart = tx.clientIp ? ` ip=${tx.clientIp}` : '';
     const loginCmds = [
-      `:do { /ip hotspot active login user=${loginUser} mac-address=${tx.clientMac} } on-error={}`,
+      `:do { /ip hotspot active login user=${loginUser}${ipPart} mac-address=${tx.clientMac} } on-error={ :log warning "Dartbit: auto-login retry ${loginUser}" }`,
       `:log info "Dartbit: auto-login ${loginUser} (${displayName})"`,
     ];
     await enqueueCommand(tx.routerId, loginCmds.join('\n'));
@@ -228,9 +237,8 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
     data: { status: 'PAID', mpesaReceipt: receipt || null, username: displayName, password, expiresAt, resultDesc: 'Success' },
   });
 
-  // Record the M-Pesa receipt as a VOUCHER (code = receipt) bound to this device's MAC.
-  // Since the router hotspot user is named after the receipt, redeeming the receipt on the
-  // Voucher tab logs the same device back in (the /redeem flow returns username=code).
+  // Record the M-Pesa receipt as a VOUCHER (code = receipt) bound to this device's MAC, so
+  // redeeming the receipt on the Voucher tab logs the same device back in.
   if (receiptCode) {
     try {
       await prisma.voucher.upsert({
