@@ -2,10 +2,13 @@
 import { Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import PortalApp from '@/components/PortalApp';
+import { tenantSubdomainFromHost } from '@/lib/api';
 
 function PortalInner() {
   const sp = useSearchParams();
-  const subdomain = sp.get('t') || sp.get('subdomain') || '';
+  // Prefer an explicit ?t= / ?subdomain= param; otherwise derive it from the host
+  // (e.g. acme.dartbittech.com -> "acme").
+  const subdomain = sp.get('t') || sp.get('subdomain') || tenantSubdomainFromHost();
   return <PortalApp subdomain={subdomain} />;
 }
 

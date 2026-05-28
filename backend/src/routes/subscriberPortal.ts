@@ -10,9 +10,9 @@ const JWT_SECRET = process.env.JWT_SECRET || 'dartbit-dev-secret';
 // Daraja requires a fully-qualified https callback URL. Normalize in case BACKEND_URL
 // is set without a protocol (which Safaricom rejects as "Invalid Callback URL").
 function normalizeBackendUrl(): string {
-  let u = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
+  let u = process.env.BACKEND_URL || 'https://api.dartbittech.com';
   u = u.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-  if (u.includes('localhost') || u.includes('127.0.0.1')) u = 'dartbit-production.up.railway.app';
+  if (u.includes('localhost') || u.includes('127.0.0.1')) u = 'api.dartbittech.com';
   return 'https://' + u;
 }
 

@@ -18,10 +18,10 @@ router.get('/login', async (req: Request, res: Response) => {
     });
     if (!r) return res.status(404).type('text/plain').send('<!-- router not found -->');
 
-    let backendUrl = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
+    let backendUrl = process.env.BACKEND_URL || 'https://api.dartbittech.com';
     backendUrl = backendUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '');
     if (backendUrl.includes('localhost') || backendUrl.includes('127.0.0.1')) {
-      backendUrl = 'dartbit-production.up.railway.app';
+      backendUrl = 'api.dartbittech.com';
     }
     backendUrl = 'https://' + backendUrl;
 

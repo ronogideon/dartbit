@@ -2,7 +2,7 @@
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getSettings, updateSettings, getBillingCurrent, getBillingHistory, billingCheckout, getSystemUsers, createSystemUser, updateSystemUser, resetSystemUserPassword, deleteSystemUser, getPaymentConfig, updatePaymentConfig, getNotificationConfig, saveNotificationConfig, getSmsBalance, sendTestSms, type NotificationConfig } from '@/lib/api';
+import { getSettings, updateSettings, getBillingCurrent, getBillingHistory, billingCheckout, getSystemUsers, createSystemUser, updateSystemUser, resetSystemUserPassword, deleteSystemUser, getPaymentConfig, updatePaymentConfig, getNotificationConfig, saveNotificationConfig, getSmsBalance, sendTestSms, getTenantInfo, type NotificationConfig } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import toast from 'react-hot-toast';
 import { Settings as SettingsIcon, CreditCard, Users, Plus, Trash2, KeyRound, Copy, Check, Wallet, Bell, Send } from 'lucide-react';
@@ -79,9 +79,11 @@ function TabButton({ active, onClick, icon, label }: { active: boolean; onClick:
 function GeneralTab() {
   const qc = useQueryClient();
   const { data: settings, isLoading } = useQuery({ queryKey: ['settings'], queryFn: getSettings });
+  const { data: tenant } = useQuery({ queryKey: ['tenant-info'], queryFn: getTenantInfo, staleTime: 60000 });
   const [form, setForm] = useState<Settings>({
     currency: 'KES', timezone: 'Africa/Nairobi', backendUrl: '', smsSenderId: '', smsApiKey: '', emailFromAddress: '',
   });
+  const [copied, setCopied] = useState(false);
   useEffect(() => { if (settings) setForm(settings as Settings); }, [settings]);
 
   const updateMut = useMutation({
@@ -92,8 +94,29 @@ function GeneralTab() {
 
   if (isLoading) return <div className="text-center py-8 text-gray-400">Loading...</div>;
 
+  const baseDomain = process.env.NEXT_PUBLIC_PORTAL_BASE_DOMAIN || '';
+  const sub = (tenant as { subdomain?: string } | undefined)?.subdomain;
+  const portalUrl = sub && baseDomain ? `https://${sub}.${baseDomain}` : null;
+
   return (
     <div className="max-w-2xl space-y-6">
+      {portalUrl && (
+        <div className="card p-6">
+          <h2 className="font-semibold mb-1">Your Dartbit address</h2>
+          <p className="text-sm text-gray-500 mb-4">Share this link with your customers to access the captive portal and account login. You sign in here too.</p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 text-sm font-mono truncate">{portalUrl}</code>
+            <button
+              type="button"
+              onClick={() => { navigator.clipboard.writeText(portalUrl); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+              className="btn-secondary flex items-center gap-1.5 text-sm whitespace-nowrap"
+            >
+              {copied ? <><Check size={15} /> Copied</> : <><Copy size={15} /> Copy</>}
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="card p-6">
         <h2 className="font-semibold mb-4">Regional</h2>
         <div className="grid grid-cols-2 gap-4">
@@ -104,20 +127,6 @@ function GeneralTab() {
           <div>
             <label className="label">Timezone</label>
             <input className="input" value={form.timezone || ''} onChange={e => setForm(f => ({ ...f, timezone: e.target.value }))} />
-          </div>
-        </div>
-      </div>
-
-      <div className="card p-6">
-        <h2 className="font-semibold mb-4">SMS Configuration</h2>
-        <div className="space-y-4">
-          <div>
-            <label className="label">SMS Sender ID</label>
-            <input className="input" value={form.smsSenderId || ''} onChange={e => setForm(f => ({ ...f, smsSenderId: e.target.value }))} placeholder="DARTBIT" />
-          </div>
-          <div>
-            <label className="label">SMS API Key</label>
-            <input className="input" type="password" value={form.smsApiKey || ''} onChange={e => setForm(f => ({ ...f, smsApiKey: e.target.value }))} placeholder="Your SMS provider API key" />
           </div>
         </div>
       </div>

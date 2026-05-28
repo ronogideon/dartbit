@@ -4,6 +4,7 @@ import { z } from 'zod';
 import prisma from '../utils/prisma';
 import { signToken } from '../utils/jwt';
 import { sendSuccess, sendError } from '../utils/response';
+import { extractSubdomain } from '../utils/tenantResolve';
 
 const router = Router();
 
@@ -27,10 +28,28 @@ router.post('/login', async (req: Request, res: Response) => {
     // Deactivated system users cannot log in
     if (user.isActive === false) return sendError(res, 'Your account has been deactivated. Contact your administrator.', 403);
 
+    // SUBDOMAIN ISOLATION: when the request comes from a tenant subdomain
+    // (dart.dartbittech.com → "dart"), the user MUST belong to that tenant. This keeps
+    // each tenant's login scoped to its own subdomain — two tenants can have users with
+    // the same email/name without one logging into the other's portal. Superadmins are
+    // exempt (they manage all tenants and sign in from the apex/app host).
+    const reqSubdomain = extractSubdomain(req); // from Host subdomain or X-Tenant header
+    if (reqSubdomain && user.role !== 'SUPERADMIN' && user.role !== 'SUPERADMIN_VIEWER') {
+      const subTenant = await prisma.tenant.findUnique({
+        where: { subdomain: reqSubdomain },
+        select: { id: true },
+      });
+      if (!subTenant) return sendError(res, 'Unknown portal', 404);
+      if (user.tenantId !== subTenant.id) {
+        // Don't reveal whether the email exists elsewhere — generic message.
+        return sendError(res, 'Invalid credentials for this portal', 401);
+      }
+    }
+
     const token = signToken({ userId: user.id, role: user.role, tenantId: user.tenantId || undefined });
 
     // Include the tenant's subdomain so the frontend can route the admin to their
-    // tenant-scoped URL (/t/<subdomain>/... now, <subdomain>.domain later).
+    // tenant-scoped URL (<subdomain>.dartbittech.com).
     let subdomain: string | null = null;
     if (user.tenantId) {
       const t = await prisma.tenant.findUnique({ where: { id: user.tenantId }, select: { subdomain: true } });

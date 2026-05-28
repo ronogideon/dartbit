@@ -123,10 +123,36 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
 
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
+    const sub = await prisma.subscriber.findUnique({ where: { id: req.params.id } });
+    if (!sub) return sendError(res, 'Subscriber not found', 404);
+    // Tenant scoping: a tenant admin can only delete their own subscribers.
+    if (req.user?.tenantId && sub.tenantId !== req.user.tenantId) {
+      return sendError(res, 'Not authorized', 403);
+    }
+
+    // Best-effort: remove the user from the router so they're kicked off immediately.
+    if (sub.routerId) {
+      try {
+        const { enqueueCommand } = await import('../utils/commandQueue');
+        if (sub.service === 'HOTSPOT') {
+          await enqueueCommand(sub.routerId,
+            `:foreach a in=[/ip hotspot active find user="${sub.username}"] do={ /ip hotspot active remove $a }\n` +
+            `:foreach u in=[/ip hotspot user find name="${sub.username}"] do={ /ip hotspot user remove $u }`);
+        } else {
+          await enqueueCommand(sub.routerId,
+            `:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove $a }\n` +
+            `:foreach s in=[/ppp secret find name="${sub.username}"] do={ /ppp secret remove $s }`);
+        }
+      } catch (e) {
+        console.error('subscriber delete: router cleanup failed (continuing):', e instanceof Error ? e.message : e);
+      }
+    }
+
     await prisma.subscriber.delete({ where: { id: req.params.id } });
     sendSuccess(res, { deleted: true });
-  } catch {
-    sendError(res, 'Failed to delete subscriber', 500);
+  } catch (err) {
+    console.error('Delete subscriber error:', err instanceof Error ? err.message : err);
+    sendError(res, err instanceof Error ? `Failed to delete subscriber: ${err.message}` : 'Failed to delete subscriber', 500);
   }
 });
 

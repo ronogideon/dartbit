@@ -33,8 +33,11 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 
 const allowedOrigins = [
-  'https://dartbit-production.up.railway.app',   // backend (self / same-origin calls)
-  'https://dartbit.up.railway.app',              // main frontend
+  'https://api.dartbittech.com',                 // backend (self / same-origin calls)
+  'https://dartbittech.com',                     // apex frontend
+  'https://www.dartbittech.com',                 // www
+  'https://app.dartbittech.com',                 // app subdomain (if used)
+  'https://dartbit.up.railway.app',              // legacy main frontend (transition)
   'http://localhost:3000',                       // local dev — main frontend
   'http://localhost:3001',                       // local dev — superadmin frontend
   process.env.FRONTEND_URL,                      // override / additional main frontend origin
@@ -521,6 +524,16 @@ async function patchDatabase() {
       await safeExec(prisma, `Message ${col.replace(/.*"([^"]+)".*/, '$1')}`, `ALTER TABLE "Message" ${col}`);
     }
     await safeExec(prisma, 'Message dedupKey unique', `CREATE UNIQUE INDEX IF NOT EXISTS "Message_dedupKey_key" ON "Message"("dedupKey") WHERE "dedupKey" IS NOT NULL`);
+
+    // Allow deleting a subscriber without FK violations: make Payment.subscriberId and
+    // OnlineSession.subscriberId nullable and ON DELETE SET NULL (so payments are preserved
+    // for the record, sessions just detach). Previously deleting a subscriber failed with
+    // "Failed to delete subscriber" because of these foreign keys.
+    await safeExec(prisma, 'Payment.subscriberId nullable', `ALTER TABLE "Payment" ALTER COLUMN "subscriberId" DROP NOT NULL`);
+    await safeExec(prisma, 'Payment FK drop', `ALTER TABLE "Payment" DROP CONSTRAINT IF EXISTS "Payment_subscriberId_fkey"`);
+    await safeExec(prisma, 'Payment FK setnull', `ALTER TABLE "Payment" ADD CONSTRAINT "Payment_subscriberId_fkey" FOREIGN KEY ("subscriberId") REFERENCES "Subscriber"("id") ON DELETE SET NULL ON UPDATE CASCADE`);
+    await safeExec(prisma, 'OnlineSession FK drop', `ALTER TABLE "OnlineSession" DROP CONSTRAINT IF EXISTS "OnlineSession_subscriberId_fkey"`);
+    await safeExec(prisma, 'OnlineSession FK setnull', `ALTER TABLE "OnlineSession" ADD CONSTRAINT "OnlineSession_subscriberId_fkey" FOREIGN KEY ("subscriberId") REFERENCES "Subscriber"("id") ON DELETE SET NULL ON UPDATE CASCADE`);
 
     console.log('✅ Database patch complete');
   } catch (err) {

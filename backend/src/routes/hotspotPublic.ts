@@ -267,7 +267,7 @@ router.get('/portal', async (req: Request, res: Response) => {
   const userIp = String(req.query.ip || '');
   const linkOrig = String(req.query['link-orig'] || '/');
 
-  const backendUrl = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
+  const backendUrl = process.env.BACKEND_URL || 'https://api.dartbittech.com';
 
   // Build a clean portal page
   const html = `<!doctype html>

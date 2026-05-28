@@ -2,12 +2,35 @@ import axios from 'axios';
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://dartbit-production.up.railway.app';
 
+// The base domain tenants live under, e.g. "dartbittech.com". When the app is served from
+// a subdomain like "acme.dartbittech.com", we derive the tenant subdomain ("acme") from the
+// hostname and send it to the backend so it can scope requests to that tenant.
+const PORTAL_BASE_DOMAIN = process.env.NEXT_PUBLIC_PORTAL_BASE_DOMAIN || '';
+
+// Returns the tenant subdomain from the current hostname, or '' when on the apex/base
+// domain, localhost, or the legacy *.up.railway.app host (no per-tenant subdomain there).
+export function tenantSubdomainFromHost(): string {
+  if (typeof window === 'undefined') return '';
+  const host = window.location.hostname.toLowerCase();
+  if (!PORTAL_BASE_DOMAIN) return '';
+  if (host === PORTAL_BASE_DOMAIN || host === `www.${PORTAL_BASE_DOMAIN}`) return '';
+  if (host.endsWith(`.${PORTAL_BASE_DOMAIN}`)) {
+    const sub = host.slice(0, host.length - PORTAL_BASE_DOMAIN.length - 1);
+    // ignore reserved/app subdomains
+    if (sub && !['www', 'api', 'app'].includes(sub)) return sub;
+  }
+  return '';
+}
+
 const api = axios.create({ baseURL: BASE_URL });
 
 api.interceptors.request.use((config) => {
   if (typeof window !== 'undefined') {
     const token = localStorage.getItem('dartbit_token');
     if (token) config.headers.Authorization = `Bearer ${token}`;
+    // Tell the backend which tenant this request is for, based on the subdomain we're on.
+    const sub = tenantSubdomainFromHost();
+    if (sub) config.headers['X-Tenant'] = sub;
   }
   return config;
 });

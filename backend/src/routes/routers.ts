@@ -37,12 +37,12 @@ router.post('/link', async (req: AuthRequest, res: Response) => {
     if (!tenantId) return sendError(res, 'Tenant required', 400);
 
     const apiKey = uuidv4();
-    let backendUrl = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
+    let backendUrl = process.env.BACKEND_URL || 'https://api.dartbittech.com';
     // Normalize to always-https (strip any/no protocol, force https). MikroTik /tool fetch
     // requires mode=https and won't follow redirects, so the URL and flags must be https.
     backendUrl = backendUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '');
     if (backendUrl.includes('localhost') || backendUrl.includes('127.0.0.1')) {
-      backendUrl = 'dartbit-production.up.railway.app';
+      backendUrl = 'api.dartbittech.com';
     }
     backendUrl = 'https://' + backendUrl;
 
@@ -152,10 +152,10 @@ router.get('/:id/ztp-command', async (req: AuthRequest, res: Response) => {
     if (!r) return sendError(res, 'Router not found', 404);
     if (tenantId && r.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
 
-    let backendUrl = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
+    let backendUrl = process.env.BACKEND_URL || 'https://api.dartbittech.com';
     backendUrl = backendUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '');
     if (backendUrl.includes('localhost') || backendUrl.includes('127.0.0.1')) {
-      backendUrl = 'dartbit-production.up.railway.app';
+      backendUrl = 'api.dartbittech.com';
     }
     backendUrl = 'https://' + backendUrl;
     const fetchFlags = ' mode=https check-certificate=no';

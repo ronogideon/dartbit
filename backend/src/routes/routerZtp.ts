@@ -43,14 +43,14 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     if (!r) throw new Error('Router not found');
     const skipCmdScript = opts?.skipCmdScript === true;
 
-    let backendUrl = process.env.BACKEND_URL || 'https://dartbit-production.up.railway.app';
+    let backendUrl = process.env.BACKEND_URL || 'https://api.dartbittech.com';
     // Normalize: strip any protocol, then force https. The backend is always HTTPS on
     // Railway, and RouterOS /tool fetch REQUIRES mode=https (or it errors "Mode not
     // specified"). Previously, if BACKEND_URL had no protocol or used http, fetchFlags
     // came out empty and every fetch in the ZTP failed. Now we always emit mode=https.
     backendUrl = backendUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '');
     if (backendUrl.includes('localhost') || backendUrl.includes('127.0.0.1')) {
-      backendUrl = 'dartbit-production.up.railway.app';
+      backendUrl = 'api.dartbittech.com';
     }
     backendUrl = 'https://' + backendUrl;
     const fetchFlags = ' mode=https check-certificate=no';
