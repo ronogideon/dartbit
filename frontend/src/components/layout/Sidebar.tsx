@@ -4,8 +4,8 @@ import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import {
   LayoutDashboard, Users, Package, CreditCard, MessageSquare,
-  Router, Settings, Activity, LogOut, Zap, Building2, Ticket,
-  ChevronLeft, ChevronRight, Menu
+  Router, Activity, Zap, Building2, Ticket,
+  ChevronLeft, ChevronRight, X
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useState, useEffect } from 'react';
@@ -19,23 +19,32 @@ const navItems = [
   { href: '/payments', label: 'Payments', icon: CreditCard },
   { href: '/messages', label: 'Messages', icon: MessageSquare },
   { href: '/routers', label: 'Routers', icon: Router },
-  { href: '/settings', label: 'Settings', icon: Settings },
+  // Settings intentionally removed — it now lives behind the gear icon in the top bar.
 ];
 
 const superAdminItems = [
   { href: '/admin/tenants', label: 'Tenants', icon: Building2 },
 ];
 
-export default function Sidebar() {
+export default function Sidebar({
+  mobileOpen,
+  onMobileClose,
+}: {
+  mobileOpen: boolean;
+  onMobileClose: () => void;
+}) {
   const pathname = usePathname();
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
 
-  // Persist collapse state in localStorage
+  // Persist collapse state (desktop only) in localStorage.
   useEffect(() => {
     const saved = localStorage.getItem('dartbit_sidebar_collapsed');
     if (saved === 'true') setCollapsed(true);
   }, []);
+
+  // Close the mobile drawer whenever the route changes.
+  useEffect(() => { onMobileClose(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [pathname]);
 
   const toggleCollapsed = () => {
     setCollapsed(prev => {
@@ -48,24 +57,42 @@ export default function Sidebar() {
 
   return (
     <>
-      {/* Sidebar */}
+      {/* Mobile overlay */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40 lg:hidden"
+          onClick={onMobileClose}
+          aria-hidden
+        />
+      )}
+
+      {/* Sidebar.
+          - Desktop (lg+): static in the flex row, collapsible width.
+          - Mobile: fixed drawer that slides in from the left, toggled by `mobileOpen`. */}
       <aside
         className={clsx(
-          'bg-gray-900 text-white flex flex-col h-screen fixed left-0 top-0 z-40 border-r border-gray-800 transition-all duration-300 ease-in-out',
-          collapsed ? 'w-16' : 'w-64'
+          'bg-gray-900 text-white flex flex-col h-screen border-r border-gray-800 transition-all duration-300 ease-in-out z-50',
+          // mobile drawer positioning
+          'fixed left-0 top-0 lg:static lg:translate-x-0',
+          mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
+          // width: on mobile always full 64; on desktop respect collapse
+          collapsed ? 'w-64 lg:w-16' : 'w-64'
         )}
       >
-        {/* Logo */}
+        {/* Logo + mobile close */}
         <div className={clsx(
-          'flex items-center border-b border-gray-800 h-16 shrink-0 transition-all duration-300',
-          collapsed ? 'px-0 justify-center' : 'px-4 gap-3'
+          'flex items-center border-b border-gray-800 h-14 shrink-0 transition-all duration-300',
+          collapsed ? 'lg:px-0 lg:justify-center px-4 gap-3' : 'px-4 gap-3'
         )}>
           <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shrink-0">
             <Zap size={17} className="text-white" />
           </div>
-          {!collapsed && (
-            <span className="text-base font-bold tracking-tight truncate">Dartbit</span>
-          )}
+          {(!collapsed) && <span className="text-base font-bold tracking-tight truncate lg:inline">Dartbit</span>}
+          {collapsed && <span className="text-base font-bold tracking-tight truncate lg:hidden">Dartbit</span>}
+          {/* close button (mobile) */}
+          <button onClick={onMobileClose} className="ml-auto lg:hidden p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800" aria-label="Close menu">
+            <X size={18} />
+          </button>
         </div>
 
         {/* Nav */}
@@ -79,18 +106,14 @@ export default function Sidebar() {
                 title={collapsed ? label : undefined}
                 className={clsx(
                   'flex items-center rounded-lg text-sm font-medium transition-colors group relative',
-                  collapsed ? 'justify-center px-0 py-2.5 mx-0' : 'gap-3 px-3 py-2.5',
-                  active
-                    ? 'bg-blue-600 text-white'
-                    : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                  collapsed ? 'gap-3 px-3 py-2.5 lg:justify-center lg:px-0' : 'gap-3 px-3 py-2.5',
+                  active ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'
                 )}
               >
                 <Icon size={18} className="shrink-0" />
-                {!collapsed && <span className="truncate">{label}</span>}
-
-                {/* Tooltip when collapsed */}
+                <span className={clsx('truncate', collapsed && 'lg:hidden')}>{label}</span>
                 {collapsed && (
-                  <div className="absolute left-full ml-2 px-2 py-1 bg-gray-800 text-white text-xs rounded-md
+                  <div className="hidden lg:block absolute left-full ml-2 px-2 py-1 bg-gray-800 text-white text-xs rounded-md
                     opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 transition-opacity">
                     {label}
                   </div>
@@ -100,36 +123,8 @@ export default function Sidebar() {
           })}
         </nav>
 
-        {/* User + collapse toggle */}
-        <div className="border-t border-gray-800 p-2 space-y-1 shrink-0">
-          {/* User info */}
-          {!collapsed && (
-            <div className="px-3 py-2">
-              <p className="text-xs font-medium text-white truncate">{user?.name}</p>
-              <p className="text-xs text-gray-500 truncate">{user?.email}</p>
-            </div>
-          )}
-
-          {/* Logout */}
-          <button
-            onClick={logout}
-            title={collapsed ? 'Sign out' : undefined}
-            className={clsx(
-              'flex items-center rounded-lg text-sm font-medium text-gray-400 hover:text-white hover:bg-gray-800 w-full transition-colors group relative',
-              collapsed ? 'justify-center px-0 py-2.5' : 'gap-3 px-3 py-2.5'
-            )}
-          >
-            <LogOut size={17} className="shrink-0" />
-            {!collapsed && <span>Sign out</span>}
-            {collapsed && (
-              <div className="absolute left-full ml-2 px-2 py-1 bg-gray-800 text-white text-xs rounded-md
-                opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 transition-opacity">
-                Sign out
-              </div>
-            )}
-          </button>
-
-          {/* Collapse toggle */}
+        {/* Collapse toggle (desktop only) */}
+        <div className="border-t border-gray-800 p-2 shrink-0 hidden lg:block">
           <button
             onClick={toggleCollapsed}
             title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
@@ -145,9 +140,6 @@ export default function Sidebar() {
           </button>
         </div>
       </aside>
-
-      {/* Spacer so content shifts correctly */}
-      <div className={clsx('shrink-0 transition-all duration-300', collapsed ? 'w-16' : 'w-64')} />
     </>
   );
 }

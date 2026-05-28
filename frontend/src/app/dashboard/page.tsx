@@ -1,8 +1,8 @@
 'use client';
 import { useQuery } from '@tanstack/react-query';
-import { getSubscribers, getRouters, getPayments, getOnlineSessions } from '@/lib/api';
+import { getSubscribers, getRouters, getPayments, getOnlineSessions, getSmsBalance } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
-import { Users, Router, CreditCard, Activity, TrendingUp } from 'lucide-react';
+import { Users, Router, Activity, Wallet, TrendingUp, MessageSquare, CreditCard } from 'lucide-react';
 
 function StatCard({ title, value, icon: Icon, color }: {
   title: string; value: string | number; icon: React.ElementType; color: string;
@@ -27,10 +27,20 @@ export default function DashboardPage() {
   const { data: routers = [] } = useQuery({ queryKey: ['routers'], queryFn: getRouters });
   const { data: payments = [] } = useQuery({ queryKey: ['payments'], queryFn: getPayments });
   const { data: sessions = [] } = useQuery({ queryKey: ['online-sessions'], queryFn: getOnlineSessions, refetchInterval: 2000 });
+  const { data: smsBalance } = useQuery({ queryKey: ['sms-balance'], queryFn: getSmsBalance, retry: false, refetchInterval: 60000 });
 
   const activeSubscribers = (subscribers as { isActive: boolean }[]).filter((s) => s.isActive).length;
   const onlineRouters = (routers as { status: string }[]).filter((r) => r.status === 'ONLINE').length;
   const totalRevenue = (payments as { amount: number }[]).reduce((sum, p) => sum + p.amount, 0);
+
+  // Earned this month: sum of payments from the 1st of the current month (00:00) to now.
+  const monthStart = new Date();
+  monthStart.setDate(1);
+  monthStart.setHours(0, 0, 0, 0);
+  const earnedThisMonth = (payments as { amount: number; createdAt: string }[])
+    .filter((p) => new Date(p.createdAt) >= monthStart)
+    .reduce((sum, p) => sum + p.amount, 0);
+  const monthLabel = monthStart.toLocaleString(undefined, { month: 'long' });
 
   return (
     <AppLayout>
@@ -39,11 +49,37 @@ export default function DashboardPage() {
         <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">Welcome to Dartbit ISP Management</p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        <StatCard title="Total Subscribers" value={subscribers.length} icon={Users} color="bg-blue-600" />
-        <StatCard title="Active Subscribers" value={activeSubscribers} icon={TrendingUp} color="bg-green-600" />
-        <StatCard title="Online Sessions" value={sessions.length} icon={Activity} color="bg-purple-600" />
-        <StatCard title="Online Routers" value={`${onlineRouters}/${(routers as unknown[]).length}`} icon={Router} color="bg-orange-600" />
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mb-8">
+        <StatCard
+          title={`Earned in ${monthLabel}`}
+          value={`KES ${earnedThisMonth.toLocaleString()}`}
+          icon={TrendingUp}
+          color="bg-green-600"
+        />
+        <StatCard
+          title="SMS Balance"
+          value={smsBalance ? smsBalance.balance.toLocaleString() : '—'}
+          icon={MessageSquare}
+          color="bg-indigo-600"
+        />
+        <StatCard
+          title="Active / Total Subscribers"
+          value={`${activeSubscribers} / ${subscribers.length}`}
+          icon={Users}
+          color="bg-blue-600"
+        />
+        <StatCard
+          title="Online Sessions"
+          value={sessions.length}
+          icon={Activity}
+          color="bg-purple-600"
+        />
+        <StatCard
+          title="Online Routers"
+          value={`${onlineRouters} / ${(routers as unknown[]).length}`}
+          icon={Router}
+          color="bg-orange-600"
+        />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
