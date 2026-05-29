@@ -234,7 +234,7 @@ function Overview() {
       <div>
         <h2 className="text-lg font-bold mb-3">Dartbit SMS Gateway</h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <Card label="Balance Left" value={sms.gatewayBalance != null ? String(sms.gatewayBalance) : '—'} sub="shared gateway credits" />
+          <Card label="Balance Left" value={sms.gatewayBalance != null ? String(sms.gatewayBalance) : '—'} sub={sms.gatewayBalance != null ? 'shared gateway credits' : (sms.gatewayBalanceError || 'unavailable')} />
           <Card label="Sent (all-time)" value={String(sms.sentAllTime || 0)} />
           <Card label="Sent (this mo)" value={String(sms.sentThisMonth || 0)} />
           <Card label="SMS Cost (mo)" value={kes(sms.costThisMonth || 0)} sub={`${kes(sms.costAllTime || 0)} all-time`} />

@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import prisma from '../utils/prisma';
 import { authenticate, AuthRequest, requireSuperAdmin, requireSuperAdminRead } from '../middleware/auth';
 import { sendSuccess, sendError } from '../utils/response';
-import { dartbitDefaultCreds, getSmsBalance } from '../utils/blessedtexts';
+import { getSmsBalance } from '../utils/blessedtexts';
 
 const router = Router();
 router.use(authenticate);
@@ -57,15 +57,28 @@ router.get('/overview', requireSuperAdminRead, async (_req: AuthRequest, res: Re
     const disbursed = centralTx.filter(t => t.payoutStatus === 'PAID').reduce((s, t) => s + t.netToTenant, 0);
     const pendingPayout = centralTx.filter(t => t.payoutStatus !== 'PAID').reduce((s, t) => s + t.netToTenant, 0);
 
-    // Dartbit shared SMS gateway balance left (live from BlessedTexts, using the central key).
+    // Dartbit shared SMS gateway balance left (live from BlessedTexts). The balance endpoint
+    // only needs the API key, so we read it directly rather than via dartbitDefaultCreds()
+    // (which also requires a sender ID and would return null if only that is unset).
     let smsBalance: number | null = null;
+    let smsBalanceError: string | null = null;
     try {
-      const central = dartbitDefaultCreds();
-      if (central) {
-        const bal = await getSmsBalance({ apiKey: central.apiKey });
-        smsBalance = bal.ok ? bal.balance : null;
+      const apiKey = process.env.BLESSEDTEXTS_API_KEY;
+      if (!apiKey) {
+        smsBalanceError = 'BLESSEDTEXTS_API_KEY not set on backend';
+      } else {
+        const bal = await getSmsBalance({ apiKey });
+        if (bal.ok) {
+          smsBalance = bal.balance;
+        } else {
+          smsBalanceError = 'gateway returned non-success';
+          console.error('[superadmin] SMS balance fetch not ok:', JSON.stringify(bal.raw));
+        }
       }
-    } catch { smsBalance = null; }
+    } catch (e) {
+      smsBalanceError = e instanceof Error ? e.message : 'balance fetch failed';
+      console.error('[superadmin] SMS balance error:', smsBalanceError);
+    }
 
     // SMS sent platform-wide via the Dartbit gateway (count + cost), all-time and this month.
     const smsAgg = await prisma.message.aggregate({
@@ -97,6 +110,7 @@ router.get('/overview', requireSuperAdminRead, async (_req: AuthRequest, res: Re
       routers: routerCount,
       sms: {
         gatewayBalance: smsBalance,
+        gatewayBalanceError: smsBalanceError,
         sentAllTime: smsAgg._count._all,
         costAllTime: smsAgg._sum.cost || 0,
         sentThisMonth: smsMonthAgg._count._all,
