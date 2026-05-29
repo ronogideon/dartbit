@@ -4,6 +4,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import * as API from '@/lib/api';
 import { LayoutDashboard, Building2, Wallet, Users, LogOut, Plus, Trash2, KeyRound, Copy } from 'lucide-react';
+import {
+  AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+} from 'recharts';
 
 function kes(n: number) { return 'KES ' + (n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 }); }
 function fmtDate(d?: string | null) { return d ? new Date(d).toLocaleDateString() : '—'; }
@@ -122,23 +126,131 @@ function Overview() {
   const { data, isLoading } = useQuery({ queryKey: ['overview'], queryFn: API.getOverview, refetchInterval: 30000 });
   if (isLoading || !data) return <div className="text-gray-500">Loading…</div>;
   const c = data.centralCollection;
+  const sms = data.sms || {};
+  const tn = data.tenants || {};
+  const trend = (data.trend || []) as { month: string; subscriptionRevenue: number; newTenants: number }[];
+
+  // Tenant status breakdown for the donut.
+  const statusData = [
+    { name: 'Active', value: tn.active || 0, color: '#22c55e' },
+    { name: 'Trial', value: tn.trial || 0, color: '#3b82f6' },
+    { name: 'Due soon', value: tn.dueSoon || 0, color: '#f59e0b' },
+    { name: 'Overdue', value: tn.overdue || 0, color: '#ef4444' },
+    { name: 'Suspended', value: tn.suspended || 0, color: '#6b7280' },
+  ].filter(s => s.value > 0);
+
   return (
-    <div className="space-y-6">
-      <h2 className="text-lg font-bold">Platform Overview</h2>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Card label="Tenants" value={String(data.tenants.total)} sub={`${data.tenants.active} active`} />
-        <Card label="Subscribers" value={String(data.subscribers)} />
-        <Card label="Routers" value={String(data.routers)} />
-        <Card label="Subscription Revenue (mo)" value={kes(data.subscriptionRevenue.thisMonth)} sub={`${kes(data.subscriptionRevenue.allTime)} all-time`} />
+    <div className="space-y-8">
+      {/* Headline KPIs */}
+      <div>
+        <h2 className="text-lg font-bold mb-3">Platform Overview</h2>
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          <Card label="Total Tenants" value={String(tn.total)} sub={`${tn.active} active`} />
+          <Card label="On Free Trial" value={String(tn.trial || 0)} sub="trial tenants" />
+          <Card label="Not Renewed" value={String((tn.overdue || 0) + (tn.dueSoon || 0))} sub={`${tn.overdue || 0} overdue`} />
+          <Card label="Earned (mo)" value={kes(data.subscriptionRevenue.thisMonth)} sub={`${kes(data.subscriptionRevenue.allTime)} all-time`} />
+          <Card label="Fee Income (1%)" value={kes(c.feeRetained)} sub="from collections" />
+          <Card label="SMS Left (gateway)" value={sms.gatewayBalance != null ? String(sms.gatewayBalance) : '—'} sub={`${sms.sentThisMonth || 0} sent this mo`} />
+        </div>
       </div>
-      <h2 className="text-lg font-bold pt-2">Central M-Pesa Collection</h2>
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-        <Card label="Total Collected" value={kes(c.collectedTotal)} />
-        <Card label="Fee Retained (1%)" value={kes(c.feeRetained)} sub="Dartbit income" />
-        <Card label="Owed to Tenants" value={kes(c.owedToTenants)} />
-        <Card label="Disbursed" value={kes(c.disbursed)} />
-        <Card label="Pending Payout" value={kes(c.pendingPayout)} sub="awaiting settlement" />
-        <Card label="Leftover" value={kes(c.leftover)} sub="≈ fee retained" />
+
+      {/* Charts row */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        {/* Revenue trend */}
+        <div className="bg-gray-900 rounded-xl border border-gray-800 p-5">
+          <h3 className="text-sm font-semibold mb-4 text-gray-300">Subscription Revenue (6 months)</h3>
+          <ResponsiveContainer width="100%" height={240}>
+            <AreaChart data={trend}>
+              <defs>
+                <linearGradient id="revGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.4} />
+                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+              <XAxis dataKey="month" stroke="#6b7280" fontSize={12} />
+              <YAxis stroke="#6b7280" fontSize={12} />
+              <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8, color: '#fff' }} formatter={(v: number) => kes(v)} />
+              <Area type="monotone" dataKey="subscriptionRevenue" stroke="#3b82f6" fill="url(#revGrad)" strokeWidth={2} name="Revenue" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* New tenants per month */}
+        <div className="bg-gray-900 rounded-xl border border-gray-800 p-5">
+          <h3 className="text-sm font-semibold mb-4 text-gray-300">New Tenants (6 months)</h3>
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={trend}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+              <XAxis dataKey="month" stroke="#6b7280" fontSize={12} />
+              <YAxis stroke="#6b7280" fontSize={12} allowDecimals={false} />
+              <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8, color: '#fff' }} />
+              <Bar dataKey="newTenants" fill="#22c55e" radius={[4, 4, 0, 0]} name="New tenants" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Tenant status donut */}
+        <div className="bg-gray-900 rounded-xl border border-gray-800 p-5">
+          <h3 className="text-sm font-semibold mb-4 text-gray-300">Tenant Status</h3>
+          {statusData.length === 0 ? (
+            <div className="text-gray-500 text-sm h-[240px] flex items-center justify-center">No tenants yet</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={240}>
+              <PieChart>
+                <Pie data={statusData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={2}>
+                  {statusData.map((s, i) => <Cell key={i} fill={s.color} />)}
+                </Pie>
+                <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8, color: '#fff' }} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+              </PieChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+
+        {/* Money flow */}
+        <div className="bg-gray-900 rounded-xl border border-gray-800 p-5">
+          <h3 className="text-sm font-semibold mb-4 text-gray-300">Central Collection Flow</h3>
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={[
+              { name: 'Collected', value: c.collectedTotal, color: '#3b82f6' },
+              { name: 'Disbursed', value: c.disbursed, color: '#22c55e' },
+              { name: 'Pending', value: c.pendingPayout, color: '#f59e0b' },
+              { name: 'Fee (Dartbit)', value: c.feeRetained, color: '#a855f7' },
+            ]}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+              <XAxis dataKey="name" stroke="#6b7280" fontSize={11} />
+              <YAxis stroke="#6b7280" fontSize={12} />
+              <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8, color: '#fff' }} formatter={(v: number) => kes(v)} />
+              <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                {[0, 1, 2, 3].map(i => <Cell key={i} fill={['#3b82f6', '#22c55e', '#f59e0b', '#a855f7'][i]} />)}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* SMS gateway + money detail cards */}
+      <div>
+        <h2 className="text-lg font-bold mb-3">Dartbit SMS Gateway</h2>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <Card label="Balance Left" value={sms.gatewayBalance != null ? String(sms.gatewayBalance) : '—'} sub="shared gateway credits" />
+          <Card label="Sent (all-time)" value={String(sms.sentAllTime || 0)} />
+          <Card label="Sent (this mo)" value={String(sms.sentThisMonth || 0)} />
+          <Card label="SMS Cost (mo)" value={kes(sms.costThisMonth || 0)} sub={`${kes(sms.costAllTime || 0)} all-time`} />
+        </div>
+      </div>
+
+      <div>
+        <h2 className="text-lg font-bold mb-3">Central M-Pesa Collection</h2>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <Card label="Total Collected" value={kes(c.collectedTotal)} />
+          <Card label="Fee Retained (1%)" value={kes(c.feeRetained)} sub="Dartbit income" />
+          <Card label="Owed to Tenants" value={kes(c.owedToTenants)} />
+          <Card label="Disbursed" value={kes(c.disbursed)} />
+          <Card label="Pending Payout" value={kes(c.pendingPayout)} sub="awaiting settlement" />
+          <Card label="Leftover" value={kes(c.leftover)} sub="≈ fee retained" />
+        </div>
       </div>
     </div>
   );

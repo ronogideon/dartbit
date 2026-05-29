@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://dartbit-production.up.railway.app';
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://api.dartbittech.com';
 const api = axios.create({ baseURL: BASE_URL });
 
 api.interceptors.request.use((config) => {

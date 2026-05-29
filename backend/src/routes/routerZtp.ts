@@ -35,6 +35,17 @@ async function resolveBackendIps(hostname: string): Promise<string[]> {
   return list;
 }
 
+// Resolves the backend base URL for router scripts. Always returns an https:// URL because
+// RouterOS /tool fetch requires mode=https. Falls back to api.dartbittech.com.
+function resolveBackendUrl(): string {
+  let backendUrl = process.env.BACKEND_URL || 'https://api.dartbittech.com';
+  backendUrl = backendUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  if (backendUrl.includes('localhost') || backendUrl.includes('127.0.0.1')) {
+    backendUrl = 'api.dartbittech.com';
+  }
+  return 'https://' + backendUrl;
+}
+
 // Generates the full ZTP provisioning script for a router (the same content the
 // /ztp-script endpoint serves). Extracted so reprovision can deliver it directly
 // through the command queue without the router needing a second fetch.
@@ -43,16 +54,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     if (!r) throw new Error('Router not found');
     const skipCmdScript = opts?.skipCmdScript === true;
 
-    let backendUrl = process.env.BACKEND_URL || 'https://api.dartbittech.com';
-    // Normalize: strip any protocol, then force https. The backend is always HTTPS on
-    // Railway, and RouterOS /tool fetch REQUIRES mode=https (or it errors "Mode not
-    // specified"). Previously, if BACKEND_URL had no protocol or used http, fetchFlags
-    // came out empty and every fetch in the ZTP failed. Now we always emit mode=https.
-    backendUrl = backendUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-    if (backendUrl.includes('localhost') || backendUrl.includes('127.0.0.1')) {
-      backendUrl = 'api.dartbittech.com';
-    }
-    backendUrl = 'https://' + backendUrl;
+    const backendUrl = resolveBackendUrl();
     const fetchFlags = ' mode=https check-certificate=no';
 
     const cfg = r.provConfig;
@@ -326,6 +328,17 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
       add(`:foreach s in=[/system script find name="dartbit-cmd"] do={ /system script remove $s }`);
       add(`/system script add name=dartbit-cmd policy=read,write,test,reboot source={/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ /import file-name=dartbit-cmd.rsc; :delay 1s; /file remove [find name="dartbit-cmd.rsc"] }}`);
       add(`/system scheduler add name=dartbit-cmd interval=5s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`);
+    } else {
+      // Reprovision path: we can't recreate dartbit-cmd inline (it's the script running this
+      // import — that interrupts it). But the poller must be updated when the backend URL
+      // changes, else it keeps fetching the OLD backend forever. So we schedule a ONE-SHOT
+      // updater that runs ~8s AFTER this import finishes: it fetches a dedicated flat .rsc
+      // (/router/cmd-script) that rebuilds dartbit-cmd with the current URL, imports it, then
+      // removes itself. Using a fetched flat file avoids deeply-nested source={} escaping.
+      add(`:foreach s in=[/system scheduler find name="dartbit-cmd-upd"] do={ /system scheduler remove $s }`);
+      add(`:foreach s in=[/system script find name="dartbit-cmd-upd"] do={ /system script remove $s }`);
+      add(`/system script add name=dartbit-cmd-upd policy=read,write,test,reboot source={/tool fetch url="${backendUrl}/router/cmd-script?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd-upd.rsc; :delay 2s; :if ([:len [/file find name="dartbit-cmd-upd.rsc"]] > 0) do={ /import file-name=dartbit-cmd-upd.rsc; :delay 1s; /file remove [find name="dartbit-cmd-upd.rsc"] }; /system scheduler remove [find name="dartbit-cmd-upd"]}`);
+      add(`/system scheduler add name=dartbit-cmd-upd interval=8s on-event="/system script run dartbit-cmd-upd" comment="Dartbit cmd updater"`);
     }
     add('');
 
@@ -341,6 +354,32 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
 
     return lines.join('\n');
 }
+
+// GET /router/cmd-script?apiKey=xxx — returns a FLAT .rsc that rebuilds the dartbit-cmd
+// poller (script + 5s scheduler) pointing at the CURRENT backend URL. Used by the deferred
+// dartbit-cmd-upd one-shot during reprovision to repoint the poller after a domain change,
+// without the nested-source escaping that breaks the importer.
+router.get('/cmd-script', async (req: Request, res: Response) => {
+  try {
+    const apiKey = String(req.query.apiKey || '');
+    if (!apiKey) return res.status(400).type('text/plain').send('# Error: apiKey required');
+    const r = await findRouter(apiKey);
+    if (!r) return res.status(404).type('text/plain').send('# Error: Router not found');
+    const backendUrl = resolveBackendUrl();
+    const fetchFlags = ' mode=https check-certificate=no';
+    const lines = [
+      ':log info "Dartbit: updating cmd poller"',
+      `:foreach s in=[/system scheduler find comment="Dartbit cmd"] do={ /system scheduler remove $s }`,
+      `:foreach s in=[/system script find name="dartbit-cmd"] do={ /system script remove $s }`,
+      `/system script add name=dartbit-cmd policy=read,write,test,reboot source={/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ /import file-name=dartbit-cmd.rsc; :delay 1s; /file remove [find name="dartbit-cmd.rsc"] }}`,
+      `/system scheduler add name=dartbit-cmd interval=5s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`,
+      ':log info "Dartbit: cmd poller now on current backend"',
+    ];
+    res.type('text/plain').send(lines.join('\n'));
+  } catch (err) {
+    res.status(500).type('text/plain').send(`# Error: ${err instanceof Error ? err.message : 'Unknown'}`);
+  }
+});
 
 // GET /router/ztp-script?apiKey=xxx — serves the provisioning script for the router to fetch.
 router.get('/ztp-script', async (req: Request, res: Response) => {

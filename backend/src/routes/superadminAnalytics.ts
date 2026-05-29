@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import prisma from '../utils/prisma';
 import { authenticate, AuthRequest, requireSuperAdmin, requireSuperAdminRead } from '../middleware/auth';
 import { sendSuccess, sendError } from '../utils/response';
+import { dartbitDefaultCreds, getSmsBalance } from '../utils/blessedtexts';
 
 const router = Router();
 router.use(authenticate);
@@ -25,11 +26,16 @@ router.get('/overview', requireSuperAdminRead, async (_req: AuthRequest, res: Re
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    const [tenantCount, activeTenants, subscriberCount, routerCount] = await Promise.all([
+    const [tenantCount, activeTenants, subscriberCount, routerCount,
+           trialTenants, overdueTenants, dueSoonTenants, suspendedTenants] = await Promise.all([
       prisma.tenant.count(),
       prisma.tenant.count({ where: { status: 'ACTIVE' } }),
       prisma.subscriber.count(),
       prisma.mikrotikRouter.count(),
+      prisma.tenant.count({ where: { status: 'TRIAL' } }),
+      prisma.tenant.count({ where: { billingStatus: 'OVERDUE' } }),
+      prisma.tenant.count({ where: { billingStatus: 'DUE_SOON' } }),
+      prisma.tenant.count({ where: { status: 'SUSPENDED' } }),
     ]);
 
     // Dartbit subscription revenue (what tenants pay Dartbit via Paystack)
@@ -51,19 +57,61 @@ router.get('/overview', requireSuperAdminRead, async (_req: AuthRequest, res: Re
     const disbursed = centralTx.filter(t => t.payoutStatus === 'PAID').reduce((s, t) => s + t.netToTenant, 0);
     const pendingPayout = centralTx.filter(t => t.payoutStatus !== 'PAID').reduce((s, t) => s + t.netToTenant, 0);
 
+    // Dartbit shared SMS gateway balance left (live from BlessedTexts, using the central key).
+    let smsBalance: number | null = null;
+    try {
+      const central = dartbitDefaultCreds();
+      if (central) {
+        const bal = await getSmsBalance({ apiKey: central.apiKey });
+        smsBalance = bal.ok ? bal.balance : null;
+      }
+    } catch { smsBalance = null; }
+
+    // SMS sent platform-wide via the Dartbit gateway (count + cost), all-time and this month.
+    const smsAgg = await prisma.message.aggregate({
+      where: { gateway: 'BLESSEDTEXTS', status: { in: ['SENT', 'DELIVERED'] } },
+      _count: { _all: true }, _sum: { cost: true },
+    });
+    const smsMonthAgg = await prisma.message.aggregate({
+      where: { gateway: 'BLESSEDTEXTS', status: { in: ['SENT', 'DELIVERED'] }, createdAt: { gte: monthStart } },
+      _count: { _all: true }, _sum: { cost: true },
+    });
+
+    // 6-month trend for charts: subscription revenue + central fee income per month.
+    const trend: { month: string; subscriptionRevenue: number; feeIncome: number; newTenants: number }[] = [];
+    for (let i = 5; i >= 0; i--) {
+      const mStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const mEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+      const label = mStart.toLocaleString('en-US', { month: 'short' });
+      const subRev = paidPlatform.filter(p => p.paidAt && p.paidAt >= mStart && p.paidAt < mEnd).reduce((s, p) => s + p.amount, 0);
+      const newT = await prisma.tenant.count({ where: { createdAt: { gte: mStart, lt: mEnd } } });
+      trend.push({ month: label, subscriptionRevenue: subRev, feeIncome: 0, newTenants: newT });
+    }
+
     sendSuccess(res, {
-      tenants: { total: tenantCount, active: activeTenants },
+      tenants: {
+        total: tenantCount, active: activeTenants, trial: trialTenants,
+        overdue: overdueTenants, dueSoon: dueSoonTenants, suspended: suspendedTenants,
+      },
       subscribers: subscriberCount,
       routers: routerCount,
+      sms: {
+        gatewayBalance: smsBalance,
+        sentAllTime: smsAgg._count._all,
+        costAllTime: smsAgg._sum.cost || 0,
+        sentThisMonth: smsMonthAgg._count._all,
+        costThisMonth: smsMonthAgg._sum.cost || 0,
+      },
       subscriptionRevenue: { allTime: subsRevenueAll, thisMonth: subsRevenueMonth },
       centralCollection: {
         collectedTotal,
-        feeRetained: feeTotal,         // Dartbit's 1% income from collections
+        feeRetained: feeTotal,
         owedToTenants: owedTotal,
         disbursed,
         pendingPayout,
-        leftover: collectedTotal - disbursed - pendingPayout, // should ≈ feeRetained
+        leftover: collectedTotal - disbursed - pendingPayout,
       },
+      trend,
     });
   } catch (err) {
     console.error('overview error:', err);
