@@ -4,6 +4,7 @@
 // Message table for the Messages tab.
 import prisma from './prisma';
 import { dartbitDefaultCreds, decryptApiKey, normalizeKenyanPhone, sendSms, type SmsCreds } from './blessedtexts';
+import { canSend, debitForSms } from './smsWallet';
 
 type Category = 'WELCOME' | 'RECEIPT' | 'REMINDER' | 'MANUAL' | 'OTHER';
 
@@ -75,6 +76,22 @@ export async function sendNotification(args: SendNotifyArgs): Promise<NotifyResu
     return { ok: false, reason: 'invalid phone' };
   }
 
+  // Prepaid wallet gate: tenants on the Dartbit shared gateway must have enough balance.
+  // (Tenants on their OWN gateway aren't billed by Dartbit and always pass.) A long message
+  // is multiple SMS segments (160 chars each), so charge accordingly.
+  const segments = Math.max(1, Math.ceil(body.length / 160));
+  const affordable = await canSend(tenantId, segments);
+  if (affordable.usesDartbit && !affordable.ok) {
+    await prisma.message.create({
+      data: {
+        tenantId, type: 'SMS', recipient: to, body, status: 'FAILED',
+        errorMessage: `Insufficient SMS balance (need KES ${affordable.needed.toFixed(2)}, have ${affordable.balance.toFixed(2)})`,
+        category, dedupKey: dedupKey || undefined, subscriberId: subscriberId || undefined, username: username || undefined,
+      },
+    });
+    return { ok: false, reason: 'insufficient SMS balance' };
+  }
+
   const creds = await resolveSmsCreds(tenantId);
   if (!creds) {
     await prisma.message.create({
@@ -116,6 +133,11 @@ export async function sendNotification(args: SendNotifyArgs): Promise<NotifyResu
         errorMessage: result.ok ? null : result.statusDesc || null,
       },
     });
+    // Debit the prepaid wallet only on a successful send (Dartbit-gateway tenants only).
+    if (result.ok) {
+      try { await debitForSms(tenantId, segments, result.messageId || msg.id); }
+      catch (e) { console.error('[wallet] debit failed:', e instanceof Error ? e.message : e); }
+    }
     return { ok: result.ok, messageId: result.messageId, cost: result.cost, reason: result.ok ? undefined : result.statusDesc };
   } catch (err) {
     await prisma.message.update({

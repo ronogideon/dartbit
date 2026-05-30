@@ -6,6 +6,8 @@ import { authenticate, AuthRequest, requireTenantAdmin } from '../middleware/aut
 import { sendSuccess, sendError } from '../utils/response';
 import { dartbitDefaultCreds, decryptApiKey, encryptApiKey, getSmsBalance, topupSms, normalizeKenyanPhone } from '../utils/blessedtexts';
 import { resolveSmsCreds, sendNotification } from '../utils/notifications';
+import { getWalletBalance, getSmsRate } from '../utils/smsWallet';
+import { centralDarajaCreds, stkPush } from '../utils/daraja';
 import { mask } from '../utils/crypto';
 
 const router = Router();
@@ -116,36 +118,94 @@ router.put('/config', requireTenantAdmin, async (req: AuthRequest, res: Response
 });
 
 // GET /notifications/balance — fetch live SMS credit balance from the active gateway.
+// GET /notifications/balance — returns the tenant's prepaid SMS wallet (for Dartbit gateway)
+// or their own gateway's credit balance (for CUSTOM gateway).
 router.get('/balance', async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user?.tenantId;
     if (!tenantId) return sendError(res, 'Tenant required', 400);
+    const cfg = await prisma.notificationConfig.findUnique({ where: { tenantId }, select: { gateway: true } });
+    const usesDartbit = !cfg || cfg.gateway === 'DARTBIT';
+
+    if (usesDartbit) {
+      // Prepaid wallet model: balance in KES + how many SMS that buys at the current rate.
+      const [walletBal, rate] = await Promise.all([getWalletBalance(tenantId), getSmsRate()]);
+      const smsRemaining = rate > 0 ? Math.floor(walletBal / rate) : 0;
+      return sendSuccess(res, { mode: 'WALLET', balanceKES: walletBal, rate, smsRemaining, balance: smsRemaining });
+    }
+    // CUSTOM gateway: show the tenant's own provider balance.
     const creds = await resolveSmsCreds(tenantId);
     if (!creds) return sendError(res, 'No SMS gateway configured', 400);
     const result = await getSmsBalance({ apiKey: creds.apiKey });
-    sendSuccess(res, { balance: result.balance, ok: result.ok });
+    sendSuccess(res, { mode: 'CUSTOM', balance: result.balance, ok: result.ok });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);
   }
 });
 
-// POST /notifications/topup — start an STK push to refill SMS credit.
-// Body: { amount: number, phoneNumber?: string }
+// GET /notifications/wallet/ledger — recent wallet transactions.
+router.get('/wallet/ledger', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return sendError(res, 'Tenant required', 400);
+    const txns = await prisma.smsWalletTxn.findMany({
+      where: { tenantId }, orderBy: { createdAt: 'desc' }, take: 100,
+    });
+    sendSuccess(res, txns);
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
+// POST /notifications/topup — start an M-Pesa STK push to Dartbit to top up the SMS wallet.
+// Body: { amount: number (KES), phone: string }. Wallet is credited on the STK callback.
 router.post('/topup', requireTenantAdmin, async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user?.tenantId;
     if (!tenantId) return sendError(res, 'Tenant required', 400);
-    const amount = Number(req.body?.amount);
+    const amount = Math.round(Number(req.body?.amount));
     if (!Number.isFinite(amount) || amount < 1) return sendError(res, 'amount must be >= 1', 400);
-    const phoneRaw = req.body?.phoneNumber ? String(req.body.phoneNumber) : undefined;
-    const phone = phoneRaw ? (normalizeKenyanPhone(phoneRaw) || undefined) : undefined;
+    const phone = normalizeKenyanPhone(String(req.body?.phone || ''));
+    if (!phone) return sendError(res, 'A valid M-Pesa phone number is required', 400);
 
-    const creds = await resolveSmsCreds(tenantId);
-    if (!creds) return sendError(res, 'No SMS gateway configured', 400);
+    // Use Dartbit's central Daraja to collect the top-up.
+    const creds = centralDarajaCreds();
+    if (!creds) return sendError(res, 'SMS top-up is not available right now (gateway not configured)', 503);
 
-    const result = await topupSms(creds.apiKey, Math.round(amount), phone);
-    if (!result.ok) return sendError(res, result.statusDesc || 'Topup failed', 400);
-    sendSuccess(res, { message: result.statusDesc });
+    // Create a pending MpesaTransaction tagged as an SMS top-up.
+    const tx = await prisma.mpesaTransaction.create({
+      data: {
+        tenantId, amount, phone, status: 'PENDING',
+        purpose: 'SMS_TOPUP', collectedVia: 'DARTBIT', durationMinutes: 0,
+      },
+    });
+
+    const backendUrl = (process.env.BACKEND_URL || 'https://api.dartbittech.com').replace(/\/+$/, '');
+    const result = await stkPush({
+      creds,
+      phone,
+      amount,
+      accountRef: 'SMS Wallet',
+      description: 'Dartbit SMS top-up',
+      callbackUrl: `${backendUrl}/hotspot/stk-callback/${tx.id}`,
+    });
+    await prisma.mpesaTransaction.update({
+      where: { id: tx.id },
+      data: { checkoutRequestId: result.checkoutRequestId, merchantRequestId: result.merchantRequestId },
+    });
+    sendSuccess(res, { transactionId: tx.id, checkoutRequestId: result.checkoutRequestId, message: 'Check your phone for the M-Pesa prompt' });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Top-up failed', 500);
+  }
+});
+
+// GET /notifications/topup-status/:txId — poll whether the wallet top-up completed.
+router.get('/topup-status/:txId', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const tx = await prisma.mpesaTransaction.findUnique({ where: { id: req.params.txId }, select: { status: true, tenantId: true, amount: true } });
+    if (!tx || tx.tenantId !== tenantId) return sendError(res, 'Not found', 404);
+    sendSuccess(res, { status: tx.status, amount: tx.amount });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);
   }

@@ -122,6 +122,48 @@ function Card({ label, value, sub }: { label: string; value: string; sub?: strin
   );
 }
 
+// Lets a superadmin view and change the per-SMS charge rate (KES) that tenant wallets are
+// debited at. Stored in PlatformSetting so it applies platform-wide without a redeploy.
+function SmsRateControl() {
+  const qc = useQueryClient();
+  const { data } = useQuery({ queryKey: ['sms-rate'], queryFn: API.getSmsRate });
+  const [rate, setRate] = useState<string>('');
+  useEffect(() => { if (data) setRate(String(data.rate)); }, [data]);
+
+  const saveMut = useMutation({
+    mutationFn: () => API.setSmsRate(Number(rate)),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['sms-rate'] }); toast.success('SMS rate updated'); },
+    onError: (e: { response?: { data?: { error?: string } } }) => toast.error(e?.response?.data?.error || 'Failed'),
+  });
+
+  return (
+    <div className="bg-gray-900 rounded-xl p-4 border border-gray-800 flex flex-wrap items-end gap-3">
+      <div>
+        <div className="text-xs text-gray-400 mb-1">Per-SMS charge rate (KES)</div>
+        <div className="flex items-center gap-2">
+          <input
+            type="number" step="0.01" min={0}
+            value={rate}
+            onChange={e => setRate(e.target.value)}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm w-28 focus:outline-none focus:border-blue-500"
+          />
+          <button
+            onClick={() => saveMut.mutate()}
+            disabled={saveMut.isPending || rate === '' || Number(rate) < 0}
+            className="px-3 py-2 rounded-lg text-sm font-medium bg-blue-600 hover:bg-blue-500 disabled:opacity-50"
+          >
+            {saveMut.isPending ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+      <div className="text-xs text-gray-500 max-w-xs">
+        Tenant SMS wallets are debited this amount per message sent via the Dartbit gateway.
+        Tenants using their own gateway are not charged.
+      </div>
+    </div>
+  );
+}
+
 function Overview() {
   const { data, isLoading } = useQuery({ queryKey: ['overview'], queryFn: API.getOverview, refetchInterval: 30000 });
   if (isLoading || !data) return <div className="text-gray-500">Loading…</div>;
@@ -239,6 +281,7 @@ function Overview() {
           <Card label="Sent (this mo)" value={String(sms.sentThisMonth || 0)} />
           <Card label="SMS Cost (mo)" value={kes(sms.costThisMonth || 0)} sub={`${kes(sms.costAllTime || 0)} all-time`} />
         </div>
+        <div className="mt-3"><SmsRateControl /></div>
       </div>
 
       <div>

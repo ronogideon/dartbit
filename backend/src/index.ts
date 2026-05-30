@@ -89,8 +89,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.8.0', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.8.0', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.8.1', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.8.1', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -118,7 +118,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.8.0 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.8.1 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -471,7 +471,7 @@ async function patchDatabase() {
       )`);
     await safeExec(prisma, 'MpesaTx checkout unique', `CREATE UNIQUE INDEX IF NOT EXISTS "MpesaTransaction_checkoutRequestId_key" ON "MpesaTransaction"("checkoutRequestId")`);
     await safeExec(prisma, 'MpesaTx tenant idx', `CREATE INDEX IF NOT EXISTS "MpesaTransaction_tenantId_status_idx" ON "MpesaTransaction"("tenantId","status")`);
-    // v1.8.0 payout/fee columns
+    // v1.8.1 payout/fee columns
     await safeExec(prisma, 'MpesaTx collectedVia', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "collectedVia" TEXT DEFAULT 'TENANT'`);
     await safeExec(prisma, 'MpesaTx platformFee', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "platformFee" DOUBLE PRECISION NOT NULL DEFAULT 0`);
     await safeExec(prisma, 'MpesaTx netToTenant', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "netToTenant" DOUBLE PRECISION NOT NULL DEFAULT 0`);
@@ -534,6 +534,44 @@ async function patchDatabase() {
     await safeExec(prisma, 'Payment FK setnull', `ALTER TABLE "Payment" ADD CONSTRAINT "Payment_subscriberId_fkey" FOREIGN KEY ("subscriberId") REFERENCES "Subscriber"("id") ON DELETE SET NULL ON UPDATE CASCADE`);
     await safeExec(prisma, 'OnlineSession FK drop', `ALTER TABLE "OnlineSession" DROP CONSTRAINT IF EXISTS "OnlineSession_subscriberId_fkey"`);
     await safeExec(prisma, 'OnlineSession FK setnull', `ALTER TABLE "OnlineSession" ADD CONSTRAINT "OnlineSession_subscriberId_fkey" FOREIGN KEY ("subscriberId") REFERENCES "Subscriber"("id") ON DELETE SET NULL ON UPDATE CASCADE`);
+
+    // SMS prepaid wallet (per-tenant balance), ledger, and platform settings.
+    await safeExec(prisma, 'SmsWallet table',
+      `CREATE TABLE IF NOT EXISTS "SmsWallet" (
+        "id" TEXT NOT NULL,
+        "tenantId" TEXT NOT NULL,
+        "balance" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "toppedUp" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "spent" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "SmsWallet_pkey" PRIMARY KEY ("id")
+      )`);
+    await safeExec(prisma, 'SmsWallet tenant unique', `CREATE UNIQUE INDEX IF NOT EXISTS "SmsWallet_tenantId_key" ON "SmsWallet"("tenantId")`);
+    await safeExec(prisma, 'SmsWalletTxn table',
+      `CREATE TABLE IF NOT EXISTS "SmsWalletTxn" (
+        "id" TEXT NOT NULL,
+        "walletId" TEXT NOT NULL,
+        "tenantId" TEXT NOT NULL,
+        "type" TEXT NOT NULL,
+        "amount" DOUBLE PRECISION NOT NULL,
+        "balanceAfter" DOUBLE PRECISION NOT NULL,
+        "reference" TEXT,
+        "note" TEXT,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "SmsWalletTxn_pkey" PRIMARY KEY ("id")
+      )`);
+    await safeExec(prisma, 'SmsWalletTxn idx', `CREATE INDEX IF NOT EXISTS "SmsWalletTxn_tenantId_createdAt_idx" ON "SmsWalletTxn"("tenantId","createdAt")`);
+    await safeExec(prisma, 'PlatformSetting table',
+      `CREATE TABLE IF NOT EXISTS "PlatformSetting" (
+        "id" TEXT NOT NULL,
+        "key" TEXT NOT NULL,
+        "value" TEXT NOT NULL,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "PlatformSetting_pkey" PRIMARY KEY ("id")
+      )`);
+    await safeExec(prisma, 'PlatformSetting key unique', `CREATE UNIQUE INDEX IF NOT EXISTS "PlatformSetting_key_key" ON "PlatformSetting"("key")`);
+    await safeExec(prisma, 'MpesaTransaction purpose', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "purpose" TEXT`);
 
     console.log('✅ Database patch complete');
   } catch (err) {

@@ -138,10 +138,22 @@ export const getNotificationConfig = () =>
   api.get('/notifications/config').then(r => r.data.data as NotificationConfig);
 export const saveNotificationConfig = (data: Partial<NotificationConfig>) =>
   api.put('/notifications/config', data).then(r => r.data.data as NotificationConfig);
+export interface SmsBalance {
+  mode: 'WALLET' | 'CUSTOM';
+  balance: number;          // SMS count remaining (both modes)
+  balanceKES?: number;      // wallet KES (WALLET mode)
+  rate?: number;            // KES per SMS (WALLET mode)
+  smsRemaining?: number;    // SMS the wallet buys (WALLET mode)
+  ok?: boolean;
+}
 export const getSmsBalance = () =>
-  api.get('/notifications/balance').then(r => r.data.data as { balance: number; ok: boolean });
-export const topupSms = (amount: number, phoneNumber?: string) =>
-  api.post('/notifications/topup', { amount, phoneNumber }).then(r => r.data.data as { message: string });
+  api.get('/notifications/balance').then(r => r.data.data as SmsBalance);
+export const topupSms = (amount: number, phone: string) =>
+  api.post('/notifications/topup', { amount, phone }).then(r => r.data.data as { transactionId: string; message: string });
+export const getTopupStatus = (txId: string) =>
+  api.get(`/notifications/topup-status/${txId}`).then(r => r.data.data as { status: string; amount: number });
+export const getWalletLedger = () =>
+  api.get('/notifications/wallet/ledger').then(r => r.data.data as { id: string; type: string; amount: number; balanceAfter: number; note?: string; createdAt: string }[]);
 export const sendTestSms = (phone: string, message: string) =>
   api.post('/notifications/test', { phone, message }).then(r => r.data.data);
 

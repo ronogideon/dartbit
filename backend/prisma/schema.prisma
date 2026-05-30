@@ -70,6 +70,7 @@ model Tenant {
   tenantPayments TenantPayment[]
   paymentConfig PaymentConfig?
   notificationConfig NotificationConfig?
+  smsWallet     SmsWallet?
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 }
@@ -435,4 +436,46 @@ model NotificationConfig {
   reminderOffsets   Int[]    @default([7200, 4320, 240])
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
+}
+
+// Per-tenant prepaid SMS wallet. Tenants top up via M-Pesa (STK to Dartbit); each SMS sent
+// through the Dartbit shared gateway debits the wallet at the configured per-SMS rate.
+// Balance is derived as (sum of credits − sum of debits) but also cached here for speed.
+model SmsWallet {
+  id          String   @id @default(cuid())
+  tenantId    String   @unique
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  balance     Float    @default(0)   // KES available
+  toppedUp    Float    @default(0)   // lifetime KES topped up
+  spent       Float    @default(0)   // lifetime KES spent on SMS
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  txns        SmsWalletTxn[]
+}
+
+// Ledger of wallet movements: TOPUP (credit) and SMS_DEBIT (debit). Keeps an audit trail
+// and lets us reconcile the cached balance.
+model SmsWalletTxn {
+  id          String   @id @default(cuid())
+  walletId    String
+  wallet      SmsWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  tenantId    String
+  type        String   // TOPUP | SMS_DEBIT | ADJUSTMENT
+  amount      Float    // positive = credit, negative = debit (KES)
+  balanceAfter Float
+  // For top-ups: link to the M-Pesa transaction. For debits: link to the Message.
+  reference   String?  // mpesa receipt or message id
+  note        String?
+  createdAt   DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+}
+
+// Platform-wide settings (singleton-ish key/value). Used for the SMS per-message rate so it
+// can be changed without a redeploy and varied per provider later.
+model PlatformSetting {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       String
+  updatedAt   DateTime @updatedAt
 }

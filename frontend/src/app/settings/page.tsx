@@ -258,7 +258,7 @@ function NotificationsTab() {
           <div className="text-sm">
             SMS balance:{' '}
             {balanceData ? (
-              <span className="font-semibold">{balanceData.balance.toLocaleString()} credits</span>
+              <span className="font-semibold">{balanceData.mode === 'WALLET' ? `KES ${(balanceData.balanceKES ?? 0).toLocaleString()} (~${(balanceData.smsRemaining ?? 0).toLocaleString()} SMS)` : `${balanceData.balance.toLocaleString()} credits`}</span>
             ) : (
               <span className="text-gray-400">—</span>
             )}

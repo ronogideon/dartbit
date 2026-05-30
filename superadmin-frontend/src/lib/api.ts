@@ -23,3 +23,5 @@ export const createTeamMember = (data: { name: string; email: string; role: stri
 export const updateTeamMember = (id: string, data: { role?: string; isActive?: boolean }) => api.put(`/superadmin/team/${id}`, data).then((r) => r.data.data);
 export const resetTeamPassword = (id: string) => api.post(`/superadmin/team/${id}/reset-password`, {}).then((r) => r.data.data);
 export const deleteTeamMember = (id: string) => api.delete(`/superadmin/team/${id}`).then((r) => r.data.data);
+export const getSmsRate = () => api.get('/superadmin/sms-rate').then((r) => r.data.data as { rate: number });
+export const setSmsRate = (rate: number) => api.put('/superadmin/sms-rate', { rate }).then((r) => r.data.data as { rate: number });

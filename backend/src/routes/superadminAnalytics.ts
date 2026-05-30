@@ -6,6 +6,7 @@ import prisma from '../utils/prisma';
 import { authenticate, AuthRequest, requireSuperAdmin, requireSuperAdminRead } from '../middleware/auth';
 import { sendSuccess, sendError } from '../utils/response';
 import { getSmsBalance } from '../utils/blessedtexts';
+import { getSmsRate, setSmsRate } from '../utils/smsWallet';
 
 const router = Router();
 router.use(authenticate);
@@ -299,6 +300,28 @@ router.delete('/team/:id', requireSuperAdmin, async (req: AuthRequest, res: Resp
     if (target.id === req.user?.userId) return sendError(res, 'You cannot delete yourself', 400);
     await prisma.user.delete({ where: { id: target.id } });
     sendSuccess(res, { ok: true });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
+// GET /superadmin/sms-rate — current per-SMS charge rate (KES).
+router.get('/sms-rate', requireSuperAdminRead, async (_req: AuthRequest, res: Response) => {
+  try {
+    const rate = await getSmsRate();
+    sendSuccess(res, { rate });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
+// PUT /superadmin/sms-rate — set the per-SMS charge rate. Body: { rate }.
+router.put('/sms-rate', requireSuperAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const rate = Number(req.body?.rate);
+    if (!Number.isFinite(rate) || rate < 0) return sendError(res, 'rate must be >= 0', 400);
+    await setSmsRate(rate);
+    sendSuccess(res, { rate });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);
   }

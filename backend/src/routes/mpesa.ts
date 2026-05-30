@@ -4,6 +4,7 @@ import prisma from '../utils/prisma';
 import { enqueueCommand } from '../utils/commandQueue';
 import { decryptDarajaCreds, centralDarajaCreds, stkPush, normalizePhone, b2cPayout, isB2cConfigured } from '../utils/daraja';
 import { sendNotification } from '../utils/notifications';
+import { creditWallet, getWalletBalance, getSmsRate } from '../utils/smsWallet';
 
 const router = Router();
 
@@ -149,6 +150,21 @@ router.post('/stk-callback/:txId', async (req: Request, res: Response) => {
     const items = cb.CallbackMetadata?.Item || [];
     for (const it of items) {
       if (it.Name === 'MpesaReceiptNumber') receipt = String(it.Value);
+    }
+
+    // Branch by purpose: an SMS wallet top-up credits the tenant's SMS wallet instead of
+    // provisioning a hotspot user.
+    if (tx.purpose === 'SMS_TOPUP') {
+      await prisma.mpesaTransaction.update({
+        where: { id: txId },
+        data: { status: 'PAID', mpesaReceipt: receipt || null, resultDesc: 'Success' },
+      });
+      try {
+        await creditWallet(tx.tenantId, tx.amount, receipt || txId, `SMS top-up • ${tx.phone || ''}`);
+      } catch (e) {
+        console.error('[wallet] credit on callback failed:', e instanceof Error ? e.message : e);
+      }
+      return;
     }
 
     await provisionFromTransaction(txId, receipt);

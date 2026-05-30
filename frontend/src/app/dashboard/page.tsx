@@ -127,7 +127,7 @@ export default function DashboardPage() {
         />
         <StatCard
           title="SMS Balance"
-          value={smsBalance ? smsBalance.balance.toLocaleString() : '—'}
+          value={smsBalance ? (smsBalance.mode === 'WALLET' ? `KES ${(smsBalance.balanceKES ?? 0).toLocaleString()}` : smsBalance.balance.toLocaleString()) : '—'}
           icon={MessageSquare}
           color="bg-indigo-600"
         />

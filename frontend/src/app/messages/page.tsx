@@ -41,13 +41,15 @@ export default function MessagesPage() {
   });
 
   const topupMut = useMutation({
-    mutationFn: () => topupSms(topup.amount, topup.phone || undefined),
+    mutationFn: () => topupSms(topup.amount, topup.phone),
     onSuccess: (data) => {
-      toast.success(data.message || 'Topup initiated — check your phone for the M-Pesa prompt');
+      toast.success(data.message || 'Check your phone for the M-Pesa prompt');
       setTopupOpen(false);
-      setTimeout(() => refetchBalance(), 15000);
+      // Poll the wallet balance a few times as the callback lands.
+      let tries = 0;
+      const iv = setInterval(() => { tries++; refetchBalance(); if (tries >= 6) clearInterval(iv); }, 5000);
     },
-    onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Topup failed'),
+    onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Top-up failed'),
   });
 
   const allMsgs = messages as MessageRow[];
@@ -80,8 +82,15 @@ export default function MessagesPage() {
           <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800">
             <Wallet size={16} className="text-blue-600" />
             <span className="text-sm">
-              SMS balance:{' '}
-              <span className="font-semibold">{balanceData ? balanceData.balance.toLocaleString() : '—'}</span>
+              {balanceData?.mode === 'WALLET' ? (
+                <>
+                  SMS wallet:{' '}
+                  <span className="font-semibold">KES {(balanceData.balanceKES ?? 0).toLocaleString()}</span>
+                  <span className="text-gray-400"> · ~{(balanceData.smsRemaining ?? 0).toLocaleString()} SMS</span>
+                </>
+              ) : (
+                <>SMS balance: <span className="font-semibold">{balanceData ? balanceData.balance.toLocaleString() : '—'}</span></>
+              )}
             </span>
             <button onClick={() => refetchBalance()} className="text-gray-400 hover:text-gray-600" title="Refresh balance">
               <RefreshCw size={14} />
@@ -181,10 +190,11 @@ export default function MessagesPage() {
         </form>
       </Modal>
 
-      <Modal isOpen={topupOpen} onClose={() => setTopupOpen(false)} title="Refill SMS credit">
+      <Modal isOpen={topupOpen} onClose={() => setTopupOpen(false)} title="Top up SMS wallet">
         <form onSubmit={(e) => { e.preventDefault(); topupMut.mutate(); }} className="space-y-4">
           <p className="text-sm text-gray-500">
-            An M-Pesa STK push will be sent to your phone to top up your SMS credit.
+            An M-Pesa prompt will be sent to your phone. Your SMS wallet is credited once payment completes.
+            {balanceData?.mode === 'WALLET' && balanceData.rate ? ` At KES ${balanceData.rate}/SMS, KES ${topup.amount} ≈ ${Math.floor(topup.amount / balanceData.rate)} SMS.` : ''}
           </p>
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -199,18 +209,19 @@ export default function MessagesPage() {
               />
             </div>
             <div>
-              <label className="label">Phone (optional)</label>
+              <label className="label">M-Pesa Phone</label>
               <input
                 className="input"
-                placeholder="Default: account phone"
+                placeholder="07XXXXXXXX"
                 value={topup.phone}
                 onChange={e => setTopup(t => ({ ...t, phone: e.target.value }))}
+                required
               />
             </div>
           </div>
           <div className="flex gap-3 justify-end pt-2">
             <button type="button" onClick={() => setTopupOpen(false)} className="btn-secondary">Cancel</button>
-            <button type="submit" className="btn-primary" disabled={topupMut.isPending}>
+            <button type="submit" className="btn-primary" disabled={topupMut.isPending || !topup.phone}>
               {topupMut.isPending ? 'Requesting…' : `Top up KES ${topup.amount}`}
             </button>
           </div>
