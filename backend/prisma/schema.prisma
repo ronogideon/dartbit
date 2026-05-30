@@ -377,6 +377,7 @@ model MpesaTransaction {
   phone             String                    // payer phone (2547...)
   amount            Float
   status            String    @default("PENDING") // PENDING | PAID | FAILED
+  purpose           String?                    // null/HOTSPOT (default purchase) | SMS_TOPUP
   // Daraja identifiers
   checkoutRequestId String?   @unique          // from STK initiate response
   merchantRequestId String?

@@ -79,21 +79,22 @@ function Dashboard({ role, onLogout }: { role: string; onLogout: () => void }) {
   const isFull = role === 'SUPERADMIN';
   return (
     <div className="min-h-screen bg-gray-950 text-white">
-      <header className="border-b border-gray-800 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h1 className="font-bold">Dartbit Superadmin</h1>
-          {!isFull && <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">View Only</span>}
+      <header className="border-b border-gray-800 px-4 sm:px-6 py-4 flex items-center justify-between">
+        <div className="flex items-center gap-3 min-w-0">
+          <h1 className="font-bold truncate">Dartbit Superadmin</h1>
+          {!isFull && <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full shrink-0">View Only</span>}
         </div>
-        <button onClick={onLogout} className="text-gray-400 hover:text-white flex items-center gap-1.5 text-sm"><LogOut size={16} /> Log out</button>
+        <button onClick={onLogout} className="text-gray-400 hover:text-white flex items-center gap-1.5 text-sm shrink-0"><LogOut size={16} /> <span className="hidden sm:inline">Log out</span></button>
       </header>
-      <div className="flex">
-        <nav className="w-52 border-r border-gray-800 min-h-[calc(100vh-65px)] p-3 space-y-1">
+      <div className="flex flex-col lg:flex-row">
+        {/* Nav: horizontal scrollable tab bar on mobile, left sidebar on desktop */}
+        <nav className="lg:w-52 lg:border-r border-b lg:border-b-0 border-gray-800 lg:min-h-[calc(100vh-65px)] p-2 lg:p-3 flex lg:flex-col gap-1 overflow-x-auto">
           <NavBtn active={tab === 'overview'} onClick={() => setTab('overview')} icon={<LayoutDashboard size={17} />} label="Overview" />
           <NavBtn active={tab === 'tenants'} onClick={() => setTab('tenants')} icon={<Building2 size={17} />} label="Tenants" />
           <NavBtn active={tab === 'payouts'} onClick={() => setTab('payouts')} icon={<Wallet size={17} />} label="Payouts" />
           <NavBtn active={tab === 'team'} onClick={() => setTab('team')} icon={<Users size={17} />} label="Team" />
         </nav>
-        <main className="flex-1 p-6">
+        <main className="flex-1 p-4 sm:p-6 min-w-0 overflow-x-hidden">
           {tab === 'overview' && <Overview />}
           {tab === 'tenants' && <Tenants />}
           {tab === 'payouts' && <Payouts />}
@@ -106,7 +107,7 @@ function Dashboard({ role, onLogout }: { role: string; onLogout: () => void }) {
 
 function NavBtn({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
   return (
-    <button onClick={onClick} className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm ${active ? 'bg-blue-600 text-white' : 'text-gray-400 hover:bg-gray-900 hover:text-white'}`}>
+    <button onClick={onClick} className={`shrink-0 lg:w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm whitespace-nowrap ${active ? 'bg-blue-600 text-white' : 'text-gray-400 hover:bg-gray-900 hover:text-white'}`}>
       {icon} {label}
     </button>
   );
