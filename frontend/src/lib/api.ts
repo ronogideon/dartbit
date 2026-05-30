@@ -55,6 +55,7 @@ export const createSubscriber = (data: unknown) => api.post('/subscribers', data
 export const updateSubscriber = (id: string, data: unknown) => api.put(`/subscribers/${id}`, data).then((r) => r.data.data);
 export const deleteSubscriber = (id: string) => api.delete(`/subscribers/${id}`).then((r) => r.data.data);
 export const getSubscriberDetail = (id: string) => api.get(`/subscribers/${id}/detail`).then((r) => r.data.data);
+export const extendSubscriber = (id: string, minutes: number) => api.post(`/subscribers/${id}/extend`, { minutes }).then((r) => r.data.data);
 
 export const getPackages = () => api.get('/packages').then((r) => r.data.data);
 export const createPackage = (data: unknown) => api.post('/packages', data).then((r) => r.data.data);

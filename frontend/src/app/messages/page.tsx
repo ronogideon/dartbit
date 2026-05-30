@@ -6,11 +6,13 @@ import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import toast from 'react-hot-toast';
 import { Plus, MessageSquare, Wallet, RefreshCw } from 'lucide-react';
+import SearchInput from '@/components/ui/SearchInput';
 
 export default function MessagesPage() {
   const qc = useQueryClient();
   const [modalOpen, setModalOpen] = useState(false);
   const [topupOpen, setTopupOpen] = useState(false);
+  const [search, setSearch] = useState('');
   const [form, setForm] = useState({ recipient: '', body: '' });
   const [topup, setTopup] = useState({ amount: 500, phone: '' });
 
@@ -48,7 +50,9 @@ export default function MessagesPage() {
     onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Topup failed'),
   });
 
-  const list = messages as MessageRow[];
+  const allMsgs = messages as MessageRow[];
+  const mq = search.trim().toLowerCase();
+  const list = mq ? allMsgs.filter(m => (m.recipient||'').toLowerCase().includes(mq) || (m.username||'').toLowerCase().includes(mq) || (m.body||'').toLowerCase().includes(mq) || (m.category||'').toLowerCase().includes(mq) || (m.status||'').toLowerCase().includes(mq)) : allMsgs;
   const totalCost = list.reduce((sum, m) => sum + (m.cost || 0), 0);
 
   function statusBadge(s: string) {
@@ -90,6 +94,10 @@ export default function MessagesPage() {
             <Plus size={16} /> New Message
           </button>
         </div>
+      </div>
+
+      <div className="mb-4 max-w-md">
+        <SearchInput value={search} onChange={setSearch} placeholder="Search by phone, username, message, status…" />
       </div>
 
       <div className="card overflow-hidden">

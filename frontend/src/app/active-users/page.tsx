@@ -1,8 +1,10 @@
 'use client';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { getOnlineSessions } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import { Activity, Wifi, Clock } from 'lucide-react';
+import SearchInput from '@/components/ui/SearchInput';
 
 interface Session {
   id: string; username: string; ipAddress?: string; macAddress?: string;
@@ -47,7 +49,10 @@ export default function ActiveUsersPage() {
     refetchInterval: 2000,
   });
 
-  const list = sessions as Session[];
+  const [search, setSearch] = useState('');
+  const allS = sessions as Session[];
+  const sq = search.trim().toLowerCase();
+  const list = sq ? allS.filter(s => (s.username||'').toLowerCase().includes(sq) || (s.ipAddress||'').toLowerCase().includes(sq) || (s.macAddress||'').toLowerCase().includes(sq) || (s.router?.name||'').toLowerCase().includes(sq)) : allS;
 
   return (
     <AppLayout>
@@ -62,6 +67,10 @@ export default function ActiveUsersPage() {
           <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
           <span className="text-sm text-green-600 font-medium">Live</span>
         </div>
+      </div>
+
+      <div className="mb-4 max-w-md">
+        <SearchInput value={search} onChange={setSearch} placeholder="Search by username, IP, MAC, router…" />
       </div>
 
       <div className="card overflow-hidden">

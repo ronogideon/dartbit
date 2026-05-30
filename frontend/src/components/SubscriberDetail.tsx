@@ -1,12 +1,22 @@
 'use client';
-import { useQuery } from '@tanstack/react-query';
-import { getSubscriberDetail } from '@/lib/api';
-import { X, Wifi, Download, Upload, Clock, Calendar, Phone, Mail, Router as RouterIcon, Package as PackageIcon, Key } from 'lucide-react';
+import { useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { getSubscriberDetail, extendSubscriber } from '@/lib/api';
+import toast from 'react-hot-toast';
+import { X, Wifi, Download, Upload, Clock, Calendar, Phone, Mail, Router as RouterIcon, Package as PackageIcon, Key, Plus, Settings as SettingsIcon } from 'lucide-react';
 
 interface Props {
   subscriberId: string | null;
   onClose: () => void;
 }
+
+const EXTEND_OPTIONS: { label: string; minutes: number }[] = [
+  { label: '+1 hour', minutes: 60 },
+  { label: '+12 hours', minutes: 720 },
+  { label: '+1 day', minutes: 1440 },
+  { label: '+7 days', minutes: 10080 },
+  { label: '+1 month', minutes: 43200 },
+];
 
 function fmtBytes(bytesStr: string): string {
   const b = Number(bytesStr || '0');
@@ -30,11 +40,23 @@ function fmtDateTime(d: string | null): string {
 }
 
 export default function SubscriberDetail({ subscriberId, onClose }: Props) {
+  const qc = useQueryClient();
+  const [showOptions, setShowOptions] = useState(false);
   const { data, isPending, isError } = useQuery({
     queryKey: ['subscriber-detail', subscriberId],
     queryFn: () => getSubscriberDetail(subscriberId!),
     enabled: !!subscriberId,
     refetchInterval: 10000,
+  });
+
+  const extendMut = useMutation({
+    mutationFn: (minutes: number) => extendSubscriber(subscriberId!, minutes),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['subscriber-detail', subscriberId] });
+      qc.invalidateQueries({ queryKey: ['subscribers'] });
+      toast.success('Expiry updated');
+    },
+    onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed to update expiry'),
   });
 
   if (!subscriberId) return null;
@@ -47,7 +69,10 @@ export default function SubscriberDetail({ subscriberId, onClose }: Props) {
       <div className="fixed right-0 top-0 h-full w-full max-w-md bg-white dark:bg-gray-900 shadow-2xl z-50 overflow-y-auto">
         <div className="sticky top-0 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 px-5 py-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold">Subscriber Details</h2>
-          <button onClick={onClose} className="p-1.5 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"><X size={20} /></button>
+          <div className="flex items-center gap-1">
+            <button onClick={() => setShowOptions(o => !o)} className={`p-1.5 rounded-lg ${showOptions ? 'text-blue-600 bg-blue-50 dark:bg-blue-900/30' : 'text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`} title="Options"><SettingsIcon size={18} /></button>
+            <button onClick={onClose} className="p-1.5 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"><X size={20} /></button>
+          </div>
         </div>
 
         {isPending ? (
@@ -84,6 +109,27 @@ export default function SubscriberDetail({ subscriberId, onClose }: Props) {
                 <div className="flex items-center gap-2 text-gray-500"><Calendar size={14} /> Expires: {fmtDateTime(data.subscriber.expiresAt)}</div>
               </div>
             </div>
+
+            {/* Options: quick expiry adjustments */}
+            {showOptions && (
+              <div className="rounded-xl border border-gray-200 dark:border-gray-800 p-4 bg-gray-50 dark:bg-gray-800/40">
+                <div className="flex items-center gap-2 mb-1"><SettingsIcon size={15} className="text-gray-500" /><h3 className="font-semibold text-sm">Options</h3></div>
+                <p className="text-xs text-gray-500 mb-3">Extend expiry — added to the current expiry, or from now if already expired.</p>
+                <div className="flex flex-wrap gap-2">
+                  {EXTEND_OPTIONS.map(opt => (
+                    <button
+                      key={opt.minutes}
+                      onClick={() => extendMut.mutate(opt.minutes)}
+                      disabled={extendMut.isPending}
+                      className="px-3 py-1.5 rounded-lg text-sm font-medium bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 hover:border-blue-400 hover:text-blue-600 disabled:opacity-50 flex items-center gap-1"
+                    >
+                      <Plus size={13} /> {opt.label.replace('+', '')}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-3 text-xs text-gray-500">New expiry will be recalculated and the device kept connected.</div>
+              </div>
+            )}
 
             {/* 30-day usage summary */}
             <div>

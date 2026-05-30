@@ -5,6 +5,8 @@ import { getPackages, createPackage, updatePackage, deletePackage } from '@/lib/
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
+import SearchableSelect from '@/components/ui/SearchableSelect';
+import { toKbps, fromKbps, formatSpeed, formatValidity, VALIDITY_OPTIONS, type SpeedUnit } from '@/lib/packageUnits';
 import toast from 'react-hot-toast';
 import { Plus, Edit2, Trash2 } from 'lucide-react';
 
@@ -15,21 +17,15 @@ interface Package {
 
 const emptyForm = { name: '', service: 'PPPOE', speedUpKbps: 10240, speedDownKbps: 10240, validityMinutes: 43200, price: 1500 };
 
-function formatSpeed(kbps: number) {
-  return kbps >= 1024 ? `${(kbps / 1024).toFixed(0)} Mbps` : `${kbps} Kbps`;
-}
-function formatValidity(mins: number) {
-  if (mins >= 43200) return `${(mins / 43200).toFixed(0)} month(s)`;
-  if (mins >= 1440) return `${(mins / 1440).toFixed(0)} day(s)`;
-  return `${mins} min`;
-}
-
 export default function PackagesPage() {
   const qc = useQueryClient();
   const [modalOpen, setModalOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [editing, setEditing] = useState<Package | null>(null);
   const [form, setForm] = useState(emptyForm);
+  // Speed entered as value + unit (Kbps/Mbps/Gbps), converted to Kbps on submit.
+  const [upSpeed, setUpSpeed] = useState<{ value: number; unit: SpeedUnit }>({ value: 10, unit: 'Mbps' });
+  const [downSpeed, setDownSpeed] = useState<{ value: number; unit: SpeedUnit }>({ value: 10, unit: 'Mbps' });
 
   const { data: packages = [], isPending } = useQuery({ queryKey: ['packages'], queryFn: getPackages });
 
@@ -49,17 +45,28 @@ export default function PackagesPage() {
     onError: () => toast.error('Failed to delete package'),
   });
 
-  const openCreate = () => { setEditing(null); setForm(emptyForm); setModalOpen(true); };
+  const openCreate = () => {
+    setEditing(null); setForm(emptyForm);
+    setUpSpeed({ value: 10, unit: 'Mbps' }); setDownSpeed({ value: 10, unit: 'Mbps' });
+    setModalOpen(true);
+  };
   const openEdit = (p: Package) => {
     setEditing(p);
     setForm({ name: p.name, service: p.service, speedUpKbps: p.speedUpKbps, speedDownKbps: p.speedDownKbps, validityMinutes: p.validityMinutes, price: p.price });
+    setUpSpeed(fromKbps(p.speedUpKbps)); setDownSpeed(fromKbps(p.speedDownKbps));
     setModalOpen(true);
   };
   const closeModal = () => { setModalOpen(false); setEditing(null); };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const payload = { ...form, speedUpKbps: Number(form.speedUpKbps), speedDownKbps: Number(form.speedDownKbps), validityMinutes: Number(form.validityMinutes), price: Number(form.price) };
+    const payload = {
+      ...form,
+      speedUpKbps: toKbps(Number(upSpeed.value), upSpeed.unit),
+      speedDownKbps: toKbps(Number(downSpeed.value), downSpeed.unit),
+      validityMinutes: Number(form.validityMinutes),
+      price: Number(form.price),
+    };
     if (editing) updateMut.mutate({ id: editing.id, data: payload });
     else createMut.mutate(payload);
   };
@@ -130,16 +137,39 @@ export default function PackagesPage() {
               <input className="input" type="number" value={form.price} onChange={e => setForm(f => ({ ...f, price: Number(e.target.value) }))} required min={0} />
             </div>
             <div>
-              <label className="label">Upload Speed (Kbps)</label>
-              <input className="input" type="number" value={form.speedUpKbps} onChange={e => setForm(f => ({ ...f, speedUpKbps: Number(e.target.value) }))} required min={1} />
+              <label className="label">Upload Speed</label>
+              <div className="flex gap-2">
+                <input className="input flex-1" type="number" step="any" value={upSpeed.value}
+                  onChange={e => setUpSpeed(s => ({ ...s, value: Number(e.target.value) }))} required min={0.1} />
+                <select className="input w-24" value={upSpeed.unit}
+                  onChange={e => setUpSpeed(s => ({ ...s, unit: e.target.value as SpeedUnit }))}>
+                  <option value="Kbps">Kbps</option>
+                  <option value="Mbps">Mbps</option>
+                  <option value="Gbps">Gbps</option>
+                </select>
+              </div>
             </div>
             <div>
-              <label className="label">Download Speed (Kbps)</label>
-              <input className="input" type="number" value={form.speedDownKbps} onChange={e => setForm(f => ({ ...f, speedDownKbps: Number(e.target.value) }))} required min={1} />
+              <label className="label">Download Speed</label>
+              <div className="flex gap-2">
+                <input className="input flex-1" type="number" step="any" value={downSpeed.value}
+                  onChange={e => setDownSpeed(s => ({ ...s, value: Number(e.target.value) }))} required min={0.1} />
+                <select className="input w-24" value={downSpeed.unit}
+                  onChange={e => setDownSpeed(s => ({ ...s, unit: e.target.value as SpeedUnit }))}>
+                  <option value="Kbps">Kbps</option>
+                  <option value="Mbps">Mbps</option>
+                  <option value="Gbps">Gbps</option>
+                </select>
+              </div>
             </div>
             <div className="col-span-2">
-              <label className="label">Validity (minutes) — 1440=1day, 43200=30days</label>
-              <input className="input" type="number" value={form.validityMinutes} onChange={e => setForm(f => ({ ...f, validityMinutes: Number(e.target.value) }))} required min={1} />
+              <label className="label">Validity</label>
+              <SearchableSelect
+                options={VALIDITY_OPTIONS.map(o => ({ label: o.label, value: o.minutes }))}
+                value={form.validityMinutes}
+                onChange={(v) => setForm(f => ({ ...f, validityMinutes: Number(v) }))}
+                placeholder="Select validity…"
+              />
             </div>
           </div>
           <div className="flex gap-3 justify-end pt-2">

@@ -7,6 +7,7 @@ import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import toast from 'react-hot-toast';
 import { Plus, Trash2 } from 'lucide-react';
+import SearchInput from '@/components/ui/SearchInput';
 
 interface Payment { id: string; amount: number; method: string; reference?: string; mpesaCode?: string; createdAt: string; subscriber?: { fullName: string; username: string }; }
 interface Subscriber { id: string; fullName: string; username: string; }
@@ -18,6 +19,7 @@ export default function PaymentsPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm);
+  const [search, setSearch] = useState('');
 
   const { data: payments = [], isPending } = useQuery({ queryKey: ['payments'], queryFn: getPayments });
   const { data: subscribers = [] } = useQuery({ queryKey: ['subscribers'], queryFn: getSubscribers });
@@ -38,6 +40,15 @@ export default function PaymentsPage() {
   };
 
   const total = (payments as Payment[]).reduce((s, p) => s + p.amount, 0);
+  const q = search.trim().toLowerCase();
+  const filtered = q
+    ? (payments as Payment[]).filter(p =>
+        (p.subscriber?.fullName || '').toLowerCase().includes(q) ||
+        (p.subscriber?.username || '').toLowerCase().includes(q) ||
+        (p.reference || '').toLowerCase().includes(q) ||
+        (p.method || '').toLowerCase().includes(q) ||
+        String(p.amount).includes(q))
+    : (payments as Payment[]);
 
   return (
     <AppLayout>
@@ -49,6 +60,10 @@ export default function PaymentsPage() {
         <button onClick={() => setModalOpen(true)} className="btn-primary flex items-center gap-2"><Plus size={16} /> Record Payment</button>
       </div>
 
+      <div className="mb-4 max-w-md">
+        <SearchInput value={search} onChange={setSearch} placeholder="Search by subscriber, reference, method, amount…" />
+      </div>
+
       <div className="card overflow-hidden">
         <table className="w-full">
           <thead className="bg-gray-50 dark:bg-gray-800/50">
@@ -57,15 +72,14 @@ export default function PaymentsPage() {
               <th className="table-th">Amount (KES)</th>
               <th className="table-th">Method</th>
               <th className="table-th">Reference</th>
-              <th className="table-th">M-Pesa Code</th>
               <th className="table-th">Date</th>
               <th className="table-th">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
             {isPending ? (
-              <tr><td colSpan={7} className="table-td text-center py-8 text-gray-400">Loading...</td></tr>
-            ) : (payments as Payment[]).map(p => (
+              <tr><td colSpan={6} className="table-td text-center py-8 text-gray-400">Loading...</td></tr>
+            ) : filtered.map(p => (
               <tr key={p.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/30">
                 <td className="table-td">
                   <p className="font-medium">{p.subscriber?.fullName}</p>
@@ -74,7 +88,6 @@ export default function PaymentsPage() {
                 <td className="table-td font-semibold text-green-600">{p.amount.toLocaleString()}</td>
                 <td className="table-td"><span className="badge-blue">{p.method}</span></td>
                 <td className="table-td text-gray-500">{p.reference || '-'}</td>
-                <td className="table-td text-gray-500">{p.mpesaCode || '-'}</td>
                 <td className="table-td text-gray-500">{new Date(p.createdAt).toLocaleString()}</td>
                 <td className="table-td">
                   <button onClick={() => setDeleteId(p.id)} className="p-1.5 text-gray-400 hover:text-red-600"><Trash2 size={15} /></button>
@@ -113,10 +126,6 @@ export default function PaymentsPage() {
             <div>
               <label className="label">Reference</label>
               <input className="input" value={form.reference} onChange={e => setForm(f => ({ ...f, reference: e.target.value }))} />
-            </div>
-            <div>
-              <label className="label">M-Pesa Code</label>
-              <input className="input" value={form.mpesaCode} onChange={e => setForm(f => ({ ...f, mpesaCode: e.target.value }))} placeholder="e.g. QHX1234567" />
             </div>
           </div>
           <div>

@@ -156,6 +156,47 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// POST /subscribers/:id/extend — add time to a subscriber's expiry. Body: { minutes }.
+// Adds to the CURRENT expiry if still in the future, otherwise from now (so extending an
+// already-expired subscriber starts their new window from the moment of extension).
+router.post('/:id/extend', async (req: AuthRequest, res: Response) => {
+  try {
+    const minutes = Number(req.body?.minutes);
+    if (!Number.isFinite(minutes) || minutes <= 0) return sendError(res, 'minutes must be > 0', 400);
+
+    const sub = await prisma.subscriber.findUnique({ where: { id: req.params.id } });
+    if (!sub) return sendError(res, 'Subscriber not found', 404);
+    if (req.user?.tenantId && sub.tenantId !== req.user.tenantId) return sendError(res, 'Not authorized', 403);
+
+    const now = new Date();
+    const base = sub.expiresAt && sub.expiresAt > now ? sub.expiresAt : now;
+    const newExpiry = new Date(base.getTime() + minutes * 60 * 1000);
+
+    const updated = await prisma.subscriber.update({
+      where: { id: sub.id },
+      data: { expiresAt: newExpiry, isActive: true },
+    });
+
+    // Push the change to the router (re-enable + update) via a sync so the user isn't kicked.
+    if (sub.routerId) {
+      try {
+        const { enqueueCommand } = await import('../utils/commandQueue');
+        if (sub.service === 'HOTSPOT') {
+          await enqueueCommand(sub.routerId, `:foreach u in=[/ip hotspot user find name="${sub.username}"] do={ /ip hotspot user set $u disabled=no }`);
+        } else {
+          await enqueueCommand(sub.routerId, `:foreach s in=[/ppp secret find name="${sub.username}"] do={ /ppp secret set $s disabled=no }`);
+        }
+      } catch (e) {
+        console.error('extend: router update failed (continuing):', e instanceof Error ? e.message : e);
+      }
+    }
+
+    sendSuccess(res, { id: updated.id, expiresAt: updated.expiresAt });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed to extend', 500);
+  }
+});
+
 // GET /subscribers/:id/detail — full subscriber info + 30-day usage + session history
 router.get('/:id/detail', async (req: AuthRequest, res: Response) => {
   try {

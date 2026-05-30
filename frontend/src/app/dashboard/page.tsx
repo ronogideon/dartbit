@@ -1,7 +1,10 @@
 'use client';
+import { useState } from 'react';
+import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { getSubscribers, getRouters, getPayments, getOnlineSessions, getSmsBalance } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
+import SearchInput from '@/components/ui/SearchInput';
 import { Users, Router, Activity, Wallet, TrendingUp, MessageSquare, CreditCard } from 'lucide-react';
 
 function StatCard({ title, value, icon: Icon, color }: {
@@ -42,11 +45,77 @@ export default function DashboardPage() {
     .reduce((sum, p) => sum + p.amount, 0);
   const monthLabel = monthStart.toLocaleString(undefined, { month: 'long' });
 
+  // Global search across subscribers, routers, and payments. Shows categorized quick
+  // results that link to the relevant page.
+  const [search, setSearch] = useState('');
+  const gq = search.trim().toLowerCase();
+  const subResults = gq ? (subscribers as { id: string; username: string; fullName?: string; phone?: string }[])
+    .filter(s => (s.username || '').toLowerCase().includes(gq) || (s.fullName || '').toLowerCase().includes(gq) || (s.phone || '').toLowerCase().includes(gq))
+    .slice(0, 6) : [];
+  const routerResults = gq ? (routers as { id: string; name: string; host?: string }[])
+    .filter(r => (r.name || '').toLowerCase().includes(gq) || (r.host || '').toLowerCase().includes(gq))
+    .slice(0, 6) : [];
+  const payResults = gq ? (payments as { id: string; reference?: string; amount: number; subscriber?: { fullName?: string } }[])
+    .filter(p => (p.reference || '').toLowerCase().includes(gq) || String(p.amount).includes(gq) || (p.subscriber?.fullName || '').toLowerCase().includes(gq))
+    .slice(0, 6) : [];
+  const hasResults = subResults.length + routerResults.length + payResults.length > 0;
+
   return (
     <AppLayout>
       <div className="mb-6">
         <h1 className="text-2xl font-bold">Dashboard</h1>
         <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">Welcome to Dartbit ISP Management</p>
+      </div>
+
+      {/* Global search */}
+      <div className="mb-6 relative max-w-xl">
+        <SearchInput value={search} onChange={setSearch} placeholder="Search subscribers, routers, payments…" />
+        {gq && (
+          <div className="absolute z-30 mt-2 w-full rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-xl overflow-hidden">
+            {!hasResults ? (
+              <div className="px-4 py-6 text-center text-sm text-gray-400">No matches for “{search}”</div>
+            ) : (
+              <div className="max-h-96 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-800">
+                {subResults.length > 0 && (
+                  <div className="p-2">
+                    <div className="px-2 py-1 text-xs font-semibold text-gray-400 uppercase">Subscribers</div>
+                    {subResults.map(s => (
+                      <Link key={s.id} href="/subscribers" className="flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-sm">
+                        <Users size={14} className="text-blue-500" />
+                        <span className="font-medium">{s.fullName || s.username}</span>
+                        <span className="text-gray-400 text-xs">{s.username}{s.phone ? ` · ${s.phone}` : ''}</span>
+                      </Link>
+                    ))}
+                  </div>
+                )}
+                {routerResults.length > 0 && (
+                  <div className="p-2">
+                    <div className="px-2 py-1 text-xs font-semibold text-gray-400 uppercase">Routers</div>
+                    {routerResults.map(r => (
+                      <Link key={r.id} href="/routers" className="flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-sm">
+                        <Router size={14} className="text-orange-500" />
+                        <span className="font-medium">{r.name}</span>
+                        <span className="text-gray-400 text-xs">{r.host}</span>
+                      </Link>
+                    ))}
+                  </div>
+                )}
+                {payResults.length > 0 && (
+                  <div className="p-2">
+                    <div className="px-2 py-1 text-xs font-semibold text-gray-400 uppercase">Payments</div>
+                    {payResults.map(p => (
+                      <Link key={p.id} href="/payments" className="flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-sm">
+                        <CreditCard size={14} className="text-green-500" />
+                        <span className="font-medium">KES {p.amount.toLocaleString()}</span>
+                        <span className="text-gray-400 text-xs">{p.subscriber?.fullName || ''}{p.reference ? ` · ${p.reference}` : ''}</span>
+                      </Link>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mb-8">

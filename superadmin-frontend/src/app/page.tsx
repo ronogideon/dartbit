@@ -258,10 +258,24 @@ function Overview() {
 
 function Tenants() {
   const { data, isLoading } = useQuery({ queryKey: ['sa-tenants'], queryFn: API.getTenants });
+  const [search, setSearch] = useState('');
   if (isLoading || !data) return <div className="text-gray-500">Loading…</div>;
+  const q = search.trim().toLowerCase();
+  const rows = q
+    ? data.filter((t: { name: string; subdomain: string; status: string }) =>
+        (t.name || '').toLowerCase().includes(q) || (t.subdomain || '').toLowerCase().includes(q) || (t.status || '').toLowerCase().includes(q))
+    : data;
   return (
     <div>
-      <h2 className="text-lg font-bold mb-4">All Tenants</h2>
+      <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+        <h2 className="text-lg font-bold">All Tenants</h2>
+        <input
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search tenants…"
+          className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm w-64 focus:outline-none focus:border-blue-500"
+        />
+      </div>
       <div className="overflow-x-auto bg-gray-900 rounded-xl border border-gray-800">
         <table className="w-full text-sm">
           <thead><tr className="text-left text-gray-400 border-b border-gray-800">
@@ -269,7 +283,7 @@ function Tenants() {
             <th className="p-3">Collected</th><th className="p-3">Owed</th><th className="p-3">Pending</th>
           </tr></thead>
           <tbody>
-            {data.map((t: { id: string; name: string; subdomain: string; status: string; subscribers: number; routers: number; collected: number; owed: number; pendingPayout: number }) => (
+            {rows.map((t: { id: string; name: string; subdomain: string; status: string; subscribers: number; routers: number; collected: number; owed: number; pendingPayout: number }) => (
               <tr key={t.id} className="border-b border-gray-800/50">
                 <td className="p-3"><div className="font-medium">{t.name}</div><div className="text-xs text-gray-500">{t.subdomain}</div></td>
                 <td className="p-3"><span className="text-xs px-2 py-0.5 rounded-full bg-gray-800">{t.status}</span></td>
@@ -278,6 +292,7 @@ function Tenants() {
                 <td className="p-3">{t.pendingPayout > 0 ? <span className="text-amber-400">{kes(t.pendingPayout)}</span> : '—'}</td>
               </tr>
             ))}
+            {rows.length === 0 && <tr><td colSpan={7} className="p-6 text-center text-gray-500">No matching tenants</td></tr>}
           </tbody>
         </table>
       </div>
@@ -287,10 +302,24 @@ function Tenants() {
 
 function Payouts() {
   const { data, isLoading } = useQuery({ queryKey: ['sa-payouts'], queryFn: API.getPayouts });
+  const [search, setSearch] = useState('');
   if (isLoading || !data) return <div className="text-gray-500">Loading…</div>;
+  const q = search.trim().toLowerCase();
+  const rows = q
+    ? data.filter((t: { tenantName: string; mpesaReceipt: string | null; payoutStatus: string | null }) =>
+        (t.tenantName || '').toLowerCase().includes(q) || (t.mpesaReceipt || '').toLowerCase().includes(q) || (t.payoutStatus || '').toLowerCase().includes(q))
+    : data;
   return (
     <div>
-      <h2 className="text-lg font-bold mb-4">Disbursement Ledger</h2>
+      <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+        <h2 className="text-lg font-bold">Disbursement Ledger</h2>
+        <input
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search by tenant, receipt, status…"
+          className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm w-72 focus:outline-none focus:border-blue-500"
+        />
+      </div>
       <div className="overflow-x-auto bg-gray-900 rounded-xl border border-gray-800">
         <table className="w-full text-sm">
           <thead><tr className="text-left text-gray-400 border-b border-gray-800">
@@ -298,7 +327,7 @@ function Payouts() {
             <th className="p-3">Fee</th><th className="p-3">Net</th><th className="p-3">Payout</th><th className="p-3">Receipt</th>
           </tr></thead>
           <tbody>
-            {data.map((t: { id: string; createdAt: string; tenantName: string; amount: number; platformFee: number; netToTenant: number; payoutStatus: string | null; mpesaReceipt: string | null }) => (
+            {rows.map((t: { id: string; createdAt: string; tenantName: string; amount: number; platformFee: number; netToTenant: number; payoutStatus: string | null; mpesaReceipt: string | null }) => (
               <tr key={t.id} className="border-b border-gray-800/50">
                 <td className="p-3 text-gray-400">{fmtDate(t.createdAt)}</td>
                 <td className="p-3">{t.tenantName}</td>
@@ -309,7 +338,7 @@ function Payouts() {
                 <td className="p-3 font-mono text-xs text-gray-500">{t.mpesaReceipt || '—'}</td>
               </tr>
             ))}
-            {data.length === 0 && <tr><td colSpan={7} className="p-6 text-center text-gray-500">No central collections yet</td></tr>}
+            {rows.length === 0 && <tr><td colSpan={7} className="p-6 text-center text-gray-500">No central collections yet</td></tr>}
           </tbody>
         </table>
       </div>

@@ -7,6 +7,7 @@ import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import toast from 'react-hot-toast';
 import { Plus, Edit2, Trash2, Copy, Terminal, Settings2, ChevronDown, ChevronUp, RotateCw, MoreVertical, Tag, Network, DownloadCloud } from 'lucide-react';
+import SearchInput from '@/components/ui/SearchInput';
 
 interface ProvConfig {
   wanInterface: string; lanInterface: string; bridgeName: string;
@@ -434,6 +435,7 @@ export default function RoutersPage() {
   const [bootstrapModal, setBootstrapModal] = useState<{ apiKey: string; command: string } | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [editing, setEditing] = useState<MikrotikRouter | null>(null);
+  const [search, setSearch] = useState('');
   const [form, setForm] = useState({ name: '', host: '' });
 
   const { data: routers = [], isPending } = useQuery({ queryKey: ['routers'], queryFn: getRouters, refetchInterval: 5000 });
@@ -470,18 +472,24 @@ export default function RoutersPage() {
   const closeModal = () => { setModalOpen(false); setEditing(null); setForm({ name: '', host: '' }); };
   const handleSubmit = (e: React.FormEvent) => { e.preventDefault(); editing ? updateMut.mutate({ id: editing.id, data: form }) : linkMut.mutate(form); };
   const copy = (t: string) => { navigator.clipboard.writeText(t); toast.success('Copied!'); };
-  const list = routers as MikrotikRouter[];
+  const allRouters = routers as MikrotikRouter[];
+  const rq = search.trim().toLowerCase();
+  const list = rq ? allRouters.filter(r => (r.name||'').toLowerCase().includes(rq) || (r.host||'').toLowerCase().includes(rq) || (r.status||'').toLowerCase().includes(rq)) : allRouters;
 
   return (
     <AppLayout>
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold">Routers</h1>
-          <p className="text-sm text-gray-500 mt-1">{list.length} router{list.length !== 1 ? 's' : ''} configured</p>
+          <p className="text-sm text-gray-500 mt-1">{allRouters.length} router{allRouters.length !== 1 ? 's' : ''} configured</p>
         </div>
         <button onClick={() => { setEditing(null); setModalOpen(true); }} className="btn-primary flex items-center gap-2">
           <Plus size={16} /> Link Router
         </button>
+      </div>
+
+      <div className="mb-4 max-w-md">
+        <SearchInput value={search} onChange={setSearch} placeholder="Search by name, host, status…" />
       </div>
 
       {isPending ? (
