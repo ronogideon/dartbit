@@ -37,6 +37,15 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
 
   useEffect(() => {
     api.get(`/portal/tenant${qs}`).then(r => { if (r.data.success) setTenantName(r.data.tenant.name); }).catch(() => {});
+    // If the unified login already authenticated a customer, pick up the handoff token.
+    try {
+      const handoff = sessionStorage.getItem('dartbit_portal_token');
+      if (handoff) {
+        sessionStorage.removeItem('dartbit_portal_token');
+        setToken(handoff);
+        loadAccount(handoff);
+      }
+    } catch { /* ignore */ }
   }, []);
 
   const loadAccount = useCallback(async (tok: string) => {

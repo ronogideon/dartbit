@@ -1,11 +1,15 @@
 'use client';
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { tenantSubdomainFromHost } from '@/lib/api';
 
 export default function Home() {
   const router = useRouter();
   useEffect(() => {
-    router.replace('/auth/login');
+    // On a tenant subdomain → the unified login (admin or customer).
+    // On the apex / www → the marketing + signup page.
+    const sub = tenantSubdomainFromHost();
+    router.replace(sub ? '/auth/login' : '/signup');
   }, [router]);
   return (
     <div className="flex items-center justify-center h-screen bg-gray-950">

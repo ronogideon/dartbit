@@ -1,4 +1,4 @@
-import { Router, Response } from 'express';
+import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import prisma from '../utils/prisma';
@@ -16,6 +16,29 @@ function generateSubdomain(name: string): string {
     .replace(/^-|-$/g, '')
     .substring(0, 30);
 }
+
+// GET /tenants/resolve?subdomain=acme — PUBLIC. Validates that a subdomain belongs to a real,
+// active tenant. The frontend calls this before rendering anything on a tenant subdomain, so
+// random/unknown subdomains never show a login or portal. No auth required, minimal fields,
+// and it does not reveal anything beyond existence + display name + active state.
+router.get('/resolve', async (req: Request, res: Response) => {
+  try {
+    const sub = String(req.query.subdomain || '').trim().toLowerCase();
+    if (!sub) return sendError(res, 'subdomain required', 400);
+    const tenant = await prisma.tenant.findUnique({
+      where: { subdomain: sub },
+      select: { name: true, subdomain: true, status: true, isActive: true },
+    });
+    if (!tenant || !tenant.isActive) {
+      return res.status(404).json({ success: true, data: { valid: false } });
+    }
+    // Suspended/cancelled tenants resolve but are flagged so the UI can show the right message.
+    const usable = tenant.status === 'ACTIVE' || tenant.status === 'TRIAL';
+    sendSuccess(res, { valid: true, usable, name: tenant.name, subdomain: tenant.subdomain, status: tenant.status });
+  } catch {
+    sendError(res, 'Failed to resolve subdomain', 500);
+  }
+});
 
 // GET /tenants/my — must be before router.use(authenticate, requireSuperAdmin)
 router.get('/my', authenticate, async (req: AuthRequest, res: Response) => {

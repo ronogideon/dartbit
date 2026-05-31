@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
-import { login } from '@/lib/api';
+import { login, portalLogin } from '@/lib/api';
 import toast from 'react-hot-toast';
 import { Zap, Eye, EyeOff, ArrowRight } from 'lucide-react';
 import Link from 'next/link';
@@ -17,31 +17,47 @@ export default function LoginPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email || !password) return toast.error('Please enter your email and password');
+    if (!email || !password) return toast.error('Please enter your login and password');
     setLoading(true);
     try {
-      const data = await login(email, password);
-      setAuth(data.user, data.token);
-      // Remember the tenant's subdomain for tenant-scoped routing.
-      if (data.subdomain) {
-        try { localStorage.setItem('dartbit_subdomain', data.subdomain); } catch {}
+      // One login box for everyone. Try the business/admin login first; if these credentials
+      // aren't an admin, fall back to the customer (subscriber) portal login. Role/όoutcome
+      // decides which portal opens.
+      let adminData: { user: { id: string; email: string; name: string; role: string; tenantId?: string }; token: string; subdomain?: string } | null = null;
+      try {
+        adminData = await login(email, password);
+      } catch {
+        adminData = null;
       }
-      toast.success(`Welcome back, ${data.user.name}!`);
 
-      // Subdomain enforcement (auto-redirect) activates once a custom domain is live.
-      // Controlled by NEXT_PUBLIC_PORTAL_BASE_DOMAIN. Until then, stay on the current host.
-      const base = process.env.NEXT_PUBLIC_PORTAL_BASE_DOMAIN;
-      if (base && data.subdomain && typeof window !== 'undefined') {
-        const host = window.location.hostname;
-        const expected = `${data.subdomain}.${base}`;
-        if (host !== expected) {
-          window.location.href = `https://${expected}/dashboard`;
+      if (adminData) {
+        setAuth(adminData.user, adminData.token);
+        if (adminData.subdomain) { try { localStorage.setItem('dartbit_subdomain', adminData.subdomain); } catch {} }
+        toast.success(`Welcome back, ${adminData.user.name}!`);
+        const base = process.env.NEXT_PUBLIC_PORTAL_BASE_DOMAIN;
+        if (base && adminData.subdomain && typeof window !== 'undefined') {
+          const host = window.location.hostname;
+          const expected = `${adminData.subdomain}.${base}`;
+          if (host !== expected) { window.location.href = `https://${expected}/dashboard`; return; }
+        }
+        router.push('/dashboard');
+        return;
+      }
+
+      // Not an admin — try the customer portal login (username + password).
+      try {
+        const res = await portalLogin(email, password);
+        const tok = res?.token || res?.data?.token;
+        if (tok) {
+          try { sessionStorage.setItem('dartbit_portal_token', tok); } catch {}
+          router.push('/portal');
           return;
         }
-      }
-      router.push('/dashboard');
+      } catch { /* fall through to error */ }
+
+      toast.error('Invalid credentials');
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Invalid email or password';
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Invalid credentials';
       toast.error(msg);
     } finally {
       setLoading(false);
@@ -67,11 +83,11 @@ export default function LoginPage() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1.5">Email</label>
+              <label className="block text-sm font-medium text-gray-300 mb-1.5">Email or username</label>
               <input
-                type="email" value={email} onChange={e => setEmail(e.target.value)}
+                type="text" value={email} onChange={e => setEmail(e.target.value)}
                 className="w-full px-3 py-2.5 border border-gray-700 rounded-lg bg-gray-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                placeholder="you@company.com" required autoFocus
+                placeholder="you@company.com or your username" required autoFocus
               />
             </div>
 

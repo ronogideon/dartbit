@@ -49,6 +49,9 @@ api.interceptors.response.use(
 
 export const login = (email: string, password: string) =>
   api.post('/auth/login', { email, password }).then((r) => r.data.data);
+// Customer portal login (subscriber username + password), scoped to the current subdomain.
+export const portalLogin = (username: string, password: string) =>
+  api.post('/portal/login', { username, password }).then((r) => r.data);
 
 export const getSubscribers = () => api.get('/subscribers').then((r) => r.data.data);
 export const createSubscriber = (data: unknown) => api.post('/subscribers', data).then((r) => r.data.data);
@@ -113,6 +116,9 @@ export default api;
 // Signup
 export const signupISP = (data: unknown) => api.post('/signup', data).then(r => r.data.data);
 export const checkSubdomain = (name: string) => api.get(`/signup/check-subdomain?name=${encodeURIComponent(name)}`).then(r => r.data.data);
+export interface SubdomainResolution { valid: boolean; usable?: boolean; name?: string; subdomain?: string; status?: string }
+export const resolveSubdomain = (sub: string) =>
+  api.get(`/tenants/resolve?subdomain=${encodeURIComponent(sub)}`).then(r => r.data.data as SubdomainResolution);
 
 // Tenant info
 export const getTenantInfo = () => api.get('/tenants/my').then(r => r.data.data);
