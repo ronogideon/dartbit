@@ -1,23 +1,41 @@
 import axios from 'axios';
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://dartbit-production.up.railway.app';
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://api.dartbittech.com';
 
 // The base domain tenants live under, e.g. "dartbittech.com". When the app is served from
 // a subdomain like "acme.dartbittech.com", we derive the tenant subdomain ("acme") from the
 // hostname and send it to the backend so it can scope requests to that tenant.
-const PORTAL_BASE_DOMAIN = process.env.NEXT_PUBLIC_PORTAL_BASE_DOMAIN || '';
+const PORTAL_BASE_DOMAIN = (process.env.NEXT_PUBLIC_PORTAL_BASE_DOMAIN || 'dartbittech.com').toLowerCase();
+
+const RESERVED_SUBS = ['www', 'api', 'app', 'admin', 'superadmin'];
 
 // Returns the tenant subdomain from the current hostname, or '' when on the apex/base
-// domain, localhost, or the legacy *.up.railway.app host (no per-tenant subdomain there).
+// domain, localhost, or a Railway preview host (no per-tenant subdomain there).
 export function tenantSubdomainFromHost(): string {
   if (typeof window === 'undefined') return '';
   const host = window.location.hostname.toLowerCase();
-  if (!PORTAL_BASE_DOMAIN) return '';
+
+  // No subdomains on localhost or Railway preview hosts.
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.up.railway.app') || /^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+    return '';
+  }
+
+  // Preferred: derive against the known base domain.
   if (host === PORTAL_BASE_DOMAIN || host === `www.${PORTAL_BASE_DOMAIN}`) return '';
   if (host.endsWith(`.${PORTAL_BASE_DOMAIN}`)) {
     const sub = host.slice(0, host.length - PORTAL_BASE_DOMAIN.length - 1);
-    // ignore reserved/app subdomains
-    if (sub && !['www', 'api', 'app'].includes(sub)) return sub;
+    // Only the first label counts as the tenant (acme.dartbittech.com -> "acme").
+    const first = sub.split('.')[0];
+    if (first && !RESERVED_SUBS.includes(first)) return first;
+    return '';
+  }
+
+  // Structural fallback: any host with 3+ labels (sub.domain.tld) is treated as having a
+  // subdomain even if the base-domain env var doesn't match, so detection still works.
+  const labels = host.split('.');
+  if (labels.length >= 3) {
+    const first = labels[0];
+    if (first && !RESERVED_SUBS.includes(first)) return first;
   }
   return '';
 }
