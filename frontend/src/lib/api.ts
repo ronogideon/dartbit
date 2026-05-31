@@ -123,6 +123,16 @@ export const deleteVoucher = (id: string) => api.delete(`/vouchers/${id}`).then(
 export const deleteVoucherBatch = (batchId: string) => api.delete(`/vouchers/batch/${batchId}`).then(r => r.data.data);
 
 // Notifications / SMS
+export interface MessageTemplate {
+  key: string;
+  group: 'hotspot' | 'pppoe' | 'system';
+  label: string;
+  description: string;
+  placeholders: string[];
+  default: string;
+  value: string;
+  isCustom: boolean;
+}
 export interface NotificationConfig {
   gateway: 'DARTBIT' | 'CUSTOM';
   apiKey: string | null;
@@ -132,11 +142,17 @@ export interface NotificationConfig {
   sendPaymentReceipt: boolean;
   sendExpiryReminders: boolean;
   reminderOffsets: number[];
+  templates: MessageTemplate[];
+  alertPhones: string[];
+  routerOfflineAlert: boolean;
+  lowBalanceAlert: boolean;
+  lowBalanceThreshold: number;
   dartbitAvailable: boolean;
 }
 export const getNotificationConfig = () =>
   api.get('/notifications/config').then(r => r.data.data as NotificationConfig);
-export const saveNotificationConfig = (data: Partial<NotificationConfig>) =>
+// Save accepts templates as a key->value map (only overrides), plus the other fields.
+export const saveNotificationConfig = (data: Record<string, unknown>) =>
   api.put('/notifications/config', data).then(r => r.data.data as NotificationConfig);
 export interface SmsBalance {
   mode: 'WALLET' | 'CUSTOM';

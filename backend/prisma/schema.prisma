@@ -41,6 +41,7 @@ model User {
   name      String
   role      UserRole
   isActive  Boolean  @default(true)
+  phone     String?                  // optional; used for system alert SMS to admins
   tenantId  String?
   tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: SetNull)
   createdAt DateTime @default(now())
@@ -145,6 +146,7 @@ model MikrotikRouter {
   cpuLoad        Float?
   uptime         String?
   lastSeenAt     DateTime?
+  offlineAlertSent Boolean                 @default(false) // true once an offline alert SMS was sent; reset when back online
   tenantId       String
   tenant         Tenant                    @relation(fields: [tenantId], references: [id])
   interfaces     RouterInterface[]
@@ -435,6 +437,14 @@ model NotificationConfig {
   sendExpiryReminders Boolean @default(true)
   // Expiry reminder offsets in minutes-before-expiry. Defaults: 5d, 3d, 4h.
   reminderOffsets   Int[]    @default([7200, 4320, 240])
+  // Editable message templates (JSON map of templateKey -> text). When a key is absent the
+  // built-in default is used. Keys are grouped by service: hotspot_*, pppoe_*, system_*.
+  templates         Json?
+  // System alerts
+  alertPhones       String[] @default([])            // extra numbers for system alerts (admin phones added automatically)
+  routerOfflineAlert Boolean @default(true)          // SMS when a router is offline > 5 min
+  lowBalanceAlert   Boolean  @default(true)          // SMS when SMS wallet drops below threshold
+  lowBalanceThreshold Float  @default(50)            // KES threshold for the low-balance alert
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 }
@@ -449,6 +459,7 @@ model SmsWallet {
   balance     Float    @default(0)   // KES available
   toppedUp    Float    @default(0)   // lifetime KES topped up
   spent       Float    @default(0)   // lifetime KES spent on SMS
+  lowBalanceAlerted Boolean @default(false) // true once a low-balance alert was sent; reset on top-up
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   txns        SmsWalletTxn[]

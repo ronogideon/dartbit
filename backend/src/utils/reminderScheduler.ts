@@ -4,6 +4,7 @@
 // Each reminder is deduped via Message.dedupKey so we never send the same reminder twice.
 import prisma from './prisma';
 import { sendNotification } from './notifications';
+import { resolveTemplate, renderTemplate } from './messageTemplates';
 
 const TICK_MS = 15 * 60 * 1000; // 15 minutes
 const WINDOW_MS = TICK_MS;       // we look for expiry-due reminders within one tick's worth
@@ -34,6 +35,7 @@ async function tickOnce() {
     const enabled = cfg ? cfg.sendExpiryReminders : true;
     if (!enabled) continue;
     const offsets = cfg?.reminderOffsets?.length ? cfg.reminderOffsets : [7200, 4320, 240];
+    const overrides = (cfg?.templates as Record<string, string> | null) || null;
 
     for (const offsetMin of offsets) {
       const offsetMs = offsetMin * 60 * 1000;
@@ -54,7 +56,12 @@ async function tickOnce() {
       });
       for (const s of subs) {
         const remaining = fmtRemaining(offsetMin);
-        const body = `Hi ${s.fullName || s.username}, your ${t.name} ${s.service.toLowerCase()} subscription expires in ${remaining}. Top up to stay connected.`;
+        const tplKey = s.service === 'HOTSPOT' ? 'hotspot_reminder' : 'pppoe_reminder';
+        const body = renderTemplate(resolveTemplate(tplKey, overrides), {
+          tenant: t.name, name: s.fullName || s.username, username: s.username,
+          remaining, expiry: s.expiresAt ? s.expiresAt.toLocaleString() : '',
+          package: '',
+        });
         await sendNotification({
           tenantId: t.id,
           phone: s.phone!,
@@ -83,7 +90,9 @@ async function tickOnce() {
         });
         if (!tx?.phone) continue;
         const remaining = fmtRemaining(offsetMin);
-        const body = `Hi, your ${t.name} internet access expires in ${remaining}. Buy a new package on the captive portal to stay connected.`;
+        const body = renderTemplate(resolveTemplate('hotspot_reminder', overrides), {
+          tenant: t.name, remaining, expiry: v.expiresAt ? v.expiresAt.toLocaleString() : '',
+        });
         await sendNotification({
           tenantId: t.id,
           phone: tx.phone,

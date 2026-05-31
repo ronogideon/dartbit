@@ -158,7 +158,7 @@ function NotificationsTab() {
   useEffect(() => { if (data) setForm(data); }, [data]);
 
   const saveMut = useMutation({
-    mutationFn: (payload: Partial<NotificationConfig> & { apiKey?: string }) => saveNotificationConfig(payload),
+    mutationFn: (payload: Record<string, unknown>) => saveNotificationConfig(payload),
     onSuccess: () => {
       toast.success('Notification settings saved');
       setNewApiKey('');
@@ -181,19 +181,38 @@ function NotificationsTab() {
     return <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-6 text-sm text-gray-500">Loading…</div>;
   }
 
+  // Convert the edited templates list into a key->value override map (only changed ones).
+  function templatesPayload(f: NotificationConfig): Record<string, string> {
+    const map: Record<string, string> = {};
+    for (const t of f.templates) map[t.key] = t.value;
+    return map;
+  }
+
   function onSave() {
-    const payload: Partial<NotificationConfig> & { apiKey?: string } = {
+    const payload: Record<string, unknown> = {
       gateway: form!.gateway,
       sendWelcome: form!.sendWelcome,
       sendPaymentReceipt: form!.sendPaymentReceipt,
       sendExpiryReminders: form!.sendExpiryReminders,
       reminderOffsets: form!.reminderOffsets,
+      templates: templatesPayload(form!),
+      alertPhones: form!.alertPhones,
+      routerOfflineAlert: form!.routerOfflineAlert,
+      lowBalanceAlert: form!.lowBalanceAlert,
+      lowBalanceThreshold: form!.lowBalanceThreshold,
     };
     if (form!.gateway === 'CUSTOM') {
       payload.senderId = form!.senderId || null;
       if (newApiKey) payload.apiKey = newApiKey;
     }
     saveMut.mutate(payload);
+  }
+
+  function setTemplate(key: string, value: string) {
+    setForm(f => f ? { ...f, templates: f.templates.map(t => t.key === key ? { ...t, value } : t) } : f);
+  }
+  function resetTemplate(key: string) {
+    setForm(f => f ? { ...f, templates: f.templates.map(t => t.key === key ? { ...t, value: t.default } : t) } : f);
   }
 
   function fmtOffset(m: number) {
@@ -319,6 +338,123 @@ function NotificationsTab() {
         <div className="mt-5 flex justify-end">
           <button onClick={onSave} disabled={saveMut.isPending} className="btn-primary text-sm">
             {saveMut.isPending ? 'Saving…' : 'Save settings'}
+          </button>
+        </div>
+      </div>
+
+      {/* Message templates */}
+      <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-6">
+        <h2 className="text-lg font-semibold mb-1">Message templates</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Edit the text of the automatic SMS your customers receive. Use placeholders like
+          <code className="px-1 mx-0.5 rounded bg-gray-100 dark:bg-gray-800 text-xs">{'{name}'}</code>,
+          <code className="px-1 mx-0.5 rounded bg-gray-100 dark:bg-gray-800 text-xs">{'{package}'}</code>,
+          <code className="px-1 mx-0.5 rounded bg-gray-100 dark:bg-gray-800 text-xs">{'{expiry}'}</code> — they&apos;re filled in automatically.
+          Messages sent via the Dartbit gateway are prefixed with &quot;From {form.gateway === 'DARTBIT' ? 'your business name' : 'your sender ID'}&quot;.
+        </p>
+
+        {(['hotspot', 'pppoe', 'system'] as const).map(group => {
+          const groupLabel = group === 'hotspot' ? 'Hotspot' : group === 'pppoe' ? 'PPPoE / Static' : 'System alerts';
+          const items = form.templates.filter(t => t.group === group);
+          if (items.length === 0) return null;
+          return (
+            <div key={group} className="mb-5">
+              <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2 pb-1 border-b border-gray-100 dark:border-gray-800">{groupLabel}</h3>
+              <div className="space-y-4">
+                {items.map(t => (
+                  <div key={t.key}>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-sm font-medium">{t.label}</label>
+                      {t.value !== t.default && (
+                        <button onClick={() => resetTemplate(t.key)} className="text-xs text-blue-600 hover:underline">Reset to default</button>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-500 mb-1">{t.description}</p>
+                    <textarea
+                      className="input w-full text-sm"
+                      rows={2}
+                      value={t.value}
+                      maxLength={480}
+                      onChange={e => setTemplate(t.key, e.target.value)}
+                    />
+                    <div className="text-xs text-gray-400 mt-1">
+                      Placeholders: {t.placeholders.map(p => <code key={p} className="px-1 mr-1 rounded bg-gray-100 dark:bg-gray-800">{p}</code>)}
+                      <span className="ml-1">· {t.value.length}/480</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+
+        <div className="mt-2 flex justify-end">
+          <button onClick={onSave} disabled={saveMut.isPending} className="btn-primary text-sm">
+            {saveMut.isPending ? 'Saving…' : 'Save templates'}
+          </button>
+        </div>
+      </div>
+
+      {/* System alerts */}
+      <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-6">
+        <h2 className="text-lg font-semibold mb-1">System alerts</h2>
+        <p className="text-sm text-gray-500 mb-4">Get notified about issues. These are charged to your SMS wallet like other messages.</p>
+
+        <div className="space-y-3 mb-4">
+          <ToggleRow
+            label="Router offline alert"
+            description="SMS when one of your routers has been offline for more than 5 minutes."
+            value={form.routerOfflineAlert}
+            onChange={v => setForm(f => f ? { ...f, routerOfflineAlert: v } : f)}
+          />
+          <ToggleRow
+            label="Low SMS balance alert"
+            description="SMS when your wallet drops below the threshold below."
+            value={form.lowBalanceAlert}
+            onChange={v => setForm(f => f ? { ...f, lowBalanceAlert: v } : f)}
+          />
+        </div>
+
+        {form.lowBalanceAlert && (
+          <div className="mb-4 max-w-xs">
+            <label className="label">Low-balance threshold (KES)</label>
+            <input
+              type="number" min={0} className="input"
+              value={form.lowBalanceThreshold}
+              onChange={e => setForm(f => f ? { ...f, lowBalanceThreshold: Number(e.target.value) } : f)}
+            />
+          </div>
+        )}
+
+        <div>
+          <label className="label">Alert phone numbers</label>
+          <p className="text-xs text-gray-500 mb-2">Your admin phone numbers receive alerts automatically. Add any extra numbers here.</p>
+          <div className="space-y-2">
+            {form.alertPhones.map((p, i) => (
+              <div key={i} className="flex gap-2">
+                <input
+                  className="input flex-1"
+                  value={p}
+                  placeholder="07XXXXXXXX"
+                  onChange={e => setForm(f => f ? { ...f, alertPhones: f.alertPhones.map((x, j) => j === i ? e.target.value : x) } : f)}
+                />
+                <button
+                  onClick={() => setForm(f => f ? { ...f, alertPhones: f.alertPhones.filter((_, j) => j !== i) } : f)}
+                  className="btn-secondary px-3"
+                  aria-label="Remove"
+                >×</button>
+              </div>
+            ))}
+            <button
+              onClick={() => setForm(f => f ? { ...f, alertPhones: [...f.alertPhones, ''] } : f)}
+              className="text-sm text-blue-600 hover:underline"
+            >+ Add number</button>
+          </div>
+        </div>
+
+        <div className="mt-5 flex justify-end">
+          <button onClick={onSave} disabled={saveMut.isPending} className="btn-primary text-sm">
+            {saveMut.isPending ? 'Saving…' : 'Save alerts'}
           </button>
         </div>
       </div>

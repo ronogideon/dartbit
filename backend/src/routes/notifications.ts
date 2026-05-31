@@ -7,8 +7,9 @@ import { sendSuccess, sendError } from '../utils/response';
 import { dartbitDefaultCreds, decryptApiKey, encryptApiKey, getSmsBalance, topupSms, normalizeKenyanPhone } from '../utils/blessedtexts';
 import { resolveSmsCreds, sendNotification } from '../utils/notifications';
 import { getWalletBalance, getSmsRate } from '../utils/smsWallet';
-import { centralDarajaCreds, stkPush } from '../utils/daraja';
+import { centralDarajaCreds, stkPush, normalizeBackendUrl } from '../utils/daraja';
 import { mask } from '../utils/crypto';
+import { allTemplatesWithDefaults, defaultTemplate } from '../utils/messageTemplates';
 
 const router = Router();
 router.use(authenticate);
@@ -24,6 +25,13 @@ const configSchema = z.object({
   sendPaymentReceipt: z.boolean().default(true),
   sendExpiryReminders: z.boolean().default(true),
   reminderOffsets: z.array(z.number().int().min(1).max(60 * 24 * 30)).max(8).optional(),
+  // Editable templates: map of templateKey -> body. Blank/absent => default used.
+  templates: z.record(z.string(), z.string()).optional(),
+  // System alerts
+  alertPhones: z.array(z.string()).max(10).optional(),
+  routerOfflineAlert: z.boolean().optional(),
+  lowBalanceAlert: z.boolean().optional(),
+  lowBalanceThreshold: z.number().min(0).max(100000).optional(),
 });
 
 // GET /notifications/config — returns the tenant's settings (with apiKey masked).
@@ -38,6 +46,8 @@ router.get('/config', async (req: AuthRequest, res: Response) => {
         gateway: 'DARTBIT', apiKey: null, apiKeyMasked: null, senderId: null,
         sendWelcome: true, sendPaymentReceipt: true, sendExpiryReminders: true,
         reminderOffsets: DEFAULT_OFFSETS,
+        templates: allTemplatesWithDefaults(null),
+        alertPhones: [], routerOfflineAlert: true, lowBalanceAlert: true, lowBalanceThreshold: 50,
         dartbitAvailable: !!dartbitDefaultCreds(),
       });
     }
@@ -50,6 +60,11 @@ router.get('/config', async (req: AuthRequest, res: Response) => {
       sendPaymentReceipt: cfg.sendPaymentReceipt,
       sendExpiryReminders: cfg.sendExpiryReminders,
       reminderOffsets: cfg.reminderOffsets?.length ? cfg.reminderOffsets : DEFAULT_OFFSETS,
+      templates: allTemplatesWithDefaults((cfg.templates as Record<string, string> | null) || null),
+      alertPhones: cfg.alertPhones || [],
+      routerOfflineAlert: cfg.routerOfflineAlert,
+      lowBalanceAlert: cfg.lowBalanceAlert,
+      lowBalanceThreshold: cfg.lowBalanceThreshold,
       dartbitAvailable: !!dartbitDefaultCreds(),
     });
   } catch (err) {
@@ -73,6 +88,16 @@ router.put('/config', requireTenantAdmin, async (req: AuthRequest, res: Response
       if (!d.senderId && !existing?.senderId) return sendError(res, 'senderId required for CUSTOM gateway', 400);
     }
 
+    // Only persist template entries that differ from the built-in default (and are non-empty),
+    // so defaults stay dynamic. An empty string means "revert to default".
+    let templatesToStore: Record<string, string> | undefined;
+    if (d.templates) {
+      templatesToStore = {};
+      for (const [k, v] of Object.entries(d.templates)) {
+        if (v && v.trim() && v.trim() !== defaultTemplate(k)) templatesToStore[k] = v.trim();
+      }
+    }
+
     const updateData: Record<string, unknown> = {
       gateway: d.gateway,
       sendWelcome: d.sendWelcome,
@@ -80,6 +105,11 @@ router.put('/config', requireTenantAdmin, async (req: AuthRequest, res: Response
       sendExpiryReminders: d.sendExpiryReminders,
       reminderOffsets: d.reminderOffsets || DEFAULT_OFFSETS,
     };
+    if (templatesToStore !== undefined) updateData.templates = templatesToStore;
+    if (d.alertPhones !== undefined) updateData.alertPhones = d.alertPhones.filter(p => p && p.trim());
+    if (d.routerOfflineAlert !== undefined) updateData.routerOfflineAlert = d.routerOfflineAlert;
+    if (d.lowBalanceAlert !== undefined) updateData.lowBalanceAlert = d.lowBalanceAlert;
+    if (d.lowBalanceThreshold !== undefined) updateData.lowBalanceThreshold = d.lowBalanceThreshold;
     if (d.gateway === 'CUSTOM') {
       if (d.apiKey) updateData.apiKey = encryptApiKey(d.apiKey);
       if (d.senderId) updateData.senderId = d.senderId;
@@ -100,6 +130,11 @@ router.put('/config', requireTenantAdmin, async (req: AuthRequest, res: Response
         sendPaymentReceipt: d.sendPaymentReceipt,
         sendExpiryReminders: d.sendExpiryReminders,
         reminderOffsets: d.reminderOffsets || DEFAULT_OFFSETS,
+        templates: templatesToStore || undefined,
+        alertPhones: d.alertPhones?.filter(p => p && p.trim()) || [],
+        routerOfflineAlert: d.routerOfflineAlert ?? true,
+        lowBalanceAlert: d.lowBalanceAlert ?? true,
+        lowBalanceThreshold: d.lowBalanceThreshold ?? 50,
       },
       update: updateData,
     });
@@ -111,6 +146,11 @@ router.put('/config', requireTenantAdmin, async (req: AuthRequest, res: Response
       sendPaymentReceipt: cfg.sendPaymentReceipt,
       sendExpiryReminders: cfg.sendExpiryReminders,
       reminderOffsets: cfg.reminderOffsets,
+      templates: allTemplatesWithDefaults((cfg.templates as Record<string, string> | null) || null),
+      alertPhones: cfg.alertPhones || [],
+      routerOfflineAlert: cfg.routerOfflineAlert,
+      lowBalanceAlert: cfg.lowBalanceAlert,
+      lowBalanceThreshold: cfg.lowBalanceThreshold,
     });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);
@@ -180,7 +220,7 @@ router.post('/topup', requireTenantAdmin, async (req: AuthRequest, res: Response
       },
     });
 
-    const backendUrl = (process.env.BACKEND_URL || 'https://api.dartbittech.com').replace(/\/+$/, '');
+    const backendUrl = normalizeBackendUrl();
     const result = await stkPush({
       creds,
       phone,

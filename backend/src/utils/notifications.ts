@@ -6,7 +6,7 @@ import prisma from './prisma';
 import { dartbitDefaultCreds, decryptApiKey, normalizeKenyanPhone, sendSms, type SmsCreds } from './blessedtexts';
 import { canSend, debitForSms } from './smsWallet';
 
-type Category = 'WELCOME' | 'RECEIPT' | 'REMINDER' | 'MANUAL' | 'OTHER';
+type Category = 'WELCOME' | 'RECEIPT' | 'REMINDER' | 'EXPIRED' | 'SYSTEM' | 'MANUAL' | 'OTHER';
 
 export interface SendNotifyArgs {
   tenantId: string;
@@ -42,12 +42,12 @@ export async function resolveSmsCreds(tenantId: string): Promise<SmsCreds | null
 
 // Whether a particular category is enabled for the tenant (defaults: all on).
 export async function isCategoryEnabled(tenantId: string, category: Category): Promise<boolean> {
-  if (category === 'MANUAL' || category === 'OTHER') return true;
+  if (category === 'MANUAL' || category === 'OTHER' || category === 'SYSTEM') return true;
   const cfg = await prisma.notificationConfig.findUnique({ where: { tenantId } });
   if (!cfg) return true; // defaults are "on" if config doesn't exist yet
   if (category === 'WELCOME') return cfg.sendWelcome;
   if (category === 'RECEIPT') return cfg.sendPaymentReceipt;
-  if (category === 'REMINDER') return cfg.sendExpiryReminders;
+  if (category === 'REMINDER' || category === 'EXPIRED') return cfg.sendExpiryReminders;
   return true;
 }
 
@@ -55,12 +55,27 @@ export async function isCategoryEnabled(tenantId: string, category: Category): P
 // Messages tab shows every attempt with delivery status and cost. Dedup via dedupKey
 // (e.g. "REMINDER:<subId>:7200") prevents the same reminder being sent twice.
 export async function sendNotification(args: SendNotifyArgs): Promise<NotifyResult> {
-  const { tenantId, phone, body, category, dedupKey, subscriberId, username } = args;
+  const { tenantId, phone, category, dedupKey, subscriberId, username } = args;
+  let body = args.body;
 
   // Category-level enabled check.
   if (!(await isCategoryEnabled(tenantId, category))) {
     return { ok: false, skipped: true, reason: 'category disabled' };
   }
+
+  // Sender label: on the shared Dartbit gateway the BlessedTexts sender ID is generic, so we
+  // prefix "From {tenant}:" to every message so recipients know who it's from. Tenants on
+  // their OWN gateway use their own sender ID and don't need the prefix.
+  try {
+    const cfg = await prisma.notificationConfig.findUnique({ where: { tenantId }, select: { gateway: true } });
+    const usesDartbit = !cfg || cfg.gateway === 'DARTBIT';
+    if (usesDartbit) {
+      const t = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true } });
+      const label = t?.name ? `From ${t.name}: ` : '';
+      // Avoid double-prefixing if the caller already included it.
+      if (label && !body.startsWith(label)) body = label + body;
+    }
+  } catch { /* non-fatal */ }
 
   // Dedup — if a message with this key already exists for the tenant, skip.
   if (dedupKey) {

@@ -2,8 +2,9 @@ import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import prisma from '../utils/prisma';
 import { enqueueCommand } from '../utils/commandQueue';
-import { decryptDarajaCreds, centralDarajaCreds, stkPush, normalizePhone, b2cPayout, isB2cConfigured } from '../utils/daraja';
+import { decryptDarajaCreds, centralDarajaCreds, stkPush, normalizePhone, b2cPayout, isB2cConfigured, normalizeBackendUrl } from '../utils/daraja';
 import { sendNotification } from '../utils/notifications';
+import { resolveTemplate, renderTemplate } from '../utils/messageTemplates';
 import { creditWallet, getWalletBalance, getSmsRate } from '../utils/smsWallet';
 
 const router = Router();
@@ -33,12 +34,7 @@ router.use((req: Request, res: Response, next: NextFunction) => {
 // Backend base URL for Daraja callbacks. Daraja REQUIRES a fully-qualified https URL —
 // if BACKEND_URL is set without a protocol (just the hostname), the callback comes out
 // schemeless and Safaricom rejects it as "Invalid Callback URL". Normalize to https.
-function normalizeBackendUrl(): string {
-  let u = process.env.BACKEND_URL || 'https://api.dartbittech.com';
-  u = u.replace(/^https?:\/\//, '').replace(/\/+$/, '');
-  if (u.includes('localhost') || u.includes('127.0.0.1')) u = 'api.dartbittech.com';
-  return 'https://' + u;
-}
+// Daraja callback base URL is normalized to https via the shared util (normalizeBackendUrl).
 const BACKEND_URL = normalizeBackendUrl();
 
 function genCreds() {
@@ -348,9 +344,14 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   // double-send.
   if (tx.phone && tenant) {
     try {
+      const ncfg = await prisma.notificationConfig.findUnique({ where: { tenantId: tx.tenantId }, select: { templates: true } });
+      const overrides = (ncfg?.templates as Record<string, string> | null) || null;
+      const login = `${displayName} / ${password}`;
       // Welcome: only when this is a NEW subscriber (no existingSub at provision-start).
       if (!existingSub) {
-        const welcome = `Welcome to ${tenant.name}! Your account ${displayName} has been created. Enjoy your internet.`;
+        const welcome = renderTemplate(resolveTemplate('hotspot_welcome', overrides), {
+          tenant: tenant.name, username: displayName, name: tx.phone || '', phone: tx.phone || '',
+        });
         await sendNotification({
           tenantId: tx.tenantId,
           phone: tx.phone,
@@ -362,8 +363,10 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
         }).catch(err => console.error('welcome SMS error:', err instanceof Error ? err.message : err));
       }
       // Receipt: per transaction. Includes login (D-name + 4-digit pwd) and amount.
-      const validity = pkg?.name ? `(${pkg.name})` : `(${tx.durationMinutes}min)`;
-      const receiptBody = `${tenant.name}: Paid KES ${tx.amount} ${validity}. Login: ${displayName} / ${password}. Ref ${receipt || txId.slice(-6)}. Thank you!`;
+      const receiptBody = renderTemplate(resolveTemplate('hotspot_receipt', overrides), {
+        tenant: tenant.name, amount: tx.amount, package: pkg?.name || `${tx.durationMinutes}min`,
+        login, receipt: receipt || txId.slice(-6), username: displayName,
+      });
       await sendNotification({
         tenantId: tx.tenantId,
         phone: tx.phone,

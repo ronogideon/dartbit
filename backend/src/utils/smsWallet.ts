@@ -58,7 +58,7 @@ export async function creditWallet(tenantId: string, amount: number, reference?:
     const newBalance = wallet.balance + amount;
     await tx.smsWallet.update({
       where: { tenantId },
-      data: { balance: newBalance, toppedUp: wallet.toppedUp + amount },
+      data: { balance: newBalance, toppedUp: wallet.toppedUp + amount, lowBalanceAlerted: false },
     });
     return tx.smsWalletTxn.create({
       data: { walletId: wallet.id, tenantId, type: 'TOPUP', amount, balanceAfter: newBalance, reference: reference || null, note: note || 'SMS top-up' },

@@ -198,3 +198,13 @@ export async function b2cPayout(params: {
 export function isB2cConfigured(): boolean {
   return !!(process.env.DARAJA_B2C_INITIATOR && process.env.DARAJA_B2C_SECURITY_CREDENTIAL && process.env.DARAJA_B2C_SHORTCODE);
 }
+
+// Build a fully-qualified https backend URL for Daraja callbacks. Daraja rejects schemeless
+// or http URLs ("Invalid Callback URL"), so we always normalize to https. Shared by hotspot
+// STK and SMS-wallet top-up.
+export function normalizeBackendUrl(): string {
+  let u = process.env.BACKEND_URL || 'https://api.dartbittech.com';
+  u = u.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+  if (u.includes('localhost') || u.includes('127.0.0.1')) u = 'api.dartbittech.com';
+  return 'https://' + u;
+}
