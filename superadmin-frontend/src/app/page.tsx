@@ -62,19 +62,28 @@ function Login({ onAuthed }: { onAuthed: (role: string) => void }) {
   };
   return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
-      <form onSubmit={submit} className="w-full max-w-sm bg-gray-900 rounded-2xl p-7 border border-gray-800">
-        <div className="flex flex-col items-center text-center mb-5">
-          <div className="w-14 h-14 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-600/30 mb-3">
+      <div className="w-full max-w-sm">
+
+        {/* Branding — outside the card */}
+        <div className="text-center mb-8">
+          <div className="w-14 h-14 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg shadow-blue-600/30">
             <Zap size={28} className="text-white" />
           </div>
           <h1 className="text-2xl font-bold text-white">Dartbit</h1>
           <p className="text-sm text-gray-400 mt-1">Superadmin</p>
         </div>
-        <input className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white mb-3" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} />
-        <input type="password" className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white mb-4" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} />
-        <button disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2.5 font-medium disabled:opacity-50">{loading ? 'Signing in…' : 'Sign In'}</button>
+
+        {/* Form card */}
+        <form onSubmit={submit} className="bg-gray-900 rounded-2xl p-6 border border-gray-800 shadow-xl">
+          <h2 className="text-base font-semibold text-white mb-5">Sign in to your account</h2>
+          <label className="block text-sm font-medium text-gray-300 mb-1.5">Email</label>
+          <input className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white mb-3" placeholder="you@dartbit.local" value={email} onChange={e => setEmail(e.target.value)} />
+          <label className="block text-sm font-medium text-gray-300 mb-1.5">Password</label>
+          <input type="password" className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white mb-4" placeholder="••••••••" value={password} onChange={e => setPassword(e.target.value)} />
+          <button disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2.5 font-medium disabled:opacity-50">{loading ? 'Signing in…' : 'Sign In'}</button>
+        </form>
         <p className="text-[10px] text-gray-600 mt-4 text-center break-all">API: {process.env.NEXT_PUBLIC_API_URL || 'https://api.dartbittech.com'}</p>
-      </form>
+      </div>
     </div>
   );
 }
