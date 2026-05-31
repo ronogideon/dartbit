@@ -2,9 +2,11 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
+import { useQuery } from '@tanstack/react-query';
+import { getTenantInfo } from '@/lib/api';
 import {
   LayoutDashboard, Users, Package, CreditCard, MessageSquare,
-  Router, Activity, Zap, Building2, Ticket,
+  Router, Activity, Zap, Wifi, Building2, Ticket,
   ChevronLeft, ChevronRight, X
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -35,6 +37,18 @@ export default function Sidebar({
 }) {
   const pathname = usePathname();
   const { user } = useAuth();
+  const isSuper = user?.role === 'SUPERADMIN' || user?.role === 'SUPERADMIN_VIEWER';
+  // Brand the sidebar with the tenant's business name (wifi icon placeholder). Superadmins
+  // keep the Dartbit branding.
+  const { data: tenantInfo } = useQuery({
+    queryKey: ['tenant-info-brand'],
+    queryFn: getTenantInfo,
+    enabled: !!user && !isSuper,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+  const brandName = !isSuper && tenantInfo?.name ? tenantInfo.name : 'Dartbit';
+  const BrandIcon = !isSuper && tenantInfo?.name ? Wifi : Zap;
   const [collapsed, setCollapsed] = useState(false);
 
   // Persist collapse state (desktop only) in localStorage.
@@ -85,10 +99,10 @@ export default function Sidebar({
           collapsed ? 'lg:px-0 lg:justify-center px-4 gap-3' : 'px-4 gap-3'
         )}>
           <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shrink-0">
-            <Zap size={17} className="text-white" />
+            <BrandIcon size={17} className="text-white" />
           </div>
-          {(!collapsed) && <span className="text-base font-bold tracking-tight truncate lg:inline">Dartbit</span>}
-          {collapsed && <span className="text-base font-bold tracking-tight truncate lg:hidden">Dartbit</span>}
+          {(!collapsed) && <span className="text-base font-bold tracking-tight truncate lg:inline">{brandName}</span>}
+          {collapsed && <span className="text-base font-bold tracking-tight truncate lg:hidden">{brandName}</span>}
           {/* close button (mobile) */}
           <button onClick={onMobileClose} className="ml-auto lg:hidden p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800" aria-label="Close menu">
             <X size={18} />

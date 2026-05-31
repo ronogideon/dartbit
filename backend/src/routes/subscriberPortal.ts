@@ -143,9 +143,13 @@ router.get('/account', authSubscriber, async (req: SubReq, res: Response) => {
 // GET /portal/packages — packages available for renewal/purchase for this tenant
 router.get('/packages', authSubscriber, async (req: SubReq, res: Response) => {
   try {
-    const { tid } = req.sub!;
+    const { tid, sid } = req.sub!;
+    // Show only packages matching the subscriber's account type. Hotspot accounts see HOTSPOT
+    // packages; PPPoE/Static accounts see wired packages (PPPOE + STATIC) — never cross-type.
+    const sub = await prisma.subscriber.findUnique({ where: { id: sid }, select: { service: true } });
+    const allowedServices = sub?.service === 'HOTSPOT' ? ['HOTSPOT'] : ['PPPOE', 'STATIC'];
     const pkgs = await prisma.package.findMany({
-      where: { tenantId: tid, isActive: true },
+      where: { tenantId: tid, isActive: true, service: { in: allowedServices as ('PPPOE' | 'STATIC' | 'HOTSPOT')[] } },
       select: { id: true, name: true, price: true, validityMinutes: true, speedDownKbps: true, speedUpKbps: true, service: true },
       orderBy: { price: 'asc' },
     });
