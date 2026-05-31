@@ -329,6 +329,7 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
           reference: receipt || tx.checkoutRequestId || txId,
           mpesaCode: receipt || null,
           notes: `Hotspot ${pkg?.name || 'package'} • ${tx.phone || ''}`,
+          packageId: pkg?.id || null,
           subscriberId,
           tenantId: tx.tenantId,
         },

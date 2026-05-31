@@ -586,6 +586,7 @@ async function patchDatabase() {
     await safeExec(prisma, 'Router offlineAlertSent', `ALTER TABLE "MikrotikRouter" ADD COLUMN IF NOT EXISTS "offlineAlertSent" BOOLEAN NOT NULL DEFAULT false`);
     await safeExec(prisma, 'SmsWallet lowBalanceAlerted', `ALTER TABLE "SmsWallet" ADD COLUMN IF NOT EXISTS "lowBalanceAlerted" BOOLEAN NOT NULL DEFAULT false`);
     await safeExec(prisma, 'User phone', `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "phone" TEXT`);
+    await safeExec(prisma, 'Payment packageId', `ALTER TABLE "Payment" ADD COLUMN IF NOT EXISTS "packageId" TEXT`);
 
     console.log('✅ Database patch complete');
   } catch (err) {

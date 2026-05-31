@@ -239,6 +239,7 @@ model Package {
   tenant          Tenant       @relation(fields: [tenantId], references: [id])
   subscribers     Subscriber[]
   vouchers        Voucher[]
+  payments        Payment[]
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 }
@@ -250,6 +251,8 @@ model Payment {
   reference    String?
   mpesaCode    String?
   notes        String?
+  packageId    String?                  // package this payment was for (for income-by-package analytics)
+  package      Package?   @relation(fields: [packageId], references: [id], onDelete: SetNull)
   subscriberId String?
   subscriber   Subscriber? @relation(fields: [subscriberId], references: [id], onDelete: SetNull)
   tenantId     String

@@ -48,7 +48,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
     if (!subscriber) return sendError(res, 'Subscriber not found', 404);
 
     const payment = await prisma.payment.create({
-      data: { ...parsed.data, tenantId },
+      data: { ...parsed.data, packageId: subscriber.packageId || null, tenantId },
     });
 
     // Extend expiry automatically if subscriber has a package
