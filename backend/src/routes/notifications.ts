@@ -39,6 +39,8 @@ router.get('/config', async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user?.tenantId;
     if (!tenantId) return sendError(res, 'Tenant required', 400);
+    const tenantRow = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { phone: true } });
+    const signupPhone = tenantRow?.phone || null;
     const cfg = await prisma.notificationConfig.findUnique({ where: { tenantId } });
     if (!cfg) {
       // Return the defaults so the UI can render even before save.
@@ -48,6 +50,7 @@ router.get('/config', async (req: AuthRequest, res: Response) => {
         reminderOffsets: DEFAULT_OFFSETS,
         templates: allTemplatesWithDefaults(null),
         alertPhones: [], routerOfflineAlert: true, lowBalanceAlert: true, lowBalanceThreshold: 50,
+        signupPhone,
         dartbitAvailable: !!dartbitDefaultCreds(),
       });
     }
@@ -65,6 +68,7 @@ router.get('/config', async (req: AuthRequest, res: Response) => {
       routerOfflineAlert: cfg.routerOfflineAlert,
       lowBalanceAlert: cfg.lowBalanceAlert,
       lowBalanceThreshold: cfg.lowBalanceThreshold,
+      signupPhone,
       dartbitAvailable: !!dartbitDefaultCreds(),
     });
   } catch (err) {

@@ -10,16 +10,13 @@ import { resolveTemplate, renderTemplate } from './messageTemplates';
 const TICK_MS = 60 * 1000;            // check every minute
 const OFFLINE_AFTER_MS = 5 * 60 * 1000; // 5 minutes
 
-// Collect the alert recipients for a tenant: configured alertPhones + all tenant-admin phones.
+// Collect the alert recipients for a tenant: the phone they signed up with (Tenant.phone) plus
+// any extra alert numbers they configured.
 async function alertRecipients(tenantId: string, cfgAlertPhones: string[]): Promise<string[]> {
   const set = new Set<string>();
+  const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { phone: true } }).catch(() => null);
+  if (tenant?.phone && tenant.phone.trim()) set.add(tenant.phone.trim());
   for (const p of cfgAlertPhones || []) { if (p && p.trim()) set.add(p.trim()); }
-  // Admin phones — Users don't always have a phone; pull any that do.
-  const admins = await prisma.user.findMany({
-    where: { tenantId, role: 'TENANT_ADMIN' },
-    select: { phone: true },
-  }).catch(() => [] as { phone: string | null }[]);
-  for (const a of admins) { if (a.phone && a.phone.trim()) set.add(a.phone.trim()); }
   return Array.from(set);
 }
 

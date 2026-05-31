@@ -55,9 +55,10 @@ async function tickOnce() {
         select: { id: true, username: true, fullName: true, phone: true, expiresAt: true, service: true },
       });
       for (const s of subs) {
+        // Hotspot is a short-term purchase — no expiry reminders, only PPPoE/Static get them.
+        if (s.service === 'HOTSPOT') continue;
         const remaining = fmtRemaining(offsetMin);
-        const tplKey = s.service === 'HOTSPOT' ? 'hotspot_reminder' : 'pppoe_reminder';
-        const body = renderTemplate(resolveTemplate(tplKey, overrides), {
+        const body = renderTemplate(resolveTemplate('pppoe_reminder', overrides), {
           tenant: t.name, name: s.fullName || s.username, username: s.username,
           remaining, expiry: s.expiresAt ? s.expiresAt.toLocaleString() : '',
           package: '',
@@ -71,36 +72,6 @@ async function tickOnce() {
           subscriberId: s.id,
           username: s.username,
         }).catch(err => console.error('[reminder] sub error:', err instanceof Error ? err.message : err));
-      }
-
-      // Vouchers (hotspot) expiring in this window — only if we have a phone via the MpesaTransaction.
-      // We find vouchers whose code matches a recent MpesaTransaction so we can recover the phone.
-      const vouchers = await prisma.voucher.findMany({
-        where: {
-          tenantId: t.id,
-          isUsed: true,
-          expiresAt: { gte: winStart, lt: winEnd },
-        },
-        select: { id: true, code: true, expiresAt: true, durationMinutes: true },
-      });
-      for (const v of vouchers) {
-        const tx = await prisma.mpesaTransaction.findFirst({
-          where: { tenantId: t.id, mpesaReceipt: v.code },
-          select: { phone: true, username: true },
-        });
-        if (!tx?.phone) continue;
-        const remaining = fmtRemaining(offsetMin);
-        const body = renderTemplate(resolveTemplate('hotspot_reminder', overrides), {
-          tenant: t.name, remaining, expiry: v.expiresAt ? v.expiresAt.toLocaleString() : '',
-        });
-        await sendNotification({
-          tenantId: t.id,
-          phone: tx.phone,
-          body,
-          category: 'REMINDER',
-          dedupKey: `REMINDER:VCH:${v.id}:${offsetMin}`,
-          username: tx.username,
-        }).catch(err => console.error('[reminder] vch error:', err instanceof Error ? err.message : err));
       }
     }
   }

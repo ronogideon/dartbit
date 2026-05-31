@@ -154,6 +154,7 @@ function NotificationsTab() {
   const [newApiKey, setNewApiKey] = useState('');
   const [testPhone, setTestPhone] = useState('');
   const [testMessage, setTestMessage] = useState('Test SMS from Dartbit');
+  const [newOffset, setNewOffset] = useState('1440'); // minutes; default 1 day
 
   useEffect(() => { if (data) setForm(data); }, [data]);
 
@@ -213,6 +214,22 @@ function NotificationsTab() {
   }
   function resetTemplate(key: string) {
     setForm(f => f ? { ...f, templates: f.templates.map(t => t.key === key ? { ...t, value: t.default } : t) } : f);
+  }
+  function setToggle(field: 'sendWelcome' | 'sendPaymentReceipt' | 'sendExpiryReminders', v: boolean) {
+    setForm(f => f ? { ...f, [field]: v } : f);
+  }
+  function toggleValue(field: string | null): boolean {
+    if (!field || !form) return true;
+    return (form as unknown as Record<string, boolean>)[field];
+  }
+  function addOffset() {
+    const m = Number(newOffset);
+    if (!Number.isFinite(m) || m < 1) return;
+    setForm(f => {
+      if (!f) return f;
+      if (f.reminderOffsets.includes(m)) return f;
+      return { ...f, reminderOffsets: [...f.reminderOffsets, m].sort((a, b) => b - a) };
+    });
   }
 
   function fmtOffset(m: number) {
@@ -288,60 +305,6 @@ function NotificationsTab() {
         </div>
       </div>
 
-      {/* Automatic notifications */}
-      <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-6">
-        <h2 className="text-lg font-semibold mb-1">Automatic notifications</h2>
-        <p className="text-sm text-gray-500 mb-4">Choose which messages Dartbit sends to your customers automatically.</p>
-
-        <div className="space-y-3">
-          <ToggleRow
-            label="Welcome SMS on first purchase"
-            description="Sent the first time a customer pays for a package."
-            value={form.sendWelcome}
-            onChange={v => setForm({ ...form, sendWelcome: v })}
-          />
-          <ToggleRow
-            label="Payment receipt SMS"
-            description="Sent after every successful payment, includes their login credentials."
-            value={form.sendPaymentReceipt}
-            onChange={v => setForm({ ...form, sendPaymentReceipt: v })}
-          />
-          <ToggleRow
-            label="Expiry reminders"
-            description="Reminds customers before their subscription expires."
-            value={form.sendExpiryReminders}
-            onChange={v => setForm({ ...form, sendExpiryReminders: v })}
-          />
-        </div>
-
-        {form.sendExpiryReminders && (
-          <div className="mt-4 p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50">
-            <div className="text-sm font-medium mb-2">Reminder schedule</div>
-            <div className="text-xs text-gray-500 mb-3">Send a reminder this much time before expiry:</div>
-            <div className="flex flex-wrap gap-2">
-              {form.reminderOffsets.map((m, i) => (
-                <span key={i} className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 text-xs font-medium">
-                  {fmtOffset(m)}
-                  <button
-                    type="button"
-                    onClick={() => setForm({ ...form, reminderOffsets: form.reminderOffsets.filter((_, j) => j !== i) })}
-                    className="ml-1 hover:text-red-500"
-                    aria-label="Remove"
-                  >×</button>
-                </span>
-              ))}
-            </div>
-            <div className="text-xs text-gray-500 mt-3">Defaults: 5 days, 3 days, 4 hours before expiry.</div>
-          </div>
-        )}
-
-        <div className="mt-5 flex justify-end">
-          <button onClick={onSave} disabled={saveMut.isPending} className="btn-primary text-sm">
-            {saveMut.isPending ? 'Saving…' : 'Save settings'}
-          </button>
-        </div>
-      </div>
-
       {/* Message templates */}
       <div className="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-6">
         <h2 className="text-lg font-semibold mb-1">Message templates</h2>
@@ -353,36 +316,87 @@ function NotificationsTab() {
           Messages sent via the Dartbit gateway are prefixed with &quot;From {form.gateway === 'DARTBIT' ? 'your business name' : 'your sender ID'}&quot;.
         </p>
 
-        {(['hotspot', 'pppoe', 'system'] as const).map(group => {
-          const groupLabel = group === 'hotspot' ? 'Hotspot' : group === 'pppoe' ? 'PPPoE / Static' : 'System alerts';
+        {(['hotspot', 'pppoe'] as const).map(group => {
+          const groupLabel = group === 'hotspot' ? 'Hotspot' : 'PPPoE / Static';
           const items = form.templates.filter(t => t.group === group);
           if (items.length === 0) return null;
           return (
             <div key={group} className="mb-5">
               <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2 pb-1 border-b border-gray-100 dark:border-gray-800">{groupLabel}</h3>
               <div className="space-y-4">
-                {items.map(t => (
-                  <div key={t.key}>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="text-sm font-medium">{t.label}</label>
-                      {t.value !== t.default && (
-                        <button onClick={() => resetTemplate(t.key)} className="text-xs text-blue-600 hover:underline">Reset to default</button>
+                {items.map(t => {
+                  const enabled = toggleValue(t.toggle);
+                  const isReminder = t.key === 'pppoe_reminder';
+                  return (
+                    <div key={t.key} className="rounded-lg border border-gray-100 dark:border-gray-800 p-3">
+                      {/* Header: label + its own enable/disable switch */}
+                      <div className="flex items-center justify-between gap-3 mb-1">
+                        <label className="text-sm font-medium">{t.label}</label>
+                        <div className="flex items-center gap-3">
+                          {enabled && t.value !== t.default && (
+                            <button onClick={() => resetTemplate(t.key)} className="text-xs text-blue-600 hover:underline">Reset</button>
+                          )}
+                          {t.toggle && (
+                            <button
+                              type="button"
+                              onClick={() => setToggle(t.toggle!, !enabled)}
+                              className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${enabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}`}
+                              aria-label="Toggle"
+                            >
+                              <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <p className="text-xs text-gray-500 mb-2">{t.description}</p>
+
+                      {enabled && (
+                        <>
+                          <textarea
+                            className="input w-full text-sm"
+                            rows={2}
+                            value={t.value}
+                            maxLength={480}
+                            onChange={e => setTemplate(t.key, e.target.value)}
+                          />
+                          <div className="text-xs text-gray-400 mt-1">
+                            Placeholders: {t.placeholders.map(p => <code key={p} className="px-1 mr-1 rounded bg-gray-100 dark:bg-gray-800">{p}</code>)}
+                            <span className="ml-1">· {t.value.length}/480</span>
+                          </div>
+
+                          {/* Expiry reminder: editable schedule lives inside this card */}
+                          {isReminder && (
+                            <div className="mt-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+                              <div className="text-xs font-medium mb-2">Send reminders this long before expiry:</div>
+                              <div className="flex flex-wrap gap-2 mb-3">
+                                {form.reminderOffsets.length === 0 && <span className="text-xs text-gray-400">No reminder times set.</span>}
+                                {form.reminderOffsets.map((m, i) => (
+                                  <span key={i} className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 text-xs font-medium">
+                                    {fmtOffset(m)}
+                                    <button type="button" onClick={() => setForm({ ...form, reminderOffsets: form.reminderOffsets.filter((_, j) => j !== i) })} className="ml-1 hover:text-red-500" aria-label="Remove">×</button>
+                                  </span>
+                                ))}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <select className="input text-sm w-44" value={newOffset} onChange={e => setNewOffset(e.target.value)}>
+                                  <option value="240">4 hours</option>
+                                  <option value="720">12 hours</option>
+                                  <option value="1440">1 day</option>
+                                  <option value="2880">2 days</option>
+                                  <option value="4320">3 days</option>
+                                  <option value="7200">5 days</option>
+                                  <option value="10080">7 days</option>
+                                  <option value="20160">14 days</option>
+                                </select>
+                                <button type="button" onClick={addOffset} className="btn-secondary text-sm">Add time</button>
+                              </div>
+                            </div>
+                          )}
+                        </>
                       )}
                     </div>
-                    <p className="text-xs text-gray-500 mb-1">{t.description}</p>
-                    <textarea
-                      className="input w-full text-sm"
-                      rows={2}
-                      value={t.value}
-                      maxLength={480}
-                      onChange={e => setTemplate(t.key, e.target.value)}
-                    />
-                    <div className="text-xs text-gray-400 mt-1">
-                      Placeholders: {t.placeholders.map(p => <code key={p} className="px-1 mr-1 rounded bg-gray-100 dark:bg-gray-800">{p}</code>)}
-                      <span className="ml-1">· {t.value.length}/480</span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           );
@@ -428,7 +442,9 @@ function NotificationsTab() {
 
         <div>
           <label className="label">Alert phone numbers</label>
-          <p className="text-xs text-gray-500 mb-2">Your admin phone numbers receive alerts automatically. Add any extra numbers here.</p>
+          <p className="text-xs text-gray-500 mb-2">
+            Alerts are sent to your sign-up number{form.signupPhone ? <> (<span className="font-medium">{form.signupPhone}</span>)</> : ''} by default. Add any extra numbers below.
+          </p>
           <div className="space-y-2">
             {form.alertPhones.map((p, i) => (
               <div key={i} className="flex gap-2">

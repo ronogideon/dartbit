@@ -132,6 +132,7 @@ export interface MessageTemplate {
   default: string;
   value: string;
   isCustom: boolean;
+  toggle: 'sendWelcome' | 'sendPaymentReceipt' | 'sendExpiryReminders' | null;
 }
 export interface NotificationConfig {
   gateway: 'DARTBIT' | 'CUSTOM';
@@ -147,6 +148,7 @@ export interface NotificationConfig {
   routerOfflineAlert: boolean;
   lowBalanceAlert: boolean;
   lowBalanceThreshold: number;
+  signupPhone: string | null;
   dartbitAvailable: boolean;
 }
 export const getNotificationConfig = () =>
