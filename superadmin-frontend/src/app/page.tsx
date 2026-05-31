@@ -63,16 +63,13 @@ function Login({ onAuthed }: { onAuthed: (role: string) => void }) {
   return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
       <form onSubmit={submit} className="w-full max-w-sm bg-gray-900 rounded-2xl p-7 border border-gray-800">
-        <div className="flex items-center gap-2.5 mb-4">
-          <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-600/30">
-            <Zap size={22} className="text-white" />
+        <div className="flex flex-col items-center text-center mb-5">
+          <div className="w-14 h-14 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-600/30 mb-3">
+            <Zap size={28} className="text-white" />
           </div>
-          <div>
-            <h1 className="text-lg font-bold text-white leading-tight">Dartbit</h1>
-            <p className="text-xs text-gray-400">Superadmin</p>
-          </div>
+          <h1 className="text-2xl font-bold text-white">Dartbit</h1>
+          <p className="text-sm text-gray-400 mt-1">Superadmin</p>
         </div>
-        <p className="text-sm text-gray-400 mb-5">Platform analytics &amp; control</p>
         <input className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white mb-3" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} />
         <input type="password" className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white mb-4" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} />
         <button disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2.5 font-medium disabled:opacity-50">{loading ? 'Signing in…' : 'Sign In'}</button>
