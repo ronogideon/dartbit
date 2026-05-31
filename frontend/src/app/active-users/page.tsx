@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { getOnlineSessions } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
+import SubscriberDetail from '@/components/SubscriberDetail';
 import { Activity, Wifi, Clock } from 'lucide-react';
 import SearchInput from '@/components/ui/SearchInput';
 
@@ -10,7 +11,7 @@ interface Session {
   id: string; username: string; ipAddress?: string; macAddress?: string;
   uploadSpeed?: number; downloadSpeed?: number; uptime?: string;
   router?: { name: string };
-  subscriber?: { id: string; fullName: string; expiresAt?: string };
+  subscriber?: { id: string; fullName: string; expiresAt?: string; service?: string };
 }
 
 function formatSpeed(kbps?: number) {
@@ -50,9 +51,26 @@ export default function ActiveUsersPage() {
   });
 
   const [search, setSearch] = useState('');
+  const [tab, setTab] = useState<'ALL' | 'PPPOE' | 'HOTSPOT' | 'STATIC'>('ALL');
+  const [detailId, setDetailId] = useState<string | null>(null);
   const allS = sessions as Session[];
+  const counts = {
+    ALL: allS.length,
+    PPPOE: allS.filter(s => s.subscriber?.service === 'PPPOE').length,
+    HOTSPOT: allS.filter(s => s.subscriber?.service === 'HOTSPOT').length,
+    STATIC: allS.filter(s => s.subscriber?.service === 'STATIC').length,
+  };
   const sq = search.trim().toLowerCase();
-  const list = sq ? allS.filter(s => (s.username||'').toLowerCase().includes(sq) || (s.ipAddress||'').toLowerCase().includes(sq) || (s.macAddress||'').toLowerCase().includes(sq) || (s.router?.name||'').toLowerCase().includes(sq)) : allS;
+  const list = allS.filter(s =>
+    (tab === 'ALL' || s.subscriber?.service === tab) &&
+    (!sq || (s.username || '').toLowerCase().includes(sq) || (s.ipAddress || '').toLowerCase().includes(sq) || (s.macAddress || '').toLowerCase().includes(sq) || (s.router?.name || '').toLowerCase().includes(sq))
+  );
+  const TABS = [
+    { key: 'ALL' as const, label: 'All' },
+    { key: 'PPPOE' as const, label: 'PPPoE' },
+    { key: 'HOTSPOT' as const, label: 'Hotspot' },
+    { key: 'STATIC' as const, label: 'Static' },
+  ];
 
   return (
     <AppLayout>
@@ -67,6 +85,22 @@ export default function ActiveUsersPage() {
           <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
           <span className="text-sm text-green-600 font-medium">Live</span>
         </div>
+      </div>
+
+      {/* Service tabs with count bubbles */}
+      <div className="flex gap-1 mb-4 border-b border-gray-200 dark:border-gray-800 overflow-x-auto">
+        {TABS.map(t => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px flex items-center gap-2 whitespace-nowrap transition ${tab === t.key ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+          >
+            {t.label}
+            <span className={`text-xs px-1.5 py-0.5 rounded-full ${tab === t.key ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300' : 'bg-gray-100 dark:bg-gray-800 text-gray-500'}`}>
+              {counts[t.key]}
+            </span>
+          </button>
+        ))}
       </div>
 
       <div className="mb-4 max-w-md">
@@ -102,13 +136,17 @@ export default function ActiveUsersPage() {
               return (
                 <tr key={s.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/30">
                   <td className="table-td font-medium">
-                    <div className="flex items-center gap-2">
-                      <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
-                      <div className="min-w-0">
-                        <div className="truncate">{s.username}</div>
-                        {s.subscriber?.fullName && <div className="text-xs text-gray-500 truncate">{s.subscriber.fullName}</div>}
-                      </div>
-                    </div>
+                    <button
+                      onClick={() => s.subscriber?.id && setDetailId(s.subscriber.id)}
+                      disabled={!s.subscriber?.id}
+                      className="flex items-center gap-2 text-left group disabled:cursor-default"
+                    >
+                      <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" title="Online" />
+                      <span className="min-w-0">
+                        <span className={`block truncate ${s.subscriber?.id ? 'text-blue-600 group-hover:underline' : ''}`}>{s.subscriber?.fullName || s.username}</span>
+                        <span className="block text-xs text-gray-500 truncate">{s.username}</span>
+                      </span>
+                    </button>
                   </td>
                   <td className="table-td font-mono text-sm">{s.ipAddress || '-'}</td>
                   <td className="table-td">
@@ -127,6 +165,8 @@ export default function ActiveUsersPage() {
           </tbody>
         </table>
       </div>
+
+      <SubscriberDetail subscriberId={detailId} onClose={() => setDetailId(null)} />
     </AppLayout>
   );
 }

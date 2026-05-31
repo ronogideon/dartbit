@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { getSubscribers, getRouters, getPayments, getOnlineSessions, getSmsBalance } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
+import DashboardAnalytics from '@/components/DashboardAnalytics';
 import SearchInput from '@/components/ui/SearchInput';
 import { Users, Router, Activity, Wallet, TrendingUp, MessageSquare, CreditCard } from 'lucide-react';
 
@@ -150,6 +151,8 @@ export default function DashboardPage() {
           color="bg-orange-600"
         />
       </div>
+
+      <DashboardAnalytics />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Recent Payments */}

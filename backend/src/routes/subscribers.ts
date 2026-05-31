@@ -55,7 +55,19 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       return 0;
     });
 
-    sendSuccess(res, sorted);
+    // Online status: a subscriber is online if a current OnlineSession exists for them.
+    const online = await prisma.onlineSession.findMany({
+      where: tenantId ? { tenantId } : {},
+      select: { subscriberId: true, username: true },
+    });
+    const onlineIds = new Set(online.map(o => o.subscriberId).filter(Boolean) as string[]);
+    const onlineNames = new Set(online.map(o => o.username));
+    const withOnline = sorted.map(s => ({
+      ...s,
+      isOnline: onlineIds.has(s.id) || onlineNames.has(s.username),
+    }));
+
+    sendSuccess(res, withOnline);
   } catch {
     sendError(res, 'Failed to fetch subscribers', 500);
   }

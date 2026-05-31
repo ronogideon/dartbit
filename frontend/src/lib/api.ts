@@ -77,6 +77,18 @@ export const saveProvisionConfig = (routerId: string, data: unknown) => api.post
 
 export const getOnlineSessions = () => api.get('/online-sessions').then((r) => r.data.data);
 
+export interface TenantAnalytics {
+  period: string;
+  totalRevenue: number;
+  paymentTrend: { label: string; amount: number; count: number }[];
+  topByUsers: { name: string; value: number }[];
+  topByIncome: { name: string; value: number }[];
+  topUsers: { username: string; up: number; down: number; total: number }[];
+  dataByService: { PPPOE: number; STATIC: number; HOTSPOT: number };
+}
+export const getAnalytics = (period: string) =>
+  api.get(`/analytics/overview?period=${period}`).then((r) => r.data.data as TenantAnalytics);
+
 export const getTenants = () => api.get('/tenants').then((r) => r.data.data);
 export const getTenantStats = () => api.get('/tenants/stats').then((r) => r.data.data);
 export const createTenant = (data: unknown) => api.post('/tenants', data).then((r) => r.data.data);

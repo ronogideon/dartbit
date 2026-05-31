@@ -6,12 +6,13 @@ import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import SubscriberDetail from '@/components/SubscriberDetail';
+import { formatExpiryRelative } from '@/lib/format';
 import toast from 'react-hot-toast';
 import { Plus, Edit2, Trash2, Search } from 'lucide-react';
 
 interface Subscriber {
   id: string; username: string; fullName: string; phone?: string; email?: string;
-  service: string; isActive: boolean; expiresAt?: string;
+  service: string; isActive: boolean; expiresAt?: string; isOnline?: boolean;
   packageId?: string; routerId?: string; ipAddress?: string; macAddress?: string;
   lastOnlineAt?: string;
   package?: { id: string; name: string }; router?: { id: string; name: string };
@@ -47,6 +48,7 @@ const emptyForm = {
 export default function SubscribersPage() {
   const qc = useQueryClient();
   const [search, setSearch] = useState('');
+  const [tab, setTab] = useState<'ALL' | 'PPPOE' | 'HOTSPOT' | 'STATIC'>('ALL');
   const [modalOpen, setModalOpen] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -136,10 +138,25 @@ export default function SubscribersPage() {
     }
   };
 
-  const filtered = (subscribers as Subscriber[]).filter(s =>
-    s.fullName.toLowerCase().includes(search.toLowerCase()) ||
-    s.username.toLowerCase().includes(search.toLowerCase())
+  const all = subscribers as Subscriber[];
+  const counts = {
+    ALL: all.length,
+    PPPOE: all.filter(s => s.service === 'PPPOE').length,
+    HOTSPOT: all.filter(s => s.service === 'HOTSPOT').length,
+    STATIC: all.filter(s => s.service === 'STATIC').length,
+  };
+  const filtered = all.filter(s =>
+    (tab === 'ALL' || s.service === tab) &&
+    (s.fullName.toLowerCase().includes(search.toLowerCase()) ||
+     s.username.toLowerCase().includes(search.toLowerCase()))
   );
+
+  const TABS = [
+    { key: 'ALL' as const, label: 'All' },
+    { key: 'PPPOE' as const, label: 'PPPoE' },
+    { key: 'HOTSPOT' as const, label: 'Hotspot' },
+    { key: 'STATIC' as const, label: 'Static' },
+  ];
 
   return (
     <AppLayout>
@@ -151,6 +168,22 @@ export default function SubscribersPage() {
         <button onClick={openCreate} className="btn-primary flex items-center gap-2">
           <Plus size={16} /> Add Subscriber
         </button>
+      </div>
+
+      {/* Service tabs with count bubbles */}
+      <div className="flex gap-1 mb-4 border-b border-gray-200 dark:border-gray-800 overflow-x-auto">
+        {TABS.map(t => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px flex items-center gap-2 whitespace-nowrap transition ${tab === t.key ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+          >
+            {t.label}
+            <span className={`text-xs px-1.5 py-0.5 rounded-full ${tab === t.key ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300' : 'bg-gray-100 dark:bg-gray-800 text-gray-500'}`}>
+              {counts[t.key]}
+            </span>
+          </button>
+        ))}
       </div>
 
       <div className="card mb-6">
@@ -165,8 +198,7 @@ export default function SubscribersPage() {
           <table className="w-full">
             <thead className="bg-gray-50 dark:bg-gray-800/50">
               <tr>
-                <th className="table-th">Name</th>
-                <th className="table-th">Username</th>
+                <th className="table-th">Subscriber</th>
                 <th className="table-th">Service</th>
                 <th className="table-th">Package</th>
                 <th className="table-th">Status</th>
@@ -176,19 +208,22 @@ export default function SubscribersPage() {
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
               {isPending ? (
-                <tr><td colSpan={7} className="table-td text-center py-8 text-gray-400">Loading...</td></tr>
+                <tr><td colSpan={6} className="table-td text-center py-8 text-gray-400">Loading...</td></tr>
               ) : filtered.length === 0 ? (
-                <tr><td colSpan={7} className="table-td text-center py-8 text-gray-400">No subscribers found</td></tr>
+                <tr><td colSpan={6} className="table-td text-center py-8 text-gray-400">No subscribers found</td></tr>
               ) : filtered.map(s => {
                 const expired = s.expiresAt && new Date(s.expiresAt) < new Date();
                 return (
                   <tr key={s.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/30">
-                    <td className="table-td font-medium">
-                      <button onClick={() => setDetailId(s.id)} className="text-blue-600 hover:text-blue-700 hover:underline text-left">
-                        {s.fullName}
+                    <td className="table-td">
+                      <button onClick={() => setDetailId(s.id)} className="flex items-center gap-2 text-left group">
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${s.isOnline ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-600'}`} title={s.isOnline ? 'Online' : 'Offline'} />
+                        <span>
+                          <span className="block font-medium text-blue-600 group-hover:underline">{s.fullName}</span>
+                          <span className="block text-xs text-gray-500">{s.username}</span>
+                        </span>
                       </button>
                     </td>
-                    <td className="table-td text-gray-500">{s.username}</td>
                     <td className="table-td"><span className="badge-blue">{s.service}</span></td>
                     <td className="table-td">{s.package?.name || '-'}</td>
                     <td className="table-td">
@@ -196,9 +231,7 @@ export default function SubscribersPage() {
                         {s.isActive && !expired ? 'Active' : expired ? 'Expired' : 'Inactive'}
                       </span>
                     </td>
-                    <td className="table-td text-gray-500">
-                      {s.expiresAt ? new Date(s.expiresAt).toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-'}
-                    </td>
+                    <td className="table-td text-gray-500">{formatExpiryRelative(s.expiresAt)}</td>
                     <td className="table-td">
                       <div className="flex items-center gap-2">
                         <button onClick={() => openEdit(s)} className="p-1.5 text-gray-400 hover:text-blue-600 transition-colors"><Edit2 size={15} /></button>
