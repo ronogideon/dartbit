@@ -160,7 +160,17 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
       }
     }
 
-    await prisma.subscriber.delete({ where: { id: req.params.id } });
+    // Remove the subscriber AND their session/usage data to keep server storage low.
+    // OnlineSession (live) + SessionRecord (history + data usage) are deleted; Payment rows are
+    // financial records, so we keep them but unlink the subscriber. Done in one transaction.
+    await prisma.$transaction([
+      prisma.onlineSession.deleteMany({ where: { subscriberId: req.params.id } }),
+      prisma.onlineSession.deleteMany({ where: { tenantId: sub.tenantId, username: sub.username } }),
+      prisma.sessionRecord.deleteMany({ where: { subscriberId: req.params.id } }),
+      prisma.sessionRecord.deleteMany({ where: { tenantId: sub.tenantId, username: sub.username } }),
+      prisma.payment.updateMany({ where: { subscriberId: req.params.id }, data: { subscriberId: null } }),
+      prisma.subscriber.delete({ where: { id: req.params.id } }),
+    ]);
     sendSuccess(res, { deleted: true });
   } catch (err) {
     console.error('Delete subscriber error:', err instanceof Error ? err.message : err);

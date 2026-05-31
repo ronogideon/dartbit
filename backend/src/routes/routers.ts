@@ -87,12 +87,17 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const routerId = req.params.id;
 
-    // Delete related records first (no schema cascade is set on Subscriber/OnlineSession FKs)
+    // Remove ALL data tied to this router to keep server storage low. Session history and
+    // usage (SessionRecord), live sessions, the command queue, interfaces and provisioning
+    // config are deleted. Subscribers are unlinked (not deleted — they may move to another
+    // router). MpesaTransaction rows are financial records: we keep them but unlink the router.
     await prisma.$transaction([
       prisma.onlineSession.deleteMany({ where: { routerId } }),
+      prisma.sessionRecord.deleteMany({ where: { routerId } }),
+      prisma.routerCommand.deleteMany({ where: { routerId } }),
       prisma.routerInterface.deleteMany({ where: { routerId } }),
       prisma.routerProvisioningConfig.deleteMany({ where: { routerId } }),
-      // Unlink subscribers (don't delete them — just remove the router link)
+      prisma.mpesaTransaction.updateMany({ where: { routerId }, data: { routerId: null } }),
       prisma.subscriber.updateMany({ where: { routerId }, data: { routerId: null } }),
       prisma.mikrotikRouter.delete({ where: { id: routerId } }),
     ]);

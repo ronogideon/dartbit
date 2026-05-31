@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import * as API from '@/lib/api';
-import { LayoutDashboard, Building2, Wallet, Users, LogOut, Plus, Trash2, KeyRound, Copy } from 'lucide-react';
+import { LayoutDashboard, Building2, Wallet, Users, LogOut, Plus, Trash2, KeyRound, Copy, Zap } from 'lucide-react';
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -63,12 +63,20 @@ function Login({ onAuthed }: { onAuthed: (role: string) => void }) {
   return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
       <form onSubmit={submit} className="w-full max-w-sm bg-gray-900 rounded-2xl p-7 border border-gray-800">
-        <h1 className="text-xl font-bold text-white mb-1">Dartbit Superadmin</h1>
-        <p className="text-sm text-gray-400 mb-5">Platform analytics & control</p>
+        <div className="flex items-center gap-2.5 mb-4">
+          <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-600/30">
+            <Zap size={22} className="text-white" />
+          </div>
+          <div>
+            <h1 className="text-lg font-bold text-white leading-tight">Dartbit</h1>
+            <p className="text-xs text-gray-400">Superadmin</p>
+          </div>
+        </div>
+        <p className="text-sm text-gray-400 mb-5">Platform analytics &amp; control</p>
         <input className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white mb-3" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} />
         <input type="password" className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white mb-4" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} />
         <button disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2.5 font-medium disabled:opacity-50">{loading ? 'Signing in…' : 'Sign In'}</button>
-        <p className="text-[10px] text-gray-600 mt-4 text-center break-all">API: {process.env.NEXT_PUBLIC_API_URL || 'https://dartbit-production.up.railway.app'}</p>
+        <p className="text-[10px] text-gray-600 mt-4 text-center break-all">API: {process.env.NEXT_PUBLIC_API_URL || 'https://api.dartbittech.com'}</p>
       </form>
     </div>
   );
@@ -80,8 +88,11 @@ function Dashboard({ role, onLogout }: { role: string; onLogout: () => void }) {
   return (
     <div className="min-h-screen bg-gray-950 text-white">
       <header className="border-b border-gray-800 px-4 sm:px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3 min-w-0">
-          <h1 className="font-bold truncate">Dartbit Superadmin</h1>
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shrink-0">
+            <Zap size={17} className="text-white" />
+          </div>
+          <h1 className="font-bold truncate">Dartbit <span className="text-gray-400 font-normal">Superadmin</span></h1>
           {!isFull && <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full shrink-0">View Only</span>}
         </div>
         <button onClick={onLogout} className="text-gray-400 hover:text-white flex items-center gap-1.5 text-sm shrink-0"><LogOut size={16} /> <span className="hidden sm:inline">Log out</span></button>
