@@ -306,11 +306,39 @@ function Overview() {
         <h2 className="text-lg font-bold mb-3">Central M-Pesa Collection</h2>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           <Card label="Total Collected" value={kes(c.collectedTotal)} />
-          <Card label="Fee Retained (1%)" value={kes(c.feeRetained)} sub="Dartbit income" />
+          <Card label="Total Retained Fees (1%)" value={kes(data.totalRetainedFees ?? c.feeRetained)} sub="Dartbit income, all-time" />
           <Card label="Owed to Tenants" value={kes(c.owedToTenants)} />
           <Card label="Disbursed" value={kes(c.disbursed)} />
           <Card label="Pending Payout" value={kes(c.pendingPayout)} sub="awaiting settlement" />
           <Card label="Leftover" value={kes(c.leftover)} sub="≈ fee retained" />
+        </div>
+      </div>
+
+      {/* Disbursement record: net amounts to settle to each tenant from collected funds */}
+      <div>
+        <h2 className="text-lg font-bold mb-1">Disbursements to Settle</h2>
+        <p className="text-sm text-gray-400 mb-3">
+          Net amounts owed to tenants from central collections. Settle these from collected funds — Dartbit keeps the 1% fee shown.
+        </p>
+        <div className="overflow-x-auto bg-gray-900 rounded-xl border border-gray-800">
+          <table className="w-full text-sm">
+            <thead><tr className="text-left text-gray-400 border-b border-gray-800">
+              <th className="p-3">Tenant</th><th className="p-3">Transactions</th>
+              <th className="p-3">Fee Retained</th><th className="p-3">Amount to Settle</th>
+            </tr></thead>
+            <tbody>
+              {(data.disbursementRecord || []).length === 0 ? (
+                <tr><td colSpan={4} className="p-6 text-center text-gray-500">Nothing pending — all collections settled.</td></tr>
+              ) : (data.disbursementRecord || []).map((d: { tenantId: string; tenantName: string; amountDue: number; feeRetained: number; transactions: number }) => (
+                <tr key={d.tenantId} className="border-b border-gray-800/50">
+                  <td className="p-3 font-medium">{d.tenantName}</td>
+                  <td className="p-3 text-gray-400">{d.transactions}</td>
+                  <td className="p-3 text-purple-300">{kes(d.feeRetained)}</td>
+                  <td className="p-3 font-semibold text-amber-400">{kes(d.amountDue)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

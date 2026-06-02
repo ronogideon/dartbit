@@ -114,8 +114,11 @@ router.get('/overview', async (req: AuthRequest, res: Response) => {
     const usageByUser = new Map<string, { username: string; up: number; down: number }>();
     const dataByService: Record<string, number> = { PPPOE: 0, STATIC: 0, HOTSPOT: 0 };
     for (const r of records) {
-      const down = Number(r.rxBytes);
-      const up = Number(r.txBytes);
+      // From the router's perspective: rx-byte / bytes-in = data the router RECEIVED from the
+      // client = the client's UPLOAD. tx-byte / bytes-out = data the router SENT to the client
+      // = the client's DOWNLOAD.
+      const up = Number(r.rxBytes);
+      const down = Number(r.txBytes);
       dataByService[r.service] = (dataByService[r.service] || 0) + down + up;
       const key = r.subscriberId || r.username;
       const cur = usageByUser.get(key) || { username: r.username, up: 0, down: 0 };

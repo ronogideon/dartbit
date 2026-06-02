@@ -214,7 +214,12 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   const sessionSec = tx.durationMinutes * 60;
   const expiresAt = new Date(Date.now() + tx.durationMinutes * 60 * 1000);
   const profileName = pkg ? `db-h-${pkg.id.substring(0, 8)}` : 'dartbit-default';
-  const speed = pkg ? `${pkg.speedDownKbps || 5120}k/${pkg.speedUpKbps || 5120}k` : '5120k/5120k';
+  // RouterOS rate-limit is "rx/tx" = "upload/download" from the ROUTER's perspective. The
+  // customer's DOWNLOAD is the router's TX, and their UPLOAD is the router's RX. So the string
+  // must be `${upload}/${download}` = `${speedUpKbps}k/${speedDownKbps}k`.
+  const upK = pkg?.speedUpKbps || 5120;
+  const downK = pkg?.speedDownKbps || 5120;
+  const speed = `${upK}k/${downK}k`;
 
   // Build router commands. The profile MUST have address-pool=dhcp-pool. CRITICAL for the
   // "only the purchasing device" requirement: each hotspot user is bound to tx.clientMac via
@@ -222,6 +227,9 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   // MAC. shared-users=1 means one simultaneous session. Together these stop credential sharing.
   const macBind = tx.clientMac ? ` mac-address=${tx.clientMac}` : '';
   const cmds: string[] = [];
+  // Create-or-update the profile in a single resilient block, then verify it exists before
+  // adding users (a brand-new package's profile has never existed on this router, so we must
+  // be sure the add succeeded before the user-add / auto-login depends on it).
   cmds.push(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} address-pool=dhcp-pool }`);
   cmds.push(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=yes address-pool=dhcp-pool`);
   // Primary user (D-name + 4-digit pwd), bound to the purchasing MAC. Recreate fresh.
@@ -234,15 +242,21 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   }
 
   // Auto-login the captured device so the customer goes online WITHOUT retyping anything.
-  // Put it in the SAME command as user-creation, after a short delay, so the user is
-  // guaranteed to exist when the login runs (separate queue items are separate poll cycles,
-  // which can race; a delay inside one imported command is reliable). We try the active
-  // login, and if the client host isn't known yet, make it known then retry.
+  // For a freshly created package the profile + user were only just added in the lines above,
+  // so we (a) wait briefly, (b) make sure the client's IP↔MAC is a known hotspot host/binding,
+  // then (c) attempt the active login with a couple of retries. All inside one imported script
+  // so it runs as a single reliable unit rather than racing across poll cycles.
   if (tx.clientMac) {
     const ipPart = tx.clientIp ? ` ip=${tx.clientIp}` : '';
-    cmds.push(`:delay 1s`);
-    cmds.push(`:do { /ip hotspot active login user=${loginUser}${ipPart} mac-address=${tx.clientMac} } on-error={ :log warning "Dartbit: auto-login failed ${loginUser}" }`);
-    cmds.push(`:log info "Dartbit: auto-login ${loginUser} (${displayName})"`);
+    cmds.push(`:delay 2s`);
+    // Ensure a hotspot IP binding exists for this MAC so the host is known to the hotspot.
+    if (tx.clientIp) {
+      cmds.push(`:if ([:len [/ip hotspot ip-binding find mac-address="${tx.clientMac}"]] = 0) do={ /ip hotspot ip-binding add mac-address=${tx.clientMac} address=${tx.clientIp} type=regular comment="Dartbit auto" }`);
+    }
+    // Try the login up to 3 times, ~2s apart, so a momentarily-unknown host still gets logged in.
+    cmds.push(`:local ok false`);
+    cmds.push(`:for i from=1 to=3 do={ :if ($ok = false) do={ :do { /ip hotspot active login user=${loginUser}${ipPart} mac-address=${tx.clientMac}; :set ok true } on-error={ :delay 2s } } }`);
+    cmds.push(`:if ($ok = false) do={ :log warning "Dartbit: auto-login failed ${loginUser}" } else={ :log info "Dartbit: auto-login ${loginUser} (${displayName})" }`);
   }
 
   if (tx.routerId) await enqueueCommand(tx.routerId, cmds.join('\n'));
