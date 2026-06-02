@@ -2,7 +2,7 @@
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getSettings, updateSettings, getBillingCurrent, getBillingHistory, billingCheckout, getSystemUsers, createSystemUser, updateSystemUser, resetSystemUserPassword, deleteSystemUser, getPaymentConfig, updatePaymentConfig, getNotificationConfig, saveNotificationConfig, getSmsBalance, sendTestSms, getTenantInfo, type NotificationConfig } from '@/lib/api';
+import { getSettings, updateSettings, getBillingCurrent, getBillingHistory, billingCheckout, getSystemUsers, createSystemUser, updateSystemUser, resetSystemUserPassword, deleteSystemUser, getPaymentConfig, updatePaymentConfig, getNotificationConfig, saveNotificationConfig, getSmsBalance, sendTestSms, getTenantInfo, getBranding, saveBranding, type NotificationConfig } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import toast from 'react-hot-toast';
 import { Settings as SettingsIcon, CreditCard, Users, Plus, Trash2, KeyRound, Copy, Check, Wallet, Bell, Send } from 'lucide-react';
@@ -80,16 +80,25 @@ function GeneralTab() {
   const qc = useQueryClient();
   const { data: settings, isLoading } = useQuery({ queryKey: ['settings'], queryFn: getSettings });
   const { data: tenant } = useQuery({ queryKey: ['tenant-info'], queryFn: getTenantInfo, staleTime: 60000 });
+  const { data: branding } = useQuery({ queryKey: ['branding-general'], queryFn: getBranding });
   const [form, setForm] = useState<Settings>({
     currency: 'KES', timezone: 'Africa/Nairobi', backendUrl: '', smsSenderId: '', smsApiKey: '', emailFromAddress: '',
   });
+  const [support, setSupport] = useState('');
   const [copied, setCopied] = useState(false);
   useEffect(() => { if (settings) setForm(settings as Settings); }, [settings]);
+  useEffect(() => { if (branding) setSupport(branding.supportPhone || branding.signupPhone || ''); }, [branding]);
 
   const updateMut = useMutation({
     mutationFn: updateSettings,
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['settings'] }); toast.success('Settings saved'); },
     onError: () => toast.error('Failed to save settings'),
+  });
+
+  const supportMut = useMutation({
+    mutationFn: () => saveBranding({ supportPhone: support.trim() }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['branding-general'] }); qc.invalidateQueries({ queryKey: ['branding-edit'] }); toast.success('Support number saved'); },
+    onError: () => toast.error('Failed to save support number'),
   });
 
   if (isLoading) return <div className="text-center py-8 text-gray-400">Loading...</div>;
@@ -129,6 +138,28 @@ function GeneralTab() {
             <input className="input" value={form.timezone || ''} onChange={e => setForm(f => ({ ...f, timezone: e.target.value }))} />
           </div>
         </div>
+      </div>
+
+      {/* Support number — shown on the customer & hotspot portals as a tap-to-call link */}
+      <div className="card p-6">
+        <h2 className="font-semibold mb-1">Support number</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Shown on your customer portal and hotspot page. Tapping it on a phone starts a call. Defaults to your sign-up number.
+        </p>
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className="label">Phone number</label>
+            <input type="tel" className="input max-w-xs" value={support} onChange={e => setSupport(e.target.value)} placeholder="07XX XXX XXX" />
+          </div>
+          <button onClick={() => supportMut.mutate()} disabled={supportMut.isPending} className="btn-primary">
+            {supportMut.isPending ? 'Saving…' : 'Save number'}
+          </button>
+        </div>
+        {branding?.signupPhone && support !== branding.signupPhone && (
+          <button onClick={() => setSupport(branding.signupPhone)} className="block mt-2 text-xs text-blue-600 hover:underline">
+            Use sign-up number ({branding.signupPhone})
+          </button>
+        )}
       </div>
 
       <button onClick={() => updateMut.mutate(form)} disabled={updateMut.isPending} className="btn-primary w-full">

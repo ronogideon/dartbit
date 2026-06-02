@@ -27,3 +27,9 @@
   .badge-blue { @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400; }
   .badge-gray { @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300; }
 }
+
+/* Tenant appearance colour wheel sizing */
+.brand-wheel .react-colorful { width: 180px; height: 180px; }
+.brand-wheel .react-colorful__saturation { border-radius: 8px 8px 0 0; }
+.brand-wheel .react-colorful__hue { height: 22px; border-radius: 0 0 8px 8px; }
+.brand-wheel .react-colorful__pointer { width: 18px; height: 18px; }
