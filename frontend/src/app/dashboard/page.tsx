@@ -37,8 +37,6 @@ export default function DashboardPage() {
   const activeSubscribers = (subscribers as { isActive: boolean }[]).filter((s) => s.isActive).length;
   const onlineRouters = (routers as { status: string }[]).filter((r) => r.status === 'ONLINE').length;
   const totalRevenue = (payments as { amount: number }[]).reduce((sum, p) => sum + p.amount, 0);
-  const totalExpenses = expenseSummary?.total || 0;
-  const profit = totalRevenue - totalExpenses;
 
   // Earned this month: sum of payments from the 1st of the current month (00:00) to now.
   const monthStart = new Date();
@@ -48,6 +46,10 @@ export default function DashboardPage() {
     .filter((p) => new Date(p.createdAt) >= monthStart)
     .reduce((sum, p) => sum + p.amount, 0);
   const monthLabel = monthStart.toLocaleString(undefined, { month: 'long' });
+
+  // Profit for the current month = this month's revenue − this month's expenses.
+  const expensesThisMonth = expenseSummary?.thisMonth || 0;
+  const profit = earnedThisMonth - expensesThisMonth;
 
   // Global search across subscribers, routers, and payments. Shows categorized quick
   // results that link to the relevant page.
@@ -154,13 +156,13 @@ export default function DashboardPage() {
           color="bg-orange-600"
         />
         <StatCard
-          title="Total Expenses"
-          value={`KES ${totalExpenses.toLocaleString()}`}
+          title={`Expenses in ${monthLabel}`}
+          value={`KES ${expensesThisMonth.toLocaleString()}`}
           icon={Receipt}
           color="bg-rose-600"
         />
         <StatCard
-          title="Profit"
+          title={`Profit in ${monthLabel}`}
           value={`KES ${profit.toLocaleString()}`}
           icon={Wallet}
           color={profit >= 0 ? 'bg-emerald-600' : 'bg-red-600'}
