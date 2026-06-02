@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/lib/api';
 import toast from 'react-hot-toast';
+import { fontStack } from '@/lib/fonts';
 import { Wifi, Calendar, Download, Upload, LogOut, Clock, RefreshCw, Zap } from 'lucide-react';
 
 interface Account {
@@ -25,6 +26,7 @@ function fmtDur(mins: number): string {
 export default function PortalApp({ subdomain }: { subdomain?: string }) {
   const qs = subdomain ? `?t=${encodeURIComponent(subdomain)}` : '';
   const [tenantName, setTenantName] = useState('');
+  const [brand, setBrand] = useState<{ logoUrl?: string | null; themeColor?: string | null; fontFamily?: string | null; supportPhone?: string | null }>({});
   const [token, setToken] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -36,7 +38,13 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
   const [renewing, setRenewing] = useState(false);
 
   useEffect(() => {
-    api.get(`/portal/tenant${qs}`).then(r => { if (r.data.success) setTenantName(r.data.tenant.name); }).catch(() => {});
+    api.get(`/portal/tenant${qs}`).then(r => {
+      if (r.data.success) {
+        const t = r.data.tenant;
+        setTenantName(t.name);
+        setBrand({ logoUrl: t.logoUrl, themeColor: t.themeColor, fontFamily: t.fontFamily, supportPhone: t.supportPhone });
+      }
+    }).catch(() => {});
     // If the unified login already authenticated a customer, pick up the handoff token.
     try {
       const handoff = sessionStorage.getItem('dartbit_portal_token');
@@ -101,14 +109,23 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
 
   const logout = () => { setToken(''); setAccount(null); setUsername(''); setPassword(''); };
 
+  const accent = brand.themeColor && /^#[0-9a-f]{6}$/i.test(brand.themeColor) ? brand.themeColor : '#2563eb';
+  const fontStyle = brand.fontFamily ? { fontFamily: fontStack(brand.fontFamily) } : undefined;
+  const support = brand.supportPhone || '';
+  const SupportFooter = support ? (
+    <p className="text-center text-sm text-gray-400 mt-5">
+      Need help? <a href={`tel:${support}`} className="font-semibold hover:underline" style={{ color: accent }}>{support}</a>
+    </p>
+  ) : null;
+
   // ===== Login screen =====
   if (!token || !account) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-950 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-950 flex items-center justify-center p-4" style={fontStyle}>
         <div className="w-full max-w-sm">
           <div className="text-center mb-6">
-            <div className="inline-flex w-14 h-14 rounded-2xl bg-blue-600 items-center justify-center mb-3">
-              <Wifi className="text-white" size={26} />
+            <div className="inline-flex w-14 h-14 rounded-2xl items-center justify-center mb-3 overflow-hidden" style={{ background: accent }}>
+              {brand.logoUrl ? <img src={brand.logoUrl} alt={tenantName} className="w-full h-full object-cover" /> : <Wifi className="text-white" size={26} />}
             </div>
             <h1 className="text-xl font-bold text-white">{tenantName || 'Subscriber Portal'}</h1>
             <p className="text-sm text-gray-400">Sign in to manage your account</p>
@@ -122,11 +139,12 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
               <label className="text-xs text-gray-400 mb-1 block">Password</label>
               <input type="password" className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-white" value={password} onChange={e => setPassword(e.target.value)} placeholder="Your password" />
             </div>
-            <button type="submit" disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2.5 font-medium disabled:opacity-50">
+            <button type="submit" disabled={loading} className="w-full text-white rounded-lg py-2.5 font-medium disabled:opacity-50" style={{ background: accent }}>
               {loading ? 'Signing in…' : 'Sign In'}
             </button>
             <p className="text-xs text-gray-500 text-center">PPPoE customers use your account login. Hotspot customers use the credentials sent to you on purchase.</p>
           </form>
+          {SupportFooter}
         </div>
       </div>
     );
@@ -134,12 +152,15 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
 
   // ===== Account dashboard =====
   return (
-    <div className="min-h-screen bg-gray-950 text-white p-4">
+    <div className="min-h-screen bg-gray-950 text-white p-4" style={fontStyle}>
       <div className="max-w-2xl mx-auto space-y-4">
         <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-lg font-bold">{tenantName}</h1>
-            <p className="text-sm text-gray-400">Hi, {account.name}</p>
+          <div className="flex items-center gap-3">
+            {brand.logoUrl && <img src={brand.logoUrl} alt="" className="w-9 h-9 rounded-lg object-cover" />}
+            <div>
+              <h1 className="text-lg font-bold">{tenantName}</h1>
+              <p className="text-sm text-gray-400">Hi, {account.name}</p>
+            </div>
           </div>
           <button onClick={logout} className="text-gray-400 hover:text-white flex items-center gap-1.5 text-sm"><LogOut size={16} /> Log out</button>
         </div>
@@ -211,6 +232,8 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
             </div>
           </div>
         )}
+
+        {SupportFooter}
       </div>
     </div>
   );

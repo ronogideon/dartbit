@@ -40,6 +40,57 @@ router.get('/resolve', async (req: Request, res: Response) => {
   }
 });
 
+// GET /tenants/branding — current tenant's appearance + support settings.
+router.get('/branding', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return sendError(res, 'No tenant', 400);
+    const t = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { name: true, logoUrl: true, themeColor: true, fontFamily: true, supportPhone: true, phone: true },
+    });
+    if (!t) return sendError(res, 'Tenant not found', 404);
+    sendSuccess(res, {
+      name: t.name,
+      logoUrl: t.logoUrl || null,
+      themeColor: t.themeColor || '#2563eb',
+      fontFamily: t.fontFamily || 'default',
+      supportPhone: t.supportPhone || t.phone || '',
+      signupPhone: t.phone || '',
+    });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
+// PUT /tenants/branding — update appearance + support number. Tenant-admin only.
+const brandingSchema = z.object({
+  themeColor: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Invalid colour').optional().nullable(),
+  fontFamily: z.string().max(40).optional().nullable(),
+  // logo as a data URL (base64). Capped to keep the row small (~200KB of base64).
+  logoUrl: z.string().max(300000).optional().nullable(),
+  supportPhone: z.string().max(20).optional().nullable(),
+});
+router.put('/branding', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return sendError(res, 'No tenant', 400);
+    if (req.user?.role !== 'TENANT_ADMIN') return sendError(res, 'Not authorized', 403);
+    const parsed = brandingSchema.safeParse(req.body);
+    if (!parsed.success) return sendError(res, parsed.error.errors[0]?.message || 'Invalid input', 400);
+    const d = parsed.data;
+    const data: Record<string, unknown> = {};
+    if (d.themeColor !== undefined) data.themeColor = d.themeColor;
+    if (d.fontFamily !== undefined) data.fontFamily = d.fontFamily;
+    if (d.logoUrl !== undefined) data.logoUrl = d.logoUrl;
+    if (d.supportPhone !== undefined) data.supportPhone = d.supportPhone;
+    const t = await prisma.tenant.update({ where: { id: tenantId }, data, select: { logoUrl: true, themeColor: true, fontFamily: true, supportPhone: true } });
+    sendSuccess(res, t);
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
 // GET /tenants/my — must be before router.use(authenticate, requireSuperAdmin)
 router.get('/my', authenticate, async (req: AuthRequest, res: Response) => {
   try {

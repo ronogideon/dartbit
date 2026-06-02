@@ -54,6 +54,9 @@ model Tenant {
   subdomain     String       @unique
   domain        String?      @unique
   logoUrl       String?
+  themeColor    String?                  // brand colour hex, e.g. "#2563eb"; defaults to blue
+  fontFamily    String?                  // chosen font family key
+  supportPhone  String?                  // shown on customer + hotspot portals; defaults to phone
   phone         String?
   isActive      Boolean      @default(true)
   status        TenantStatus @default(TRIAL)

@@ -26,11 +26,11 @@ export function extractSubdomain(req: Request): string | null {
   return null;
 }
 
-export async function resolveTenantBySubdomain(req: Request): Promise<{ id: string; name: string; subdomain: string } | null> {
+export async function resolveTenantBySubdomain(req: Request): Promise<{ id: string; name: string; subdomain: string; logoUrl: string | null; themeColor: string | null; fontFamily: string | null; supportPhone: string | null; phone: string | null } | null> {
   const sub = extractSubdomain(req);
   if (!sub) return null;
   return prisma.tenant.findUnique({
     where: { subdomain: sub },
-    select: { id: true, name: true, subdomain: true },
+    select: { id: true, name: true, subdomain: true, logoUrl: true, themeColor: true, fontFamily: true, supportPhone: true, phone: true },
   });
 }

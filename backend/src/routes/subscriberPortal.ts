@@ -40,11 +40,22 @@ function authSubscriber(req: SubReq, res: Response, next: () => void) {
   }
 }
 
-// GET /portal/tenant — public: returns tenant branding for the login page
+// GET /portal/tenant — public: returns tenant branding for the login page + portal
 router.get('/tenant', async (req: Request, res: Response) => {
   const t = await resolveTenant(req);
   if (!t) return res.status(404).json({ success: false, error: 'Unknown portal' });
-  res.json({ success: true, tenant: { name: t.name, subdomain: t.subdomain } });
+  res.json({
+    success: true,
+    tenant: {
+      name: t.name,
+      subdomain: t.subdomain,
+      logoUrl: t.logoUrl || null,
+      themeColor: t.themeColor || null,
+      fontFamily: t.fontFamily || null,
+      // Support number to display on the portal; defaults to the registered phone.
+      supportPhone: t.supportPhone || t.phone || null,
+    },
+  });
 });
 
 // POST /portal/login — authenticate a subscriber.

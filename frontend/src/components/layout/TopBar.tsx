@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/lib/auth';
 import { useTheme } from '@/lib/useTheme';
 import { getTenantInfo } from '@/lib/api';
-import { Menu, Sun, Moon, Settings as SettingsIcon, LogOut, Building2, X } from 'lucide-react';
+import { Menu, Sun, Moon, Settings as SettingsIcon, LogOut, Building2, X, Palette } from 'lucide-react';
 import clsx from 'clsx';
 
 interface TenantInfo {
@@ -114,6 +114,15 @@ export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
                 >
                   <SettingsIcon size={16} /> Tenant account &amp; settings
                 </Link>
+                {isTenantAdmin && (
+                  <Link
+                    href="/settings/appearance"
+                    onClick={() => setAccountOpen(false)}
+                    className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
+                  >
+                    <Palette size={16} /> Appearance
+                  </Link>
+                )}
                 <button
                   onClick={() => { setAccountOpen(false); toggle(); }}
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"

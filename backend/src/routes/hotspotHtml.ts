@@ -26,6 +26,10 @@ router.get('/login', async (req: Request, res: Response) => {
     backendUrl = 'https://' + backendUrl;
 
     const tenantName = r.tenant.name.replace(/[<>"&]/g, '');
+    // Tenant branding: accent colour, logo, and support number (defaults to registered phone).
+    const accent = (r.tenant.themeColor && /^#[0-9a-fA-F]{6}$/.test(r.tenant.themeColor)) ? r.tenant.themeColor : '#2563eb';
+    const logoUrl = r.tenant.logoUrl || '';
+    const supportPhone = (r.tenant.supportPhone || r.tenant.phone || '').replace(/[<>"&]/g, '');
 
     const html = `<!doctype html>
 <html lang="en">
@@ -34,20 +38,22 @@ router.get('/login', async (req: Request, res: Response) => {
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
 <title>${tenantName} WiFi</title>
 <style>
+:root{--accent:${accent}}
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#030712;color:#fff;min-height:100vh;-webkit-font-smoothing:antialiased}
 body{display:flex;align-items:center;justify-content:center;padding:16px;min-height:100vh}
 .wrap{width:100%;max-width:400px}
 .brand{text-align:center;margin-bottom:24px}
-.logo-box{width:56px;height:56px;background:#2563eb;border-radius:16px;display:flex;align-items:center;justify-content:center;margin:0 auto 12px;box-shadow:0 10px 30px rgba(37,99,235,.4)}
+.logo-box{width:56px;height:56px;background:var(--accent);border-radius:16px;display:flex;align-items:center;justify-content:center;margin:0 auto 12px;box-shadow:0 10px 30px rgba(0,0,0,.4);overflow:hidden}
 .logo-box svg{width:28px;height:28px;color:#fff}
+.logo-box img{width:100%;height:100%;object-fit:cover}
 .brand h1{font-size:24px;font-weight:700;color:#fff;letter-spacing:-.5px}
 .brand p{color:#9ca3af;margin-top:4px;font-size:13px}
 .card{background:#111827;border:1px solid #1f2937;border-radius:16px;padding:20px;box-shadow:0 20px 50px rgba(0,0,0,.5)}
 .tabs{display:flex;gap:2px;margin-bottom:18px;background:#030712;padding:3px;border-radius:10px;border:1px solid #1f2937}
 .tab{flex:1;padding:9px 6px;text-align:center;font-size:12px;font-weight:600;color:#6b7280;cursor:pointer;border-radius:8px;transition:all .15s;user-select:none}
 .tab:hover{color:#9ca3af}
-.tab.active{background:#2563eb;color:#fff;box-shadow:0 4px 10px rgba(37,99,235,.3)}
+.tab.active{background:var(--accent);color:#fff}
 .panel{display:none}
 .panel.active{display:block}
 h2{font-size:15px;font-weight:600;color:#fff;margin-bottom:4px}
@@ -56,15 +62,15 @@ label{display:block;font-size:12px;font-weight:500;color:#d1d5db;margin-bottom:6
 input{width:100%;padding:10px 12px;border:1px solid #374151;border-radius:8px;font-size:14px;outline:none;background:#1f2937;color:#fff;transition:border .15s,box-shadow .15s;margin-bottom:12px}
 input.code{letter-spacing:3px;text-transform:uppercase;text-align:center;font-weight:700;font-size:18px}
 input::placeholder{color:#6b7280}
-input:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.2)}
-button.primary{width:100%;padding:11px;background:#2563eb;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:background .15s;display:flex;align-items:center;justify-content:center;gap:6px}
-button.primary:hover{background:#1d4ed8}
+input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,0,0,.2)}
+button.primary{width:100%;padding:11px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:filter .15s;display:flex;align-items:center;justify-content:center;gap:6px}
+button.primary:hover{filter:brightness(.9)}
 button.primary:disabled{opacity:.5;cursor:not-allowed}
 button.primary svg{width:14px;height:14px}
 .pkg-list{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
 .pkg-card{background:#0b1220;border:1px solid #1f2937;border-radius:10px;padding:12px;cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:space-between}
 .pkg-card:hover{border-color:#374151;background:#111827}
-.pkg-card.selected{border-color:#2563eb;background:rgba(37,99,235,.08);box-shadow:0 0 0 1px #2563eb}
+.pkg-card.selected{border-color:var(--accent);background:rgba(0,0,0,.2);box-shadow:0 0 0 1px var(--accent)}
 .pkg-name{font-size:14px;font-weight:600;color:#fff;margin-bottom:2px}
 .pkg-meta{font-size:11px;color:#9ca3af}
 .pkg-price{font-size:16px;font-weight:700;color:#22c55e;text-align:right}
@@ -92,7 +98,7 @@ button.primary svg{width:14px;height:14px}
 
   <div class="brand">
     <div class="logo-box">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+      ${logoUrl ? `<img src="${logoUrl}" alt="${tenantName}">` : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>`}
     </div>
     <h1>${tenantName}</h1>
     <p>WiFi Sign-in</p>
@@ -147,7 +153,7 @@ button.primary svg{width:14px;height:14px}
     <div id="status" class="status"></div>
   </div>
 
-  <div class="footer">Powered by Dartbit</div>
+  <div class="footer">${supportPhone ? `Need help? <a href="tel:${supportPhone}" style="color:var(--accent);font-weight:600;text-decoration:none">${supportPhone}</a>` : 'Powered by Dartbit'}</div>
 </div>
 
 <form id="mikrotik-login" name="login" action="$(link-login-only)" method="post" style="display:none">

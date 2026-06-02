@@ -141,6 +141,18 @@ export const resolveSubdomain = (sub: string) =>
 // Tenant info
 export const getTenantInfo = () => api.get('/tenants/my').then(r => r.data.data);
 
+export interface TenantBranding {
+  name: string;
+  logoUrl: string | null;
+  themeColor: string;
+  fontFamily: string;
+  supportPhone: string;
+  signupPhone: string;
+}
+export const getBranding = () => api.get('/tenants/branding').then(r => r.data.data as TenantBranding);
+export const saveBranding = (data: { themeColor?: string; fontFamily?: string; logoUrl?: string | null; supportPhone?: string }) =>
+  api.put('/tenants/branding', data).then(r => r.data.data);
+
 // Router actions
 export const rebootRouter = (id: string) => api.post(`/mikrotiks/${id}/reboot`).then(r => r.data.data);
 export const reprovisionRouter = (id: string) => api.post(`/mikrotiks/${id}/reprovision`).then(r => r.data.data);
