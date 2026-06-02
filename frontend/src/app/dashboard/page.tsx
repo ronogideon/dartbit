@@ -2,11 +2,11 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
-import { getSubscribers, getRouters, getPayments, getOnlineSessions, getSmsBalance } from '@/lib/api';
+import { getSubscribers, getRouters, getPayments, getOnlineSessions, getSmsBalance, getExpenseSummary } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import DashboardAnalytics from '@/components/DashboardAnalytics';
 import SearchInput from '@/components/ui/SearchInput';
-import { Users, Router, Activity, Wallet, TrendingUp, MessageSquare, CreditCard } from 'lucide-react';
+import { Users, Router, Activity, Wallet, TrendingUp, MessageSquare, CreditCard, Receipt } from 'lucide-react';
 
 function StatCard({ title, value, icon: Icon, color }: {
   title: string; value: string | number; icon: React.ElementType; color: string;
@@ -32,10 +32,13 @@ export default function DashboardPage() {
   const { data: payments = [] } = useQuery({ queryKey: ['payments'], queryFn: getPayments });
   const { data: sessions = [] } = useQuery({ queryKey: ['online-sessions'], queryFn: getOnlineSessions, refetchInterval: 2000 });
   const { data: smsBalance } = useQuery({ queryKey: ['sms-balance'], queryFn: getSmsBalance, retry: false, refetchInterval: 60000 });
+  const { data: expenseSummary } = useQuery({ queryKey: ['expense-summary'], queryFn: getExpenseSummary, retry: false });
 
   const activeSubscribers = (subscribers as { isActive: boolean }[]).filter((s) => s.isActive).length;
   const onlineRouters = (routers as { status: string }[]).filter((r) => r.status === 'ONLINE').length;
   const totalRevenue = (payments as { amount: number }[]).reduce((sum, p) => sum + p.amount, 0);
+  const totalExpenses = expenseSummary?.total || 0;
+  const profit = totalRevenue - totalExpenses;
 
   // Earned this month: sum of payments from the 1st of the current month (00:00) to now.
   const monthStart = new Date();
@@ -149,6 +152,18 @@ export default function DashboardPage() {
           value={`${onlineRouters} / ${(routers as unknown[]).length}`}
           icon={Router}
           color="bg-orange-600"
+        />
+        <StatCard
+          title="Total Expenses"
+          value={`KES ${totalExpenses.toLocaleString()}`}
+          icon={Receipt}
+          color="bg-rose-600"
+        />
+        <StatCard
+          title="Profit"
+          value={`KES ${profit.toLocaleString()}`}
+          icon={Wallet}
+          color={profit >= 0 ? 'bg-emerald-600' : 'bg-red-600'}
         />
       </div>
 

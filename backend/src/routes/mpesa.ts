@@ -6,6 +6,7 @@ import { decryptDarajaCreds, centralDarajaCreds, stkPush, normalizePhone, b2cPay
 import { sendNotification } from '../utils/notifications';
 import { resolveTemplate, renderTemplate } from '../utils/messageTemplates';
 import { creditWallet, getWalletBalance, getSmsRate } from '../utils/smsWallet';
+import { recordExpense } from './expenses';
 
 const router = Router();
 
@@ -160,6 +161,16 @@ router.post('/stk-callback/:txId', async (req: Request, res: Response) => {
       } catch (e) {
         console.error('[wallet] credit on callback failed:', e instanceof Error ? e.message : e);
       }
+      // Record the top-up as a tenant expense (SMS category).
+      await recordExpense({
+        tenantId: tx.tenantId,
+        amount: tx.amount,
+        category: 'SMS',
+        description: 'SMS wallet top-up',
+        paymentMode: 'M-Pesa',
+        reference: receipt || txId,
+        source: 'AUTO',
+      });
       return;
     }
 

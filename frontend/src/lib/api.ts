@@ -153,6 +153,17 @@ export const getBranding = () => api.get('/tenants/branding').then(r => r.data.d
 export const saveBranding = (data: { themeColor?: string; fontFamily?: string; logoUrl?: string | null; supportPhone?: string }) =>
   api.put('/tenants/branding', data).then(r => r.data.data);
 
+export interface Expense {
+  id: string; amount: number; category: string; description?: string | null;
+  paymentMode?: string | null; reference?: string | null; source: string; incurredAt: string;
+}
+export interface ExpenseSummary { total: number; thisMonth: number; byCategory: Record<string, number>; count: number }
+export const getExpenses = () => api.get('/expenses').then(r => r.data.data as Expense[]);
+export const getExpenseSummary = () => api.get('/expenses/summary').then(r => r.data.data as ExpenseSummary);
+export const addExpense = (data: { amount: number; description?: string; paymentMode?: string; reference?: string }) =>
+  api.post('/expenses', data).then(r => r.data.data);
+export const deleteExpense = (id: string) => api.delete(`/expenses/${id}`).then(r => r.data.data);
+
 // Router actions
 export const rebootRouter = (id: string) => api.post(`/mikrotiks/${id}/reboot`).then(r => r.data.data);
 export const reprovisionRouter = (id: string) => api.post(`/mikrotiks/${id}/reprovision`).then(r => r.data.data);

@@ -3,6 +3,7 @@ import prisma from '../utils/prisma';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { sendSuccess, sendError } from '../utils/response';
 import { initializeTransaction, verifyTransaction, isPaystackConfigured } from '../utils/paystack';
+import { recordExpense } from './expenses';
 
 const router = Router();
 const MIN_FEE = 500;            // KES floor
@@ -285,6 +286,24 @@ async function markInvoicePaid(invoiceId: string, tenantId: string, _currentDue:
       },
     }),
   ]);
+
+  // Record the tenancy payment as a tenant expense (TENANCY category).
+  try {
+    const inv = await prisma.tenantPayment.findUnique({ where: { id: invoiceId }, select: { amount: true, paystackRef: true } });
+    if (inv) {
+      await recordExpense({
+        tenantId,
+        amount: inv.amount,
+        category: 'TENANCY',
+        description: 'Dartbit subscription',
+        paymentMode: 'Card',
+        reference: inv.paystackRef || invoiceId,
+        source: 'AUTO',
+      });
+    }
+  } catch (e) {
+    console.error('[expense] tenancy record failed:', e instanceof Error ? e.message : e);
+  }
 }
 
 export { markInvoicePaid };

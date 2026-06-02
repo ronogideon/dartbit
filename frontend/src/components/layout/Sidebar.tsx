@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getTenantInfo } from '@/lib/api';
 import {
   LayoutDashboard, Users, Package, CreditCard, MessageSquare,
-  Router, Activity, Zap, Wifi, Building2, Ticket,
+  Router, Activity, Zap, Wifi, Building2, Ticket, Receipt,
   ChevronLeft, ChevronRight, X
 } from 'lucide-react';
 import clsx from 'clsx';
@@ -19,6 +19,7 @@ const navItems = [
   { href: '/packages', label: 'Packages', icon: Package },
   { href: '/vouchers', label: 'Vouchers', icon: Ticket },
   { href: '/payments', label: 'Payments', icon: CreditCard },
+  { href: '/expenses', label: 'Expenses', icon: Receipt },
   { href: '/messages', label: 'Messages', icon: MessageSquare },
   { href: '/routers', label: 'Routers', icon: Router },
   // Settings intentionally removed — it now lives behind the gear icon in the top bar.

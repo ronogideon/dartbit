@@ -72,6 +72,7 @@ model Tenant {
   settings      TenantSetting?
   vouchers      Voucher[]
   tenantPayments TenantPayment[]
+  expenses       Expense[]
   paymentConfig PaymentConfig?
   notificationConfig NotificationConfig?
   smsWallet     SmsWallet?
@@ -137,6 +138,25 @@ model TenantPayment {
 
   @@index([tenantId, status])
   @@index([paystackRef])
+}
+
+// Tenant expense ledger. Auto-recorded for SMS top-ups and tenancy (Dartbit subscription)
+// payments, and manually added by the tenant. Used for the Expenses tab + dashboard profit.
+model Expense {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  amount      Float                              // KES
+  category    String   @default("OTHER")         // SMS | TENANCY | OTHER (manual)
+  description String?                             // free-text label
+  paymentMode String?                             // e.g. M-Pesa, Cash, Bank, Card
+  reference   String?                             // transaction reference / receipt
+  source      String   @default("MANUAL")         // AUTO | MANUAL (whether system- or user-created)
+  incurredAt  DateTime @default(now())            // when the expense happened
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tenantId, incurredAt])
 }
 
 model MikrotikRouter {
