@@ -51,3 +51,25 @@ export function formatBytes(bytes: number): string {
   const val = bytes / Math.pow(1024, i);
   return `${val.toFixed(val >= 100 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
+
+// Approximate "time since" for a past timestamp: "just now", "5 min ago", "2 hours ago",
+// "3 days ago", "2 weeks ago", "4 months ago", "1 year ago". Returns "Never" when null.
+export function timeAgo(when: string | null | undefined): string {
+  if (!when) return 'Never';
+  const ms = Date.now() - new Date(when).getTime();
+  if (ms < 0) return 'just now';
+  const mins = ms / 60000;
+  const hours = mins / 60;
+  const days = hours / 24;
+  const weeks = days / 7;
+  const months = days / 30;
+  const years = days / 365;
+  const r = (n: number) => Math.max(1, Math.round(n));
+  if (mins < 1) return 'just now';
+  if (mins < 60) { const v = r(mins); return `${v} min ago`; }
+  if (hours < 24) { const v = r(hours); return `${v} hour${v === 1 ? '' : 's'} ago`; }
+  if (days < 14) { const v = r(days); return `${v} day${v === 1 ? '' : 's'} ago`; }
+  if (weeks < 8) { const v = r(weeks); return `${v} week${v === 1 ? '' : 's'} ago`; }
+  if (months < 12) { const v = r(months); return `${v} month${v === 1 ? '' : 's'} ago`; }
+  const v = r(years); return `${v} year${v === 1 ? '' : 's'} ago`;
+}

@@ -6,7 +6,7 @@ import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import SubscriberDetail from '@/components/SubscriberDetail';
-import { expiryInfo, type ExpiryTier } from '@/lib/format';
+import { expiryInfo, timeAgo, type ExpiryTier } from '@/lib/format';
 
 // Time-left pill colors: text close to the indicator, on a near-opaque tinted background.
 const EXPIRY_PILL: Record<Exclude<ExpiryTier, 'none'>, string> = {
@@ -209,14 +209,15 @@ export default function SubscribersPage() {
                 <th className="table-th">Service</th>
                 <th className="table-th">Package</th>
                 <th className="table-th">Time Left</th>
+                <th className="table-th">Last Online</th>
                 <th className="table-th">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
               {isPending ? (
-                <tr><td colSpan={5} className="table-td text-center py-8 text-gray-400">Loading...</td></tr>
+                <tr><td colSpan={6} className="table-td text-center py-8 text-gray-400">Loading...</td></tr>
               ) : filtered.length === 0 ? (
-                <tr><td colSpan={5} className="table-td text-center py-8 text-gray-400">No subscribers found</td></tr>
+                <tr><td colSpan={6} className="table-td text-center py-8 text-gray-400">No subscribers found</td></tr>
               ) : filtered.map(s => {
                 const exp = expiryInfo(s.expiresAt);
                 return (
@@ -240,6 +241,9 @@ export default function SubscribersPage() {
                           {exp.text}
                         </span>
                       )}
+                    </td>
+                    <td className="table-td text-gray-500 text-sm">
+                      {s.isOnline ? <span className="text-green-600 font-medium">Online now</span> : timeAgo(s.lastOnlineAt)}
                     </td>
                     <td className="table-td">
                       <div className="flex items-center gap-2">

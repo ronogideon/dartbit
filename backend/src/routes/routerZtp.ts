@@ -775,6 +775,17 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     }
 
     const staticUsers = subscribers.filter(s => s.service === 'STATIC' && s.ipAddress);
+
+    // Remove bypassed auto-connect bindings (comment "Dbb:...") for hotspot subscribers whose
+    // package has expired, so a lapsed device stops getting free internet. The binding was added
+    // at payment time keyed to the device MAC; we match by the subscriber's stored MAC.
+    for (const sub of hsUsers) {
+      const expired = sub.expiresAt && sub.expiresAt <= now;
+      if (expired && sub.macAddress) {
+        add(`:foreach b in=[/ip hotspot ip-binding find mac-address="${sub.macAddress}" type=bypassed] do={ /ip hotspot ip-binding remove \$b }`);
+      }
+    }
+
     for (const sub of staticUsers) {
       if (!sub.ipAddress) continue;
       add(`:if ([:len [/ip dhcp-server lease find address="${sub.ipAddress}"]] = 0) do={ /ip dhcp-server lease add address=${sub.ipAddress} ${sub.macAddress ? `mac-address=${sub.macAddress}` : ''} server=dartbit-hotspot-dhcp comment="Dartbit:${sub.id}" }`);

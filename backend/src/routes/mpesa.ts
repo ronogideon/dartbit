@@ -241,22 +241,27 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
     cmds.push(`/ip hotspot user add name=${receiptCode} password=${receiptCode} profile=${profileName} limit-uptime=${sessionSec}s${macBind} comment="Dbv:${receiptCode.slice(-8)}"`);
   }
 
-  // Auto-login the captured device so the customer goes online WITHOUT retyping anything.
-  // For a freshly created package the profile + user were only just added in the lines above,
-  // so we (a) wait briefly, (b) make sure the client's IP↔MAC is a known hotspot host/binding,
-  // then (c) attempt the active login with a couple of retries. All inside one imported script
-  // so it runs as a single reliable unit rather than racing across poll cycles.
+  // Auto-connect the paid device. Rather than the finicky `/ip hotspot active login` (which
+  // needs the host already in the hotspot host table and can fail right after a new profile is
+  // created), we add a hotspot ip-binding of type=bypassed for the device's MAC. A bypassed
+  // binding lets that exact device through the hotspot immediately and seamlessly — no login,
+  // no host-table dependency — which is the most reliable "this device has paid, let it online"
+  // mechanism and works identically for brand-new and existing packages. Each command is flat
+  // (no nested source={}/quoting) so it imports reliably.
+  //
+  // The credentialed hotspot user (D-name + 4-digit pwd) and the receipt user are still created
+  // above, so the customer can ALSO log in by username/password or M-Pesa receipt on another
+  // device. The bypass is the seamless path for the purchasing device itself.
   if (tx.clientMac) {
-    const ipPart = tx.clientIp ? ` ip=${tx.clientIp}` : '';
-    cmds.push(`:delay 2s`);
-    // Ensure a hotspot IP binding exists for this MAC so the host is known to the hotspot.
-    if (tx.clientIp) {
-      cmds.push(`:if ([:len [/ip hotspot ip-binding find mac-address="${tx.clientMac}"]] = 0) do={ /ip hotspot ip-binding add mac-address=${tx.clientMac} address=${tx.clientIp} type=regular comment="Dartbit auto" }`);
-    }
-    // Try the login up to 3 times, ~2s apart, so a momentarily-unknown host still gets logged in.
-    cmds.push(`:local ok false`);
-    cmds.push(`:for i from=1 to=3 do={ :if ($ok = false) do={ :do { /ip hotspot active login user=${loginUser}${ipPart} mac-address=${tx.clientMac}; :set ok true } on-error={ :delay 2s } } }`);
-    cmds.push(`:if ($ok = false) do={ :log warning "Dartbit: auto-login failed ${loginUser}" } else={ :log info "Dartbit: auto-login ${loginUser} (${displayName})" }`);
+    const mac = tx.clientMac;
+    // Remove any prior Dartbit binding for this MAC, then add a fresh bypassed one. Comment is
+    // tagged so the expiry sweeper can find and remove it when the package lapses.
+    cmds.push(`:foreach b in=[/ip hotspot ip-binding find mac-address="${mac}"] do={ /ip hotspot ip-binding remove \$b }`);
+    const addrPart = tx.clientIp ? ` address=${tx.clientIp}` : '';
+    cmds.push(`/ip hotspot ip-binding add mac-address=${mac}${addrPart} type=bypassed comment="Dbb:${displayName}:${expiresAt.getTime()}"`);
+    // Also clear any active hotspot session for this MAC so the bypass takes effect cleanly.
+    cmds.push(`:foreach a in=[/ip hotspot active find mac-address="${mac}"] do={ /ip hotspot active remove \$a }`);
+    cmds.push(`:log info "Dartbit: bypass enabled ${loginUser} (${mac})"`);
   }
 
   if (tx.routerId) await enqueueCommand(tx.routerId, cmds.join('\n'));
