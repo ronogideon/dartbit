@@ -346,7 +346,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add('# 12. Active session reporter');
     add(`:foreach s in=[/system scheduler find comment="Dartbit session sync"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-sessions"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . ","); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :local bi 0; :local bo 0; :do { :set bi [/ip hotspot active get \$a bytes-in]; :set bo [/ip hotspot active get \$a bytes-out]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$bi . "|" . \$bo . ","); }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
+    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . ","); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :local bi 0; :local bo 0; :do { :set bi [/ip hotspot active get \$a bytes-in]; :set bo [/ip hotspot active get \$a bytes-out]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$bi . "|" . \$bo . ","); }; :foreach b in=[/ip hotspot ip-binding find type=bypassed] do={ :local cmt [/ip hotspot ip-binding get \$b comment]; :if ([:typeof \$cmt] = "str") do={ :if ([:pick \$cmt 0 4] = "Dbb:") do={ :local ip ""; :do { :set ip [/ip hotspot ip-binding get \$b address]; } on-error={}; :local mac [/ip hotspot ip-binding get \$b mac-address]; :local nm [:pick \$cmt 4 [:len \$cmt]]; :set data (\$data . \$nm . "|" . \$ip . "|bypass|0|0|" . \$mac . ","); } } }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
     add(`/system scheduler add name=dartbit-sessions interval=5s on-event="/system script run dartbit-sessions" comment="Dartbit session sync"`);
     add('');
 
@@ -508,6 +508,7 @@ router.all('/sessions', async (req: Request, res: Response) => {
       const sessions: Array<{
         username: string; ipAddress: string; uptime?: string;
         uploadSpeed?: number; downloadSpeed?: number;
+        macAddress?: string;
         routerId: string; tenantId: string;
       }> = [];
 
@@ -515,7 +516,7 @@ router.all('/sessions', async (req: Request, res: Response) => {
 
       for (const e of entries) {
         const parts = e.split('|');
-        let username = '', ipAddress = '', uptime = '', rxBytes = 0, txBytes = 0;
+        let username = '', ipAddress = '', uptime = '', rxBytes = 0, txBytes = 0, macAddress = '';
 
         if (parts.length >= 2) {
           username = parts[0] || '';
@@ -523,16 +524,23 @@ router.all('/sessions', async (req: Request, res: Response) => {
           uptime = parts[2] || '';
           rxBytes = parseInt(parts[3] || '0', 10) || 0;
           txBytes = parseInt(parts[4] || '0', 10) || 0;
+          macAddress = parts[5] || '';
         } else {
           const [u, ip] = e.split(':');
           username = u || '';
           ipAddress = ip || '';
         }
 
-        if (!username) continue;
+        if (!username && !macAddress) continue;
+        // Bypassed auto-connect devices report uptime="bypass" and carry a MAC. Their "username"
+        // field is actually the binding label (name:expiry) — we resolve the real subscriber by MAC
+        // below, so blank the username here to avoid a bad name match.
+        const isBypass = uptime === 'bypass';
+        if (isBypass) username = '';
 
         let uploadKbps = 0, downloadKbps = 0;
-        const key = `${r.id}:${username}`;
+        // Key live-speed tracking by username for normal sessions, by MAC for bypass devices.
+        const key = isBypass ? `${r.id}:mac:${macAddress}` : `${r.id}:${username}`;
         const prev = lastTrafficReading[key];
 
         // Compute speed from deltas. Update if we have a previous reading and ANY
@@ -554,31 +562,53 @@ router.all('/sessions', async (req: Request, res: Response) => {
         lastTrafficReading[key] = { rx: rxBytes, tx: txBytes, at: now };
 
         sessions.push({
-          username, ipAddress, uptime,
+          username, ipAddress, uptime: isBypass ? '' : uptime,
           uploadSpeed: uploadKbps,
           downloadSpeed: downloadKbps,
+          macAddress: macAddress || undefined,
           routerId: r.id, tenantId: r.tenantId,
         });
       }
 
-      // Link to subscribers by username
-      const usernames = sessions.map(s => s.username);
+      // Resolve subscribers: normal sessions link by username; bypass devices link by MAC
+      // (their username field was blanked). For bypass rows we backfill the real username.
+      const usernames = sessions.map(s => s.username).filter(Boolean);
+      const macs = sessions.map(s => s.macAddress).filter(Boolean) as string[];
       const subs = await prisma.subscriber.findMany({
-        where: { tenantId: r.tenantId, username: { in: usernames } },
-        select: { id: true, username: true, service: true },
+        where: {
+          tenantId: r.tenantId,
+          OR: [
+            usernames.length ? { username: { in: usernames } } : undefined,
+            macs.length ? { macAddress: { in: macs } } : undefined,
+          ].filter(Boolean) as object[],
+        },
+        select: { id: true, username: true, service: true, macAddress: true },
       });
       const subByUsername: Record<string, { id: string; service: string }> = {};
-      for (const s of subs) subByUsername[s.username] = { id: s.id, service: s.service };
+      const subByMac: Record<string, { id: string; service: string; username: string }> = {};
+      for (const s of subs) {
+        subByUsername[s.username] = { id: s.id, service: s.service };
+        if (s.macAddress) subByMac[s.macAddress.toUpperCase()] = { id: s.id, service: s.service, username: s.username };
+      }
 
-      const sessionsWithIds = sessions.map(s => ({
-        ...s,
-        subscriberId: subByUsername[s.username]?.id || undefined,
-      }));
+      const sessionsWithIds = sessions.map(s => {
+        if (!s.username && s.macAddress) {
+          // Bypass device — resolve by MAC and backfill the real username.
+          const m = subByMac[s.macAddress.toUpperCase()];
+          if (m) return { ...s, username: m.username, subscriberId: m.id };
+          return { ...s, username: s.macAddress }; // unknown device; show its MAC
+        }
+        return { ...s, subscriberId: subByUsername[s.username]?.id || undefined };
+      });
 
-      if (sessionsWithIds.length > 0) {
-        await prisma.onlineSession.createMany({ data: sessionsWithIds });
+      // Strip the transient macAddress field (not an OnlineSession column).
+      const onlineRows = sessionsWithIds.map(({ macAddress: _mac, ...rest }) => rest);
 
-        for (const s of sessionsWithIds) {
+      if (onlineRows.length > 0) {
+        await prisma.onlineSession.createMany({ data: onlineRows });
+
+        for (const s of onlineRows) {
+          if (!s.username) continue;
           await prisma.subscriber.updateMany({
             where: { tenantId: r.tenantId, username: s.username },
             data: { lastOnlineAt: new Date(), ipAddress: s.ipAddress || undefined, routerId: r.id },
