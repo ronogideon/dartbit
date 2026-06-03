@@ -370,7 +370,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add('# 12. Active session reporter');
     add(`:foreach s in=[/system scheduler find comment="Dartbit session sync"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-sessions"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . ","); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :local bi 0; :local bo 0; :do { :set bi [/ip hotspot active get \$a bytes-in]; :set bo [/ip hotspot active get \$a bytes-out]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$bi . "|" . \$bo . ","); }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
+    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . "|P,"); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :local bi 0; :local bo 0; :do { :set bi [/ip hotspot active get \$a bytes-in]; :set bo [/ip hotspot active get \$a bytes-out]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$bi . "|" . \$bo . "|H,"); }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
     add(`/system scheduler add name=dartbit-sessions interval=5s on-event="/system script run dartbit-sessions" comment="Dartbit session sync"`);
     add('');
 
@@ -539,6 +539,7 @@ router.all('/sessions', async (req: Request, res: Response) => {
         username: string; ipAddress: string; uptime?: string;
         uploadSpeed?: number; downloadSpeed?: number;
         macAddress?: string;
+        service?: 'PPPOE' | 'HOTSPOT' | 'STATIC';
         routerId: string; tenantId: string;
       }> = [];
 
@@ -546,7 +547,7 @@ router.all('/sessions', async (req: Request, res: Response) => {
 
       for (const e of entries) {
         const parts = e.split('|');
-        let username = '', ipAddress = '', uptime = '', rxBytes = 0, txBytes = 0, macAddress = '';
+        let username = '', ipAddress = '', uptime = '', rxBytes = 0, txBytes = 0, macAddress = '', svcMark = '';
 
         if (parts.length >= 2) {
           username = parts[0] || '';
@@ -554,7 +555,10 @@ router.all('/sessions', async (req: Request, res: Response) => {
           uptime = parts[2] || '';
           rxBytes = parseInt(parts[3] || '0', 10) || 0;
           txBytes = parseInt(parts[4] || '0', 10) || 0;
-          macAddress = parts[5] || '';
+          // Field 5 is either the bypass MAC (legacy) or the service marker. The reporter now
+          // appends a final P/H marker; detect it regardless of position.
+          macAddress = (parts[5] && parts[5] !== 'P' && parts[5] !== 'H') ? parts[5] : '';
+          svcMark = parts.find(p => p === 'P' || p === 'H') || '';
         } else {
           const [u, ip] = e.split(':');
           username = u || '';
@@ -596,6 +600,7 @@ router.all('/sessions', async (req: Request, res: Response) => {
           uploadSpeed: uploadKbps,
           downloadSpeed: downloadKbps,
           macAddress: macAddress || undefined,
+          service: svcMark === 'P' ? 'PPPOE' : svcMark === 'H' ? 'HOTSPOT' : undefined,
           routerId: r.id, tenantId: r.tenantId,
         });
       }
@@ -665,7 +670,7 @@ router.all('/sessions', async (req: Request, res: Response) => {
 async function recordSessionHistory(
   routerId: string,
   tenantId: string,
-  sessions: Array<{ username: string; ipAddress: string; uptime?: string }>,
+  sessions: Array<{ username: string; ipAddress: string; uptime?: string; service?: 'PPPOE' | 'HOTSPOT' | 'STATIC' }>,
   subByUsername: Record<string, { id: string; service: string }>,
   now: number,
 ) {
@@ -681,7 +686,10 @@ async function recordSessionHistory(
     const rx = reading?.rx ?? 0;
     const tx = reading?.tx ?? 0;
     const sub = subByUsername[s.username];
-    const service = (sub?.service as 'PPPOE' | 'HOTSPOT' | 'STATIC') || 'HOTSPOT';
+    // Prefer the service reported directly by the router (P=PPPoE/H=hotspot marker) — this is
+    // accurate even for hotspot sessions logged in by the M-Pesa code (whose username isn't a
+    // subscriber username). Fall back to the subscriber's service, then HOTSPOT.
+    const service = s.service || (sub?.service as 'PPPOE' | 'HOTSPOT' | 'STATIC') || 'HOTSPOT';
 
     const existing = tracked[s.username];
     if (!existing) {

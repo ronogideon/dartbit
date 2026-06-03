@@ -6,7 +6,7 @@ import * as API from '@/lib/api';
 import { LayoutDashboard, Building2, Wallet, Users, LogOut, Plus, Trash2, KeyRound, Copy, Zap } from 'lucide-react';
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LabelList,
 } from 'recharts';
 
 function kes(n: number) { return 'KES ' + (n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 }); }
@@ -190,13 +190,10 @@ function Overview() {
   const tn = data.tenants || {};
   const trend = (data.trend || []) as { month: string; subscriptionRevenue: number; newTenants: number }[];
 
-  // Tenant status breakdown for the donut.
+  // Renewed vs non-renewed tenants (by Dartbit subscription billing status) for the donut.
   const statusData = [
-    { name: 'Active', value: tn.active || 0, color: '#22c55e' },
-    { name: 'Trial', value: tn.trial || 0, color: '#3b82f6' },
-    { name: 'Due soon', value: tn.dueSoon || 0, color: '#f59e0b' },
-    { name: 'Overdue', value: tn.overdue || 0, color: '#ef4444' },
-    { name: 'Suspended', value: tn.suspended || 0, color: '#6b7280' },
+    { name: 'Renewed', value: tn.renewed || 0, color: '#22c55e' },
+    { name: 'Not renewed', value: tn.notRenewed || 0, color: '#ef4444' },
   ].filter(s => s.value > 0);
 
   return (
@@ -250,19 +247,21 @@ function Overview() {
           </ResponsiveContainer>
         </div>
 
-        {/* Tenant status donut */}
+        {/* Renewed vs non-renewed donut */}
         <div className="bg-gray-900 rounded-xl border border-gray-800 p-5">
-          <h3 className="text-sm font-semibold mb-4 text-gray-300">Tenant Status</h3>
+          <h3 className="text-sm font-semibold mb-4 text-gray-300">Tenant Renewals</h3>
           {statusData.length === 0 ? (
             <div className="text-gray-500 text-sm h-[240px] flex items-center justify-center">No tenants yet</div>
           ) : (
             <ResponsiveContainer width="100%" height={240}>
               <PieChart>
-                <Pie data={statusData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={2}>
+                <Pie data={statusData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={2}
+                  label={({ name, value }) => `${name}: ${value}`} labelLine={false}
+                  style={{ fontSize: 12, fontWeight: 600, fill: '#ffffff' }}>
                   {statusData.map((s, i) => <Cell key={i} fill={s.color} />)}
                 </Pie>
                 <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8, color: '#fff' }} itemStyle={{ color: '#ffffff', fontWeight: 600 }} labelStyle={{ color: '#9ca3af' }} />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Legend wrapperStyle={{ fontSize: 12, color: '#e5e7eb' }} formatter={(val) => <span style={{ color: '#e5e7eb' }}>{val}</span>} />
               </PieChart>
             </ResponsiveContainer>
           )}
@@ -284,6 +283,7 @@ function Overview() {
               <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8, color: '#fff' }} itemStyle={{ color: '#ffffff', fontWeight: 600 }} labelStyle={{ color: '#9ca3af' }} formatter={(v: number) => kes(v)} />
               <Bar dataKey="value" radius={[4, 4, 0, 0]}>
                 {[0, 1, 2, 3].map(i => <Cell key={i} fill={['#3b82f6', '#22c55e', '#f59e0b', '#a855f7'][i]} />)}
+                <LabelList dataKey="value" position="top" formatter={(v: number) => kes(v)} style={{ fill: '#ffffff', fontSize: 11, fontWeight: 600 }} />
               </Bar>
             </BarChart>
           </ResponsiveContainer>
