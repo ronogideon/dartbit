@@ -185,14 +185,21 @@ router.post('/stk-callback/:txId', async (req: Request, res: Response) => {
 export async function provisionFromTransaction(txId: string, receipt: string) {
   const tx = await prisma.mpesaTransaction.findUnique({ where: { id: txId } });
   if (!tx || tx.status === 'PAID') return;
+  // Normalize the captured device MAC to uppercase so client lookup-by-MAC, stored macAddress,
+  // and the RouterOS commands (which use uppercase) all match consistently.
+  if (tx.clientMac) tx.clientMac = tx.clientMac.toUpperCase();
   const pkg = tx.packageId ? await prisma.package.findUnique({ where: { id: tx.packageId } }) : null;
   const tenant = await prisma.tenant.findUnique({ where: { id: tx.tenantId } });
 
-  // Reuse an existing HOTSPOT subscriber for the SAME phone number (no duplicates). On a
-  // repeat purchase we keep their original display name (D1/D2…) and just extend the
-  // subscription, rather than creating a new D-number each time.
+  // A hotspot client is identified by phone + device MAC together. The same phone number can
+  // own multiple accounts — one per device — each with its own username. So we only reuse an
+  // existing subscriber when BOTH the phone and the device MAC match; a payment from a new MAC
+  // (even with the same phone) becomes a separate client with a new D-number. If no MAC was
+  // captured we fall back to matching by phone alone (best effort for that edge case).
   const existingSub = tx.phone
-    ? await prisma.subscriber.findFirst({ where: { tenantId: tx.tenantId, service: 'HOTSPOT', phone: tx.phone } })
+    ? (tx.clientMac
+        ? await prisma.subscriber.findFirst({ where: { tenantId: tx.tenantId, service: 'HOTSPOT', phone: tx.phone, macAddress: tx.clientMac } })
+        : await prisma.subscriber.findFirst({ where: { tenantId: tx.tenantId, service: 'HOTSPOT', phone: tx.phone } }))
     : null;
 
   let displayName: string;
@@ -232,48 +239,41 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   const downK = pkg?.speedDownKbps || 5120;
   const speed = `${upK}k/${downK}k`;
 
-  // Build router commands. The profile MUST have address-pool=dhcp-pool. CRITICAL for the
-  // "only the purchasing device" requirement: each hotspot user is bound to tx.clientMac via
-  // the user's mac-address field — MikroTik then ONLY authenticates that user from that exact
-  // MAC. shared-users=1 means one simultaneous session. Together these stop credential sharing.
-  const macBind = tx.clientMac ? ` mac-address=${tx.clientMac}` : '';
+  // MAC binding is the primary login mechanism. The hotspot user is bound to the paying device's
+  // MAC, and the backend pushes the "log this MAC in" go-ahead below. shared-users=1 keeps it to
+  // one device. MikroTik stores MACs uppercase, so we normalize to avoid a case mismatch that
+  // would silently block the MAC-bound login.
+  const macUC = (tx.clientMac || '').toUpperCase();
+  const macBind = macUC ? ` mac-address=${macUC}` : '';
   const cmds: string[] = [];
-  // Create-or-update the profile in a single resilient block, then verify it exists before
-  // adding users (a brand-new package's profile has never existed on this router, so we must
-  // be sure the add succeeded before the user-add / auto-login depends on it).
+  // Create-or-update the profile (carries the package rate-limit), verifying it exists before
+  // adding users (a brand-new package's profile has never existed on this router).
   cmds.push(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} address-pool=dhcp-pool }`);
   cmds.push(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=yes address-pool=dhcp-pool`);
-  // Primary user (D-name + 4-digit pwd), bound to the purchasing MAC. Recreate fresh.
+  // Primary user (D-name + 4-digit pwd), bound to the paying device's MAC. Recreate fresh.
   cmds.push(`:foreach u in=[/ip hotspot user find name="${loginUser}"] do={ /ip hotspot user remove \$u }`);
   cmds.push(`/ip hotspot user add name=${loginUser} password=${password} profile=${profileName} limit-uptime=${sessionSec}s${macBind} comment="Dbm:${displayName}"`);
-  // Receipt user (voucher-tab re-login), also bound to the same MAC.
+  // Receipt user (voucher-tab re-login), also MAC-bound.
   if (receiptCode && receiptCode.length >= 4) {
     cmds.push(`:foreach u in=[/ip hotspot user find name="${receiptCode}"] do={ /ip hotspot user remove \$u }`);
     cmds.push(`/ip hotspot user add name=${receiptCode} password=${receiptCode} profile=${profileName} limit-uptime=${sessionSec}s${macBind} comment="Dbv:${receiptCode.slice(-8)}"`);
   }
 
-  // Auto-connect the paid device with a REAL hotspot session (not a bypass binding). A real
-  // login means MikroTik tracks the session — so it enforces the profile's rate-limit (package
-  // speed), reports uptime + live speed, and ends the session when the device disconnects (so it
-  // stops showing as online). The earlier bypass approach connected reliably but bypassed all of
-  // that; this restores enforcement + tracking while keeping reliability via a one-shot script.
-  //
-  // The MAC-bound user created above is what we log in. We remove any stale binding/session for
-  // the MAC first, make the host known, then log in with retries inside a self-removing script
-  // (a script body has a single proper scope, unlike top-level :import lines).
-  if (tx.clientMac) {
-    const mac = tx.clientMac;
+  // Auto-login the paid MAC: the router receives this go-ahead on its next ~5s poll and logs the
+  // device in as a REAL session under the rate-limited profile (so it's speed-capped, tracked,
+  // and shows in active users). CRITICAL FIRST STEP: remove any leftover type=bypassed binding
+  // for this MAC from older versions — a bypassed device skips the hotspot entirely (full
+  // bandwidth, no session), which silently overrides the login. We also clear any stale active
+  // session, then run the login in a self-removing one-shot script (proper scope + retries).
+  if (macUC) {
     const ipArg = tx.clientIp ? ` ip=${tx.clientIp}` : '';
-    // Clean up any leftover bypass binding from prior versions / prior purchases for this MAC.
-    cmds.push(`:foreach b in=[/ip hotspot ip-binding find mac-address="${mac}"] do={ /ip hotspot ip-binding remove \$b }`);
-    cmds.push(`:foreach a in=[/ip hotspot active find mac-address="${mac}"] do={ /ip hotspot active remove \$a }`);
-    // One-shot login script: waits for the user/profile to settle, ensures the host exists, then
-    // logs the MAC-bound user in (retrying), and removes itself. Flat single source — no nesting.
+    cmds.push(`:foreach b in=[/ip hotspot ip-binding find mac-address="${macUC}"] do={ /ip hotspot ip-binding remove \$b }`);
+    cmds.push(`:foreach a in=[/ip hotspot active find mac-address="${macUC}"] do={ /ip hotspot active remove \$a }`);
     const body =
       `:delay 2s; ` +
       `:local done false; ` +
-      `:for i from=1 to=6 do={ :if (\\$done = false) do={ :do { /ip hotspot active login user=${loginUser}${ipArg} mac-address=${mac}; :set done true } on-error={ :delay 2s } } }; ` +
-      `:if (\\$done) do={ :log info \\"Dartbit: login ok ${loginUser}\\" } else={ :log warning \\"Dartbit: login failed ${loginUser}\\" }; ` +
+      `:for i from=1 to=6 do={ :if (\\$done = false) do={ :do { /ip hotspot active login user=${loginUser}${ipArg} mac-address=${macUC}; :set done true } on-error={ :delay 2s } } }; ` +
+      `:if (\\$done) do={ :log info \\"Dartbit: login ok ${loginUser}\\" } else={ :log warning \\"Dartbit: login retry exhausted ${loginUser}\\" }; ` +
       `/system scheduler remove [find name=\\"db-login\\"]; ` +
       `/system script remove [find name=\\"db-login\\"]`;
     cmds.push(`:foreach s in=[/system scheduler find name="db-login"] do={ /system scheduler remove \$s }`);

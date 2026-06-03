@@ -790,8 +790,9 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       const profileName = sub.package ? `db-h-${sub.package.id.substring(0, 8)}` : 'dartbit-default';
       const expired = sub.expiresAt && sub.expiresAt <= now;
       const disabled = !sub.isActive || expired;
-      // Bind to the subscriber's device MAC so the credentials only work on that one device.
-      const macBind = sub.macAddress ? ` mac-address=${sub.macAddress}` : '';
+      // Bind to the subscriber's device MAC (uppercased to match how MikroTik stores MACs) so the
+      // credentials only work on that one device. This is the primary login identity.
+      const macBind = sub.macAddress ? ` mac-address=${sub.macAddress.toUpperCase()}` : '';
 
       // Profile: split add+set so each line is short. Ensure address-pool so logins route.
       add(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} address-pool=dhcp-pool }`);

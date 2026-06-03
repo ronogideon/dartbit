@@ -310,15 +310,10 @@ button.primary svg{width:14px;height:14px}
           if(d.status==='PAID'){
             clearInterval(iv);
             var creds='<div class="code-display"><div class="label">Your login</div><div class="code">'+d.username+' / '+d.password+'</div></div>';
+            // The router auto-logs-in this device by MAC via the command queue (primary path).
+            // As a fallback (e.g. if the captured MAC didn't match), we also form-POST the issued
+            // credentials to the hotspot login after a short delay so the user exists first.
             show('success',creds+'Payment received! Connecting you...');
-            // The router creates the hotspot user + auto-logs-in this device via the command
-            // queue (polled every ~5s). The status can flip to PAID before the router has
-            // imported those commands, so submitting the login form immediately could hit a
-            // not-yet-created user and bounce. We wait ~7s (one full poll + import cycle) so
-            // the user exists, THEN submit the login form (the form POST navigates away on
-            // success). The router-side auto-login is the primary path; this form submit is
-            // the fallback for when the captured MAC didn't match.
-            show('success',creds+'Payment received! Connecting you in a few seconds...');
             setTimeout(function(){ submitMikrotik(d.username,d.password); },7000);
           } else if(d.status==='FAILED'){
             clearInterval(iv);
