@@ -403,9 +403,11 @@ router.all('/heartbeat', async (req: Request, res: Response) => {
     if (!apiKey) return sendError(res, 'apiKey required', 400);
     const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey } });
     if (!r) return sendError(res, 'Router not found', 404);
+    // First heartbeat during setup advances the link state machine to "awaiting interfaces".
+    const advance = r.setupStage === 'AWAITING_HEARTBEAT' ? { setupStage: 'AWAITING_INTERFACES' } : {};
     await prisma.mikrotikRouter.update({
       where: { id: r.id },
-      data: { status: 'ONLINE', lastSeenAt: new Date() },
+      data: { status: 'ONLINE', lastSeenAt: new Date(), ...advance },
     });
     res.json({ ok: true });
   } catch (err) {
@@ -465,6 +467,10 @@ router.all('/interfaces', async (req: Request, res: Response) => {
     }
     if (ifaces.length > 0) {
       await prisma.routerInterface.createMany({ data: ifaces });
+      // First interface list during setup advances the state machine to "awaiting port choice".
+      if (r.setupStage === 'AWAITING_INTERFACES') {
+        await prisma.mikrotikRouter.update({ where: { id: r.id }, data: { setupStage: 'AWAITING_PORTS' } });
+      }
     }
     res.json({ ok: true, count: ifaces.length });
   } catch (err) {

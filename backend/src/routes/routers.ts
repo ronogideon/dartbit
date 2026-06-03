@@ -52,6 +52,7 @@ router.post('/link', async (req: AuthRequest, res: Response) => {
         apiKey,
         tenantId,
         status: 'UNKNOWN',
+        setupStage: 'AWAITING_HEARTBEAT',
       },
     });
 
@@ -231,6 +232,31 @@ router.post('/:id/identity', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// GET /:id/link-status — polled by the link wizard. Returns the setup stage, online status,
+// and (once available) the reported interface list so the tenant can pick bridge ports.
+router.get('/:id/link-status', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const r = await prisma.mikrotikRouter.findUnique({
+      where: { id: req.params.id },
+      include: { interfaces: true },
+    });
+    if (!r) return sendError(res, 'Router not found', 404);
+    if (tenantId && r.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
+    sendSuccess(res, {
+      stage: r.setupStage,
+      status: r.status,
+      identity: r.identity,
+      lastSeenAt: r.lastSeenAt,
+      interfaces: r.interfaces
+        .filter(i => i.type === 'ether' || i.type === 'wlan' || i.type === 'vlan')
+        .map(i => ({ name: i.name, type: i.type })),
+    });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
 router.post('/:id/lan-ports', async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user?.tenantId;
@@ -279,6 +305,9 @@ router.post('/:id/lan-ports', async (req: AuthRequest, res: Response) => {
 
     const { enqueueCommand } = await import('../utils/commandQueue');
     await enqueueCommand(r.id, cmd);
+
+    // Port selection is the final setup step — mark setup complete.
+    await prisma.mikrotikRouter.update({ where: { id: r.id }, data: { setupStage: 'COMPLETE' } });
 
     sendSuccess(res, { queued: true, ports: cleanPorts });
   } catch (err) {

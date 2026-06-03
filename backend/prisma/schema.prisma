@@ -165,6 +165,7 @@ model MikrotikRouter {
   host           String
   apiKey         String                    @unique @default(cuid())
   status         RouterStatus              @default(UNKNOWN)
+  setupStage     String                    @default("COMPLETE") // AWAITING_HEARTBEAT|AWAITING_INTERFACES|AWAITING_PORTS|COMPLETE
   identity       String?
   cpuLoad        Float?
   uptime         String?

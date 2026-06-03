@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getRouters, linkRouter, updateRouter, deleteRouter, getProvisionConfig, saveProvisionConfig, rebootRouter, changeRouterIdentity, updateRouterLanPorts, getRouterInterfaces, reprovisionRouter, getRouterZtpCommand } from '@/lib/api';
+import LinkWizard from '@/components/LinkWizard';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
@@ -432,7 +433,7 @@ function RouterOptionsMenu({ router, onReboot, onEdit, onDelete }: {
 export default function RoutersPage() {
   const qc = useQueryClient();
   const [modalOpen, setModalOpen] = useState(false);
-  const [bootstrapModal, setBootstrapModal] = useState<{ apiKey: string; command: string } | null>(null);
+  const [bootstrapModal, setBootstrapModal] = useState<{ apiKey: string; command: string; routerId: string } | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [editing, setEditing] = useState<MikrotikRouter | null>(null);
   const [search, setSearch] = useState('');
@@ -442,10 +443,10 @@ export default function RoutersPage() {
 
   const linkMut = useMutation({
     mutationFn: linkRouter,
-    onSuccess: (data: { apiKey: string; bootstrapCommand: string }) => {
+    onSuccess: (data: { apiKey: string; bootstrapCommand: string; routerId: string }) => {
       qc.invalidateQueries({ queryKey: ['routers'] });
       setModalOpen(false); setForm({ name: '', host: '' });
-      setBootstrapModal({ apiKey: data.apiKey, command: data.bootstrapCommand });
+      setBootstrapModal({ apiKey: data.apiKey, command: data.bootstrapCommand, routerId: data.routerId });
     },
     onError: () => toast.error('Failed to link router'),
   });
@@ -471,7 +472,6 @@ export default function RoutersPage() {
   const openEdit = (r: MikrotikRouter) => { setEditing(r); setForm({ name: r.name, host: r.host }); setModalOpen(true); };
   const closeModal = () => { setModalOpen(false); setEditing(null); setForm({ name: '', host: '' }); };
   const handleSubmit = (e: React.FormEvent) => { e.preventDefault(); editing ? updateMut.mutate({ id: editing.id, data: form }) : linkMut.mutate(form); };
-  const copy = (t: string) => { navigator.clipboard.writeText(t); toast.success('Copied!'); };
   const allRouters = routers as MikrotikRouter[];
   const rq = search.trim().toLowerCase();
   const list = rq ? allRouters.filter(r => (r.name||'').toLowerCase().includes(rq) || (r.host||'').toLowerCase().includes(rq) || (r.status||'').toLowerCase().includes(rq)) : allRouters;
@@ -558,29 +558,12 @@ export default function RoutersPage() {
       </Modal>
 
       {bootstrapModal && (
-        <Modal isOpen onClose={() => setBootstrapModal(null)} title="Run on your MikroTik Terminal" size="lg">
-          <div className="space-y-4">
-            <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4">
-              <p className="text-sm font-semibold text-green-800 dark:text-green-300">✅ Router linked!</p>
-              <p className="text-xs text-green-700 dark:text-green-400 mt-1">Paste and run in MikroTik terminal to fully configure the router.</p>
-            </div>
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="label mb-0">Bootstrap Command</label>
-                <button onClick={() => copy(bootstrapModal.command)} className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700"><Copy size={12} /> Copy</button>
-              </div>
-              <pre className="bg-gray-900 text-green-400 text-xs p-4 rounded-lg overflow-x-auto whitespace-pre-wrap break-all font-mono leading-relaxed">{bootstrapModal.command}</pre>
-            </div>
-            <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 text-xs text-gray-600 dark:text-gray-400 space-y-1">
-              <p className="font-semibold text-gray-700 dark:text-gray-300 mb-1">Script automatically configures:</p>
-              <p>✓ LAN bridge + DHCP server + DNS</p>
-              <p>✓ PPPoE server with subscriber authentication</p>
-              <p>✓ Hotspot with Dartbit login page redirect</p>
-              <p>✓ NAT + firewall rules</p>
-              <p>✓ Heartbeat every 15s + session sync every 30s</p>
-            </div>
-            <button onClick={() => setBootstrapModal(null)} className="btn-primary w-full">Done</button>
-          </div>
+        <Modal isOpen onClose={() => setBootstrapModal(null)} title="Link MikroTik Router" size="lg">
+          <LinkWizard
+            routerId={bootstrapModal.routerId}
+            command={bootstrapModal.command}
+            onDone={() => { setBootstrapModal(null); qc.invalidateQueries({ queryKey: ['routers'] }); }}
+          />
         </Modal>
       )}
 
