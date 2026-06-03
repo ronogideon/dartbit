@@ -252,27 +252,34 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
     cmds.push(`/ip hotspot user add name=${receiptCode} password=${receiptCode} profile=${profileName} limit-uptime=${sessionSec}s${macBind} comment="Dbv:${receiptCode.slice(-8)}"`);
   }
 
-  // Auto-connect the paid device. Rather than the finicky `/ip hotspot active login` (which
-  // needs the host already in the hotspot host table and can fail right after a new profile is
-  // created), we add a hotspot ip-binding of type=bypassed for the device's MAC. A bypassed
-  // binding lets that exact device through the hotspot immediately and seamlessly — no login,
-  // no host-table dependency — which is the most reliable "this device has paid, let it online"
-  // mechanism and works identically for brand-new and existing packages. Each command is flat
-  // (no nested source={}/quoting) so it imports reliably.
+  // Auto-connect the paid device with a REAL hotspot session (not a bypass binding). A real
+  // login means MikroTik tracks the session — so it enforces the profile's rate-limit (package
+  // speed), reports uptime + live speed, and ends the session when the device disconnects (so it
+  // stops showing as online). The earlier bypass approach connected reliably but bypassed all of
+  // that; this restores enforcement + tracking while keeping reliability via a one-shot script.
   //
-  // The credentialed hotspot user (D-name + 4-digit pwd) and the receipt user are still created
-  // above, so the customer can ALSO log in by username/password or M-Pesa receipt on another
-  // device. The bypass is the seamless path for the purchasing device itself.
+  // The MAC-bound user created above is what we log in. We remove any stale binding/session for
+  // the MAC first, make the host known, then log in with retries inside a self-removing script
+  // (a script body has a single proper scope, unlike top-level :import lines).
   if (tx.clientMac) {
     const mac = tx.clientMac;
-    // Remove any prior Dartbit binding for this MAC, then add a fresh bypassed one. Comment is
-    // tagged so the expiry sweeper can find and remove it when the package lapses.
+    const ipArg = tx.clientIp ? ` ip=${tx.clientIp}` : '';
+    // Clean up any leftover bypass binding from prior versions / prior purchases for this MAC.
     cmds.push(`:foreach b in=[/ip hotspot ip-binding find mac-address="${mac}"] do={ /ip hotspot ip-binding remove \$b }`);
-    const addrPart = tx.clientIp ? ` address=${tx.clientIp}` : '';
-    cmds.push(`/ip hotspot ip-binding add mac-address=${mac}${addrPart} type=bypassed comment="Dbb:${displayName}:${expiresAt.getTime()}"`);
-    // Also clear any active hotspot session for this MAC so the bypass takes effect cleanly.
     cmds.push(`:foreach a in=[/ip hotspot active find mac-address="${mac}"] do={ /ip hotspot active remove \$a }`);
-    cmds.push(`:log info "Dartbit: bypass enabled ${loginUser} (${mac})"`);
+    // One-shot login script: waits for the user/profile to settle, ensures the host exists, then
+    // logs the MAC-bound user in (retrying), and removes itself. Flat single source — no nesting.
+    const body =
+      `:delay 2s; ` +
+      `:local done false; ` +
+      `:for i from=1 to=6 do={ :if (\\$done = false) do={ :do { /ip hotspot active login user=${loginUser}${ipArg} mac-address=${mac}; :set done true } on-error={ :delay 2s } } }; ` +
+      `:if (\\$done) do={ :log info \\"Dartbit: login ok ${loginUser}\\" } else={ :log warning \\"Dartbit: login failed ${loginUser}\\" }; ` +
+      `/system scheduler remove [find name=\\"db-login\\"]; ` +
+      `/system script remove [find name=\\"db-login\\"]`;
+    cmds.push(`:foreach s in=[/system scheduler find name="db-login"] do={ /system scheduler remove \$s }`);
+    cmds.push(`:foreach s in=[/system script find name="db-login"] do={ /system script remove \$s }`);
+    cmds.push(`/system script add name=db-login policy=read,write,test source="${body}"`);
+    cmds.push(`/system scheduler add name=db-login interval=3s on-event="/system script run db-login" comment="Dartbit auto-login"`);
   }
 
   if (tx.routerId) await enqueueCommand(tx.routerId, cmds.join('\n'));

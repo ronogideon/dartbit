@@ -47,9 +47,11 @@ export default function DashboardPage() {
     .reduce((sum, p) => sum + p.amount, 0);
   const monthLabel = monthStart.toLocaleString(undefined, { month: 'long' });
 
-  // Profit for the current month = this month's revenue − this month's expenses.
+  // Profit for the current month = this month's revenue − this month's expenses, computed
+  // server-side for consistency. Clamp so it can never display above the month's earnings.
   const expensesThisMonth = expenseSummary?.thisMonth || 0;
-  const profit = earnedThisMonth - expensesThisMonth;
+  const serverProfit = expenseSummary?.profitThisMonth ?? (earnedThisMonth - expensesThisMonth);
+  const profit = Math.min(serverProfit, earnedThisMonth);
 
   // Global search across subscribers, routers, and payments. Shows categorized quick
   // results that link to the relevant page.

@@ -74,7 +74,17 @@ router.get('/summary', async (req: AuthRequest, res: Response) => {
     const thisMonth = expenses.filter(e => e.incurredAt >= monthStart).reduce((s, e) => s + e.amount, 0);
     const byCategory: Record<string, number> = {};
     for (const e of expenses) byCategory[e.category] = (byCategory[e.category] || 0) + e.amount;
-    sendSuccess(res, { total, thisMonth, byCategory, count: expenses.length });
+
+    // Money earned this month (all payments since the 1st), computed server-side so profit is
+    // consistent and can never exceed earnings. Profit = earned this month − expenses this month.
+    const monthPayments = await prisma.payment.aggregate({
+      where: { tenantId, createdAt: { gte: monthStart } },
+      _sum: { amount: true },
+    });
+    const earnedThisMonth = monthPayments._sum.amount || 0;
+    const profitThisMonth = earnedThisMonth - thisMonth;
+
+    sendSuccess(res, { total, thisMonth, byCategory, count: expenses.length, earnedThisMonth, profitThisMonth });
   } catch {
     sendError(res, 'Failed to fetch summary', 500);
   }

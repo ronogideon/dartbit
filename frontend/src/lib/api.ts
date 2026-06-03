@@ -157,7 +157,7 @@ export interface Expense {
   id: string; amount: number; category: string; description?: string | null;
   paymentMode?: string | null; reference?: string | null; source: string; incurredAt: string;
 }
-export interface ExpenseSummary { total: number; thisMonth: number; byCategory: Record<string, number>; count: number }
+export interface ExpenseSummary { total: number; thisMonth: number; byCategory: Record<string, number>; count: number; earnedThisMonth: number; profitThisMonth: number }
 export const getExpenses = () => api.get('/expenses').then(r => r.data.data as Expense[]);
 export const getExpenseSummary = () => api.get('/expenses/summary').then(r => r.data.data as ExpenseSummary);
 export const addExpense = (data: { amount: number; description?: string; paymentMode?: string; reference?: string }) =>
