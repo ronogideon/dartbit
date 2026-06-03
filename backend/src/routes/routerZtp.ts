@@ -155,6 +155,19 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:if ([:len [/ip pool find name="${pppoePool}"]] = 0) do={ /ip pool add name=${pppoePool} ranges=${pppoeStart}-${pppoeEnd} }`);
     add(`:if ([:len [/ppp profile find name="dartbit-pppoe"]] = 0) do={ /ppp profile add name=dartbit-pppoe local-address=${pppoeLocal} remote-address=${pppoePool} comment="Dartbit PPPoE" }`);
     add(`:if ([:len [/interface pppoe-server server find service-name="dartbit"]] = 0) do={ /interface pppoe-server server add service-name=dartbit interface=${bridge} authentication=chap,pap default-profile=dartbit-pppoe disabled=no comment="Dartbit PPPoE Server" }`);
+    // Expired/restricted PPPoE profile: expired subscribers are moved here instead of being
+    // disconnected, so they STAY connected but can only reach the Dartbit portal/backend to renew.
+    // The profile tags connected clients into the "dartbit-expired" address-list; firewall rules
+    // below permit only DNS + the backend/portal address-list and drop everything else for them.
+    add(`:if ([:len [/ppp profile find name="dartbit-expired"]] = 0) do={ /ppp profile add name=dartbit-expired local-address=${pppoeLocal} remote-address=${pppoePool} address-list=dartbit-expired comment="Dartbit Expired (portal-only)" }`);
+    add(`/ppp profile set [find name="dartbit-expired"] address-list=dartbit-expired`);
+    // Walled-garden firewall for expired PPPoE/Static: allow DNS, the backend, and the portal;
+    // drop all other forwarded traffic from expired clients. Rules are idempotent (recreated).
+    add(`:foreach f in=[/ip firewall filter find comment~"Dartbit expired"] do={ /ip firewall filter remove $f }`);
+    add(`/ip firewall filter add chain=forward src-address-list=dartbit-expired protocol=udp dst-port=53 action=accept comment="Dartbit expired: DNS"`);
+    add(`/ip firewall filter add chain=forward src-address-list=dartbit-expired protocol=tcp dst-port=53 action=accept comment="Dartbit expired: DNS tcp"`);
+    add(`/ip firewall filter add chain=forward src-address-list=dartbit-expired dst-address-list=dartbit-backend action=accept comment="Dartbit expired: portal+backend"`);
+    add(`/ip firewall filter add chain=forward src-address-list=dartbit-expired action=drop comment="Dartbit expired: block rest"`);
     add('');
 
     // 6. Hotspot — captive portal with DHCP managed by the hotspot itself
@@ -218,13 +231,18 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // to exclude from the force-redirect rules below.
     const backendHost = backendUrl.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
     const backendIps = await resolveBackendIps(backendHost);
+    // Also resolve the portal frontend domain so expired PPPoE/hotspot clients can load the
+    // portal web app (not just the API). Apex + a representative subdomain cover the CDN IPs.
+    const portalBaseHost = (process.env.PORTAL_BASE_DOMAIN || 'dartbittech.com').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    const portalIps = await resolveBackendIps(portalBaseHost).catch(() => [] as string[]);
+    const allowIps = Array.from(new Set([...backendIps, ...portalIps]));
 
     // 6c. CRITICAL: pre-seed DNS static and walled garden by IP FIRST so AJAX from
     //     captive portal can reach Dartbit without being caught by the force-redirect.
     add('# 6c. Backend whitelisting (must come before force-redirect rules)');
     // Add backend IPs to a firewall address list — used by the force-redirect rules below
     add(`:foreach a in=[/ip firewall address-list find list="dartbit-backend"] do={ /ip firewall address-list remove $a }`);
-    for (const ip of backendIps) {
+    for (const ip of allowIps) {
       add(`/ip firewall address-list add list=dartbit-backend address=${ip} comment="Dartbit backend"`);
     }
     add('');
@@ -233,14 +251,20 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach n in=[/ip firewall nat find comment~"Dartbit redirect"] do={ /ip firewall nat remove $n }`);
     add('');
 
-    // 7. Walled garden — allow Dartbit backend AND the portal page so unauth users can reach it
+    // 7. Walled garden — allow Dartbit backend AND the portal page so unauth/expired users can
+    //    reach it to renew. We whitelist BOTH the API host and the portal frontend domain.
+    const portalBase = (process.env.PORTAL_BASE_DOMAIN || 'dartbittech.com').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
     add('# 7. Walled garden — allow Dartbit portal & backend');
     add(`:foreach w in=[/ip hotspot walled-garden find comment~"Dartbit" !dynamic] do={ /ip hotspot walled-garden remove $w }`);
     add(`/ip hotspot walled-garden add dst-host=${backendHost} comment="Dartbit backend"`);
     add(`/ip hotspot walled-garden add dst-host=*.${backendHost} comment="Dartbit backend wildcard"`);
+    // The customer portal lives on the tenant subdomain of the portal base domain — allow it
+    // (and the apex) so an expired customer can load the portal page and renew without a plan.
+    add(`/ip hotspot walled-garden add dst-host=${portalBase} comment="Dartbit portal"`);
+    add(`/ip hotspot walled-garden add dst-host=*.${portalBase} comment="Dartbit portal wildcard"`);
     add(`:foreach w in=[/ip hotspot walled-garden ip find comment~"Dartbit" !dynamic] do={ /ip hotspot walled-garden ip remove $w }`);
     // Walled-garden IP list lets unauthenticated traffic to these IPs pass through MikroTik's hotspot rejection
-    for (const ip of backendIps) {
+    for (const ip of allowIps) {
       add(`/ip hotspot walled-garden ip add dst-address=${ip} comment="Dartbit backend IP"`);
     }
     // Pre-seed the router's DNS cache so it resolves the backend hostname for clients
@@ -775,19 +799,21 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       const speed = sub.package ? `${sub.package.speedUpKbps}k/${sub.package.speedDownKbps}k` : '10M/10M';
       const profileName = sub.package ? `db-p-${sub.package.id.substring(0, 8)}` : 'dartbit-pppoe';
       const expired = sub.expiresAt && sub.expiresAt <= now;
-      const disabled = !sub.isActive || expired;
+      // Admin-disabled (not active) → fully blocked. Expired (subscription lapsed) → kept
+      // connected on the restricted "dartbit-expired" profile so they can reach the portal to
+      // renew. Active → their normal package profile.
+      const adminDisabled = !sub.isActive;
+      const effectiveProfile = expired && !adminDisabled ? 'dartbit-expired' : profileName;
 
       // Each line stays short — uses inline strings, no shared state needed.
-      // Profile line: ~150 chars
       add(`:if ([:len [/ppp profile find name="${profileName}"]] = 0) do={ /ppp profile add name=${profileName} local-address=10.10.10.1 remote-address=pppoe-pool rate-limit="${speed}" comment="Dartbit" }`);
-      // For long secret-add lines, split into separate find/set/add operations to avoid 200-char import limit
-      add(`:if ([:len [/ppp secret find name="${sub.username}"]] = 0) do={ /ppp secret add name="${sub.username}" password="${sub.secret}" profile=${profileName} service=pppoe comment="Dartbit:${sub.id}" }`);
-      add(`:if ([:len [/ppp secret find name="${sub.username}"]] > 0) do={ /ppp secret set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'} }`);
-      if (expired) {
+      add(`:if ([:len [/ppp secret find name="${sub.username}"]] = 0) do={ /ppp secret add name="${sub.username}" password="${sub.secret}" profile=${effectiveProfile} service=pppoe comment="Dartbit:${sub.id}" }`);
+      add(`:if ([:len [/ppp secret find name="${sub.username}"]] > 0) do={ /ppp secret set [find name="${sub.username}"] password="${sub.secret}" profile=${effectiveProfile} disabled=${adminDisabled ? 'yes' : 'no'} }`);
+      // Drop the live session so it reconnects onto the correct profile: expired users reconnect
+      // onto the walled-garden profile (portal-only); admin-disabled users are dropped and stay out.
+      if (expired || adminDisabled) {
         add(`:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove \$a }`);
       }
-      // Note: per-subscriber expiry is enforced by the sync script (runs every 60s).
-      // When expiresAt passes, sync will set disabled=yes on the next cycle.
     }
 
     const hsUsers = subscribers.filter(s => s.service === 'HOTSPOT');
@@ -820,6 +846,20 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       const expired = sub.expiresAt && sub.expiresAt <= now;
       if (expired && sub.macAddress) {
         add(`:foreach b in=[/ip hotspot ip-binding find mac-address="${sub.macAddress}" type=bypassed] do={ /ip hotspot ip-binding remove \$b }`);
+      }
+    }
+
+    // Maintain the dartbit-expired address-list for STATIC subscribers: expired (lapsed) static
+    // IPs are added so the walled-garden firewall limits them to the portal; active static IPs are
+    // removed from the list so they have full access. (PPPoE expiry is handled by its profile.)
+    for (const sub of staticUsers) {
+      if (!sub.ipAddress) continue;
+      const expired = sub.expiresAt && sub.expiresAt <= now;
+      const adminDisabled = !sub.isActive;
+      if (expired && !adminDisabled) {
+        add(`:if ([:len [/ip firewall address-list find list="dartbit-expired" address="${sub.ipAddress}"]] = 0) do={ /ip firewall address-list add list=dartbit-expired address=${sub.ipAddress} comment="Dartbit:${sub.id}" }`);
+      } else {
+        add(`:foreach a in=[/ip firewall address-list find list="dartbit-expired" address="${sub.ipAddress}"] do={ /ip firewall address-list remove \$a }`);
       }
     }
 
