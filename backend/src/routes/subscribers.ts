@@ -199,6 +199,20 @@ router.post('/:id/extend', async (req: AuthRequest, res: Response) => {
       data: { expiresAt: newExpiry, isActive: true },
     });
 
+    // Keep the unified identity in lockstep: if this hotspot device has a linked M-Pesa voucher
+    // (the receipt code), update its expiry to the SAME session end so the code, username/password
+    // and MAC all expire together. Matched by the device MAC within this tenant.
+    if (sub.service === 'HOTSPOT' && sub.macAddress) {
+      try {
+        await prisma.voucher.updateMany({
+          where: { tenantId: sub.tenantId, batchId: 'MPESA', usedByMac: sub.macAddress.toUpperCase() },
+          data: { expiresAt: newExpiry },
+        });
+      } catch (e) {
+        console.error('extend: voucher expiry sync failed (continuing):', e instanceof Error ? e.message : e);
+      }
+    }
+
     // Push the change to the router (re-enable + update) via a sync so the user isn't kicked.
     if (sub.routerId) {
       try {
