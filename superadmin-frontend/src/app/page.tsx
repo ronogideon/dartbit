@@ -228,9 +228,9 @@ function Overview() {
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-              <XAxis dataKey="month" stroke="#6b7280" fontSize={12} />
-              <YAxis stroke="#6b7280" fontSize={12} />
-              <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8, color: '#fff' }} formatter={(v: number) => kes(v)} />
+              <XAxis dataKey="month" stroke="#6b7280" tick={{ fill: "#cbd5e1" }} fontSize={12} />
+              <YAxis stroke="#6b7280" tick={{ fill: "#cbd5e1" }} fontSize={12} />
+              <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8, color: '#fff' }} itemStyle={{ color: '#ffffff', fontWeight: 600 }} labelStyle={{ color: '#9ca3af' }} formatter={(v: number) => kes(v)} />
               <Area type="monotone" dataKey="subscriptionRevenue" stroke="#3b82f6" fill="url(#revGrad)" strokeWidth={2} name="Revenue" />
             </AreaChart>
           </ResponsiveContainer>
@@ -242,9 +242,9 @@ function Overview() {
           <ResponsiveContainer width="100%" height={240}>
             <BarChart data={trend}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-              <XAxis dataKey="month" stroke="#6b7280" fontSize={12} />
-              <YAxis stroke="#6b7280" fontSize={12} allowDecimals={false} />
-              <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8, color: '#fff' }} />
+              <XAxis dataKey="month" stroke="#6b7280" tick={{ fill: "#cbd5e1" }} fontSize={12} />
+              <YAxis stroke="#6b7280" tick={{ fill: "#cbd5e1" }} fontSize={12} allowDecimals={false} />
+              <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8, color: '#fff' }} itemStyle={{ color: '#ffffff', fontWeight: 600 }} labelStyle={{ color: '#9ca3af' }} />
               <Bar dataKey="newTenants" fill="#22c55e" radius={[4, 4, 0, 0]} name="New tenants" />
             </BarChart>
           </ResponsiveContainer>
@@ -261,7 +261,7 @@ function Overview() {
                 <Pie data={statusData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={2}>
                   {statusData.map((s, i) => <Cell key={i} fill={s.color} />)}
                 </Pie>
-                <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8, color: '#fff' }} />
+                <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8, color: '#fff' }} itemStyle={{ color: '#ffffff', fontWeight: 600 }} labelStyle={{ color: '#9ca3af' }} />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
               </PieChart>
             </ResponsiveContainer>
@@ -279,9 +279,9 @@ function Overview() {
               { name: 'Fee (Dartbit)', value: c.feeRetained, color: '#a855f7' },
             ]}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-              <XAxis dataKey="name" stroke="#6b7280" fontSize={11} />
-              <YAxis stroke="#6b7280" fontSize={12} />
-              <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8, color: '#fff' }} formatter={(v: number) => kes(v)} />
+              <XAxis dataKey="name" stroke="#6b7280" tick={{ fill: "#cbd5e1" }} fontSize={11} />
+              <YAxis stroke="#6b7280" tick={{ fill: "#cbd5e1" }} fontSize={12} />
+              <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8, color: '#fff' }} itemStyle={{ color: '#ffffff', fontWeight: 600 }} labelStyle={{ color: '#9ca3af' }} formatter={(v: number) => kes(v)} />
               <Bar dataKey="value" radius={[4, 4, 0, 0]}>
                 {[0, 1, 2, 3].map(i => <Cell key={i} fill={['#3b82f6', '#22c55e', '#f59e0b', '#a855f7'][i]} />)}
               </Bar>

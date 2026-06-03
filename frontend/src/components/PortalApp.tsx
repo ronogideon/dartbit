@@ -33,6 +33,7 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
   const [account, setAccount] = useState<Account | null>(null);
   const [packages, setPackages] = useState<Pkg[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [renewPkg, setRenewPkg] = useState<Pkg | null>(null);
   const [renewPhone, setRenewPhone] = useState('');
   const [renewing, setRenewing] = useState(false);
@@ -58,14 +59,28 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
 
   const loadAccount = useCallback(async (tok: string) => {
     try {
+      // Cache-buster so a manual refresh always hits the server (avoids any stale 304/cache).
+      const cb = `${qs ? '&' : '?'}_=${Date.now()}`;
       const [acc, pkgs] = await Promise.all([
-        api.get(`/portal/account${qs}`, { headers: { Authorization: `Bearer ${tok}` } }),
-        api.get(`/portal/packages${qs}`, { headers: { Authorization: `Bearer ${tok}` } }),
+        api.get(`/portal/account${qs}${cb}`, { headers: { Authorization: `Bearer ${tok}` } }),
+        api.get(`/portal/packages${qs}${cb}`, { headers: { Authorization: `Bearer ${tok}` } }),
       ]);
       setAccount(acc.data.account);
       setPackages(pkgs.data.packages || []);
     } catch { toast.error('Session expired, please log in again'); setToken(''); }
-  }, []);
+  }, [qs]);
+
+  // Manual refresh from the button — shows a spinner + confirms when done.
+  const refresh = useCallback(async () => {
+    if (!token || refreshing) return;
+    setRefreshing(true);
+    try {
+      await loadAccount(token);
+      toast.success('Updated');
+    } finally {
+      setRefreshing(false);
+    }
+  }, [token, refreshing, loadAccount]);
 
   const login = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -171,12 +186,12 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
             <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${account.isActive ? 'bg-green-900/50 text-green-300' : 'bg-red-900/50 text-red-300'}`}>
               {account.isActive ? '● Active' : '● Expired'}
             </span>
-            <button onClick={() => loadAccount(token)} className="text-gray-400 hover:text-white"><RefreshCw size={15} /></button>
+            <button onClick={refresh} disabled={refreshing} className="text-gray-400 hover:text-white disabled:opacity-50" aria-label="Refresh"><RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} /></button>
           </div>
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div><div className="text-gray-400 text-xs">Username</div><div className="font-mono">{account.username}</div></div>
             <div><div className="text-gray-400 text-xs">Package</div><div>{account.package || '—'}</div></div>
-            <div className="flex items-center gap-1.5"><Calendar size={14} className="text-gray-400" /><div><div className="text-gray-400 text-xs">Expires</div><div>{fmtDate(account.expiresAt)}</div></div></div>
+            <div className="flex items-center gap-1.5"><Calendar size={16} className="text-white" strokeWidth={2.5} /><div><div className="text-gray-400 text-xs">Expires</div><div className="font-bold text-white">{fmtDate(account.expiresAt)}</div></div></div>
             <div className="flex items-center gap-1.5"><Clock size={14} className="text-gray-400" /><div><div className="text-gray-400 text-xs">Last online</div><div>{fmtDate(account.lastOnlineAt)}</div></div></div>
           </div>
         </div>

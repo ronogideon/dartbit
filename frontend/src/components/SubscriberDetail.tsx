@@ -106,7 +106,7 @@ export default function SubscriberDetail({ subscriberId, onClose }: Props) {
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
                 <div className="flex items-center gap-2 text-gray-500"><Clock size={14} /> Last online: {fmtDateTime(data.subscriber.lastOnlineAt)}</div>
-                <div className="flex items-center gap-2 text-gray-500"><Calendar size={14} /> Expires: {fmtDateTime(data.subscriber.expiresAt)}</div>
+                <div className="flex items-center gap-2 font-bold text-gray-900 dark:text-white"><Calendar size={16} strokeWidth={2.5} className="text-gray-900 dark:text-white" /> Expires: {fmtDateTime(data.subscriber.expiresAt)}</div>
               </div>
             </div>
 

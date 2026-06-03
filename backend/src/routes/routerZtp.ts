@@ -832,8 +832,26 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] = 0) do={ /ip hotspot user add name="${sub.username}" password="${sub.secret}" profile=${profileName}${macBind} comment="Dartbit:${sub.id}" }`);
       add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] > 0) do={ /ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'}${macBind} }`);
       if (expired) {
+        // Expiry on hotspot is stubborn because login-by=cookie auto-re-logs a returning MAC even
+        // after we drop the session. So we (1) remove the active session, (2) remove the MAC cookie
+        // by user AND by MAC so it can't auto-re-login, and (3) put the device's MAC/IP on the
+        // dartbit-expired address-list so the walled-garden firewall limits it to the portal even
+        // if it does sneak a session back. This guarantees no full internet after expiry.
         add(`:foreach a in=[/ip hotspot active find user="${sub.username}"] do={ /ip hotspot active remove \$a }`);
         add(`:foreach c in=[/ip hotspot cookie find user="${sub.username}"] do={ /ip hotspot cookie remove \$c }`);
+        if (sub.macAddress) {
+          const macU = sub.macAddress.toUpperCase();
+          add(`:foreach c in=[/ip hotspot cookie find mac-address="${macU}"] do={ /ip hotspot cookie remove \$c }`);
+          add(`:foreach a in=[/ip hotspot active find mac-address="${macU}"] do={ /ip hotspot active remove \$a }`);
+          // Walled-garden the device by its current lease IP (firewall rules added at provision).
+          add(`:foreach l in=[/ip dhcp-server lease find mac-address="${macU}"] do={ :local lip [/ip dhcp-server lease get \$l address]; :if ([:len [/ip firewall address-list find list="dartbit-expired" address=\$lip]] = 0) do={ /ip firewall address-list add list=dartbit-expired address=\$lip comment="Dartbit-exp:${sub.id}" } }`);
+        }
+      } else {
+        // Active again (renewed): clear any expired walled-garden entry for this device's leases.
+        if (sub.macAddress) {
+          const macU = sub.macAddress.toUpperCase();
+          add(`:foreach l in=[/ip dhcp-server lease find mac-address="${macU}"] do={ :local lip [/ip dhcp-server lease get \$l address]; :foreach e in=[/ip firewall address-list find list="dartbit-expired" address=\$lip] do={ /ip firewall address-list remove \$e } }`);
+        }
       }
     }
 
