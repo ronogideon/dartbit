@@ -59,7 +59,7 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
 
   const loadAccount = useCallback(async (tok: string) => {
     try {
-      // Cache-buster so a manual refresh always hits the server (avoids any stale 304/cache).
+      // Cache-buster so a manual refresh always hits the server (avoids any stale cache).
       const cb = `${qs ? '&' : '?'}_=${Date.now()}`;
       const [acc, pkgs] = await Promise.all([
         api.get(`/portal/account${qs}${cb}`, { headers: { Authorization: `Bearer ${tok}` } }),
