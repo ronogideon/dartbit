@@ -370,7 +370,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add('# 12. Active session reporter');
     add(`:foreach s in=[/system scheduler find comment="Dartbit session sync"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-sessions"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . "|P,"); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :local bi 0; :local bo 0; :do { :set bi [/ip hotspot active get \$a bytes-in]; :set bo [/ip hotspot active get \$a bytes-out]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$bi . "|" . \$bo . "|H,"); }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
+    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . ","); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :local bi 0; :local bo 0; :do { :set bi [/ip hotspot active get \$a bytes-in]; :set bo [/ip hotspot active get \$a bytes-out]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$bi . "|" . \$bo . ","); }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
     add(`/system scheduler add name=dartbit-sessions interval=5s on-event="/system script run dartbit-sessions" comment="Dartbit session sync"`);
     add('');
 
@@ -539,7 +539,6 @@ router.all('/sessions', async (req: Request, res: Response) => {
         username: string; ipAddress: string; uptime?: string;
         uploadSpeed?: number; downloadSpeed?: number;
         macAddress?: string;
-        service?: 'PPPOE' | 'HOTSPOT' | 'STATIC';
         routerId: string; tenantId: string;
       }> = [];
 
@@ -547,7 +546,7 @@ router.all('/sessions', async (req: Request, res: Response) => {
 
       for (const e of entries) {
         const parts = e.split('|');
-        let username = '', ipAddress = '', uptime = '', rxBytes = 0, txBytes = 0, macAddress = '', svcMark = '';
+        let username = '', ipAddress = '', uptime = '', rxBytes = 0, txBytes = 0, macAddress = '';
 
         if (parts.length >= 2) {
           username = parts[0] || '';
@@ -555,10 +554,7 @@ router.all('/sessions', async (req: Request, res: Response) => {
           uptime = parts[2] || '';
           rxBytes = parseInt(parts[3] || '0', 10) || 0;
           txBytes = parseInt(parts[4] || '0', 10) || 0;
-          // Field 5 is either the bypass MAC (legacy) or the service marker. The reporter now
-          // appends a final P/H marker; detect it regardless of position.
-          macAddress = (parts[5] && parts[5] !== 'P' && parts[5] !== 'H') ? parts[5] : '';
-          svcMark = parts.find(p => p === 'P' || p === 'H') || '';
+          macAddress = parts[5] || '';
         } else {
           const [u, ip] = e.split(':');
           username = u || '';
@@ -600,7 +596,6 @@ router.all('/sessions', async (req: Request, res: Response) => {
           uploadSpeed: uploadKbps,
           downloadSpeed: downloadKbps,
           macAddress: macAddress || undefined,
-          service: svcMark === 'P' ? 'PPPOE' : svcMark === 'H' ? 'HOTSPOT' : undefined,
           routerId: r.id, tenantId: r.tenantId,
         });
       }
@@ -670,7 +665,7 @@ router.all('/sessions', async (req: Request, res: Response) => {
 async function recordSessionHistory(
   routerId: string,
   tenantId: string,
-  sessions: Array<{ username: string; ipAddress: string; uptime?: string; service?: 'PPPOE' | 'HOTSPOT' | 'STATIC' }>,
+  sessions: Array<{ username: string; ipAddress: string; uptime?: string }>,
   subByUsername: Record<string, { id: string; service: string }>,
   now: number,
 ) {
@@ -686,10 +681,7 @@ async function recordSessionHistory(
     const rx = reading?.rx ?? 0;
     const tx = reading?.tx ?? 0;
     const sub = subByUsername[s.username];
-    // Prefer the service reported directly by the router (P=PPPoE/H=hotspot marker) — this is
-    // accurate even for hotspot sessions logged in by the M-Pesa code (whose username isn't a
-    // subscriber username). Fall back to the subscriber's service, then HOTSPOT.
-    const service = s.service || (sub?.service as 'PPPOE' | 'HOTSPOT' | 'STATIC') || 'HOTSPOT';
+    const service = (sub?.service as 'PPPOE' | 'HOTSPOT' | 'STATIC') || 'HOTSPOT';
 
     const existing = tracked[s.username];
     if (!existing) {
@@ -912,14 +904,12 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     });
     console.log(`[sync] Router ${r.id}: found ${vouchers.length} vouchers to push`);
 
-    // Group by package so we create one user profile per package. M-Pesa-receipt vouchers
-    // (batchId="MPESA") share the SAME profile as their hotspot subscriber (db-h-<pkg>) so the
-    // code, username/password and MAC are one identity; standalone vouchers use db-v-<pkg>.
+    // Group by package so we create one user profile per package
     const profilesByPkg: Record<string, { name: string; speed: string }> = {};
     for (const v of vouchers) {
       if (v.package) {
         const pid = v.package.id.substring(0, 8);
-        const pname = v.batchId === 'MPESA' ? `db-h-${pid}` : `db-v-${pid}`;
+        const pname = `db-v-${pid}`;
         if (!profilesByPkg[pname]) {
           profilesByPkg[pname] = {
             name: pname,
@@ -929,8 +919,8 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       }
     }
     for (const prof of Object.values(profilesByPkg)) {
-      add(`:if ([:len [/ip hotspot user profile find name="${prof.name}"]] = 0) do={ /ip hotspot user profile add name=${prof.name} address-pool=dhcp-pool }`);
-      add(`/ip hotspot user profile set [find name="${prof.name}"] rate-limit="${prof.speed}" shared-users=1 add-mac-cookie=yes address-pool=dhcp-pool`);
+      add(`:if ([:len [/ip hotspot user profile find name="${prof.name}"]] = 0) do={ /ip hotspot user profile add name=${prof.name} }`);
+      add(`/ip hotspot user profile set [find name="${prof.name}"] rate-limit="${prof.speed}" shared-users=1 add-mac-cookie=yes`);
     }
     // Add each voucher as a hotspot user — username and password = code.
     // limit-uptime caps cumulative active time, BUT we ALSO enforce wall-clock expiry:
@@ -940,22 +930,18 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     // "expired voucher still reconnects".
     add(`:log info "Dartbit: sync pushing ${vouchers.length} vouchers"`);
     for (const v of vouchers) {
-      const pid = v.package ? v.package.id.substring(0, 8) : '';
-      // M-Pesa vouchers live on the hotspot subscriber profile (db-h-) so the code shares the
-      // same rate-limit/identity as the username+password; standalone vouchers use db-v-.
-      const profileName = v.package ? `${v.batchId === 'MPESA' ? 'db-h-' : 'db-v-'}${pid}` : 'dartbit-default';
+      const profileName = v.package ? `db-v-${v.package.id.substring(0, 8)}` : 'dartbit-default';
       const sessionSec = v.durationMinutes * 60;
       const shortId = v.id.slice(-8);
       const expired = !!(v.expiresAt && v.expiresAt <= now);
-      // Bind the voucher user to the MAC that redeemed/purchased it (usedByMac), uppercased to
-      // match how MikroTik stores MACs. Unredeemed vouchers (no usedByMac) stay open until first
-      // use, then get bound on next sync after redemption captures the MAC.
-      const macBind = v.usedByMac ? ` mac-address=${v.usedByMac.toUpperCase()}` : '';
+      // Bind the voucher user to the MAC that redeemed/purchased it (usedByMac), so the
+      // code only works on that one device. Unredeemed vouchers (no usedByMac) stay open
+      // until first use, then get bound on next sync after redemption captures the MAC.
+      const macBind = v.usedByMac ? ` mac-address=${v.usedByMac}` : '';
       add(`:if ([:len [/ip hotspot user find name="${v.code}"]] = 0) do={ /ip hotspot user add name=${v.code} password=${v.code} profile=${profileName} limit-uptime=${sessionSec}s${macBind} comment="Dbv:${shortId}" }`);
-      // Keep profile + binding current on existing users (MAC may have been captured after creation).
-      add(`:if ([:len [/ip hotspot user find name="${v.code}"]] > 0) do={ /ip hotspot user set [find name="${v.code}"] profile=${profileName} }`);
+      // Keep the binding current on existing users (in case the MAC was captured after creation).
       if (v.usedByMac) {
-        add(`:if ([:len [/ip hotspot user find name="${v.code}"]] > 0) do={ /ip hotspot user set [find name="${v.code}"] mac-address=${v.usedByMac.toUpperCase()} }`);
+        add(`:if ([:len [/ip hotspot user find name="${v.code}"]] > 0) do={ /ip hotspot user set [find name="${v.code}"] mac-address=${v.usedByMac} }`);
       }
       if (expired) {
         // Wall-clock expired: disable the user and remove any active session + mac-cookie

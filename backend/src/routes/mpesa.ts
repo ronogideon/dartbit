@@ -253,12 +253,11 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   // Primary user (D-name + 4-digit pwd), bound to the paying device's MAC. Recreate fresh.
   cmds.push(`:foreach u in=[/ip hotspot user find name="${loginUser}"] do={ /ip hotspot user remove \$u }`);
   cmds.push(`/ip hotspot user add name=${loginUser} password=${password} profile=${profileName} limit-uptime=${sessionSec}s${macBind} comment="Dbm:${displayName}"`);
-  // NOTE: The M-Pesa receipt code is ALSO a valid login for this same device — but we do NOT
-  // create a separate hotspot user for it here. It's registered as a voucher (below) tagged
-  // batchId="MPESA", and the voucher sync creates it under the SAME profile + same MAC + same
-  // expiry as this subscriber, so the receipt code, the username/password, and the MAC all act
-  // as one identity sharing one session end. Creating it twice (here + sync, under different
-  // profiles) was what left the code in limbo (shown active but no traffic / no redirect).
+  // Receipt user (voucher-tab re-login), also MAC-bound.
+  if (receiptCode && receiptCode.length >= 4) {
+    cmds.push(`:foreach u in=[/ip hotspot user find name="${receiptCode}"] do={ /ip hotspot user remove \$u }`);
+    cmds.push(`/ip hotspot user add name=${receiptCode} password=${receiptCode} profile=${profileName} limit-uptime=${sessionSec}s${macBind} comment="Dbv:${receiptCode.slice(-8)}"`);
+  }
 
   // Auto-login the paid MAC: the router receives this go-ahead on its next ~5s poll and logs the
   // device in as a REAL session under the rate-limited profile (so it's speed-capped, tracked,
@@ -304,15 +303,12 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
           durationMinutes: tx.durationMinutes,
           isUsed: true,
           usedAt: new Date(),
-          usedByMac: macUC || null,
+          usedByMac: tx.clientMac || null,
           usedByIp: tx.clientIp || null,
           expiresAt,
-          // Tag so the voucher sync creates this code under the SAME hotspot profile/MAC/expiry
-          // as the subscriber (one unified identity), instead of a separate db-v- profile user.
-          batchId: 'MPESA',
           notes: `M-Pesa ${receiptCode} • ${displayName} • ${tx.phone || ''}`,
         },
-        update: { expiresAt, usedByMac: macUC || null, batchId: 'MPESA', packageId: tx.packageId || undefined },
+        update: { expiresAt, usedByMac: tx.clientMac || null },
       });
     } catch (e) {
       console.error('voucher-from-receipt error:', e instanceof Error ? e.message : e);
