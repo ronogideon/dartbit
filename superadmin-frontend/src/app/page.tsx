@@ -256,9 +256,8 @@ function Overview() {
             <ResponsiveContainer width="100%" height={240}>
               <PieChart>
                 <Pie data={statusData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={2}
-                  label={({ name, value }) => `${name}: ${value}`} labelLine={false}
-                  style={{ fontSize: 12, fontWeight: 600, fill: '#ffffff' }}>
-                  {statusData.map((s, i) => <Cell key={i} fill={s.color} />)}
+                  label={({ name, value }) => `${name}: ${value}`} labelLine={false}>
+                  {statusData.map((s, i) => <Cell key={i} fill={s.color} stroke="#111827" strokeWidth={2} />)}
                 </Pie>
                 <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8, color: '#fff' }} itemStyle={{ color: '#ffffff', fontWeight: 600 }} labelStyle={{ color: '#9ca3af' }} />
                 <Legend wrapperStyle={{ fontSize: 12, color: '#e5e7eb' }} formatter={(val) => <span style={{ color: '#e5e7eb' }}>{val}</span>} />
