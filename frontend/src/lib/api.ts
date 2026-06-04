@@ -256,3 +256,6 @@ export interface MessageRow {
 export const getMessages = () => api.get('/messages').then(r => r.data.data as MessageRow[]);
 export const sendMessage = (recipient: string, body: string) =>
   api.post('/messages', { type: 'SMS', recipient, body }).then(r => r.data.data as MessageRow);
+export interface BroadcastResult { matched: number; sent: number; failed: number }
+export const broadcastMessage = (data: { body: string; routerIds?: string[]; services?: string[]; statuses?: string[] }) =>
+  api.post('/messages/broadcast', data).then(r => r.data.data as BroadcastResult);

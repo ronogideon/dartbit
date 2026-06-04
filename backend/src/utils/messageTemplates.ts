@@ -79,6 +79,13 @@ export const TEMPLATES: TemplateDef[] = [
     editable: false,
   },
   {
+    key: 'system_router_online', group: 'system', label: 'System — Router back online',
+    description: 'Sent to your alert numbers when a router that was offline comes back online.',
+    default: '{tenant}: Router "{router}" is back online. It was down for {duration}.',
+    placeholders: ['{tenant}', '{router}', '{duration}'],
+    editable: false,
+  },
+  {
     key: 'system_low_balance', group: 'system', label: 'System — Low SMS balance',
     description: 'Sent to your alert numbers when your SMS wallet runs low.',
     default: '{tenant} ALERT: Your Dartbit SMS balance is low (KES {balance}). Top up to keep notifications running.',
@@ -89,7 +96,21 @@ export const TEMPLATES: TemplateDef[] = [
 
 const TEMPLATE_MAP = new Map(TEMPLATES.map(t => [t.key, t]));
 
+// Platform-level default overrides (set by superadmin). These sit BETWEEN the hardcoded code
+// defaults and a tenant's own overrides: tenant override > platform default > code default.
+// Cached in-memory; refreshed by setPlatformDefaults() whenever superadmin saves.
+let platformDefaults: Record<string, string> = {};
+export function setPlatformDefaults(map: Record<string, string>) { platformDefaults = map || {}; }
+
 export function defaultTemplate(key: string): string {
+  const pd = platformDefaults[key];
+  if (typeof pd === 'string' && pd.trim()) return pd;
+  return TEMPLATE_MAP.get(key)?.default || '';
+}
+
+// The original hardcoded default, ignoring any platform override (used by superadmin UI to show
+// what the code baseline is).
+export function codeDefaultTemplate(key: string): string {
   return TEMPLATE_MAP.get(key)?.default || '';
 }
 
@@ -121,5 +142,20 @@ export function allTemplatesWithDefaults(overrides: Record<string, string> | nul
     toggle: t.toggle || null,
     value: (overrides?.[t.key] && overrides[t.key].trim()) ? overrides[t.key] : t.default,
     isCustom: !!(overrides?.[t.key] && overrides[t.key].trim()),
+  }));
+}
+
+// For the superadmin platform-defaults editor: ALL templates (including the non-tenant-editable
+// system ones like router offline/online + low balance), with the platform override applied.
+export function allTemplatesForPlatform(overrides: Record<string, string> | null | undefined) {
+  return TEMPLATES.map(t => ({
+    key: t.key,
+    group: t.group,
+    label: t.label,
+    description: t.description,
+    placeholders: t.placeholders,
+    editable: t.editable,
+    body: (overrides?.[t.key] && overrides[t.key].trim()) ? overrides[t.key] : t.default,
+    isDefault: !(overrides?.[t.key] && overrides[t.key].trim()),
   }));
 }

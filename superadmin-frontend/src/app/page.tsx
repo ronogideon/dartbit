@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import * as API from '@/lib/api';
-import { LayoutDashboard, Building2, Wallet, Users, LogOut, Plus, Trash2, KeyRound, Copy, Zap } from 'lucide-react';
+import { LayoutDashboard, Building2, Wallet, Users, LogOut, Plus, Trash2, KeyRound, Copy, Zap, MessageSquare, Save, RotateCcw } from 'lucide-react';
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LabelList,
@@ -12,7 +12,7 @@ import {
 function kes(n: number) { return 'KES ' + (n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 }); }
 function fmtDate(d?: string | null) { return d ? new Date(d).toLocaleDateString() : '—'; }
 
-type Tab = 'overview' | 'tenants' | 'payouts' | 'team';
+type Tab = 'overview' | 'tenants' | 'payouts' | 'team' | 'messaging';
 
 export default function SuperadminPortal() {
   const [authed, setAuthed] = useState(false);
@@ -109,12 +109,14 @@ function Dashboard({ role, onLogout }: { role: string; onLogout: () => void }) {
           <NavBtn active={tab === 'overview'} onClick={() => setTab('overview')} icon={<LayoutDashboard size={17} />} label="Overview" />
           <NavBtn active={tab === 'tenants'} onClick={() => setTab('tenants')} icon={<Building2 size={17} />} label="Tenants" />
           <NavBtn active={tab === 'payouts'} onClick={() => setTab('payouts')} icon={<Wallet size={17} />} label="Payouts" />
+          <NavBtn active={tab === 'messaging'} onClick={() => setTab('messaging')} icon={<MessageSquare size={17} />} label="Messaging" />
           <NavBtn active={tab === 'team'} onClick={() => setTab('team')} icon={<Users size={17} />} label="Team" />
         </nav>
         <main className="flex-1 p-4 sm:p-6 min-w-0 overflow-x-hidden">
           {tab === 'overview' && <Overview />}
           {tab === 'tenants' && <Tenants />}
           {tab === 'payouts' && <Payouts />}
+          {tab === 'messaging' && <Messaging canEdit={isFull} />}
           {tab === 'team' && <Team canEdit={isFull} />}
         </main>
       </div>
@@ -401,6 +403,113 @@ function Payouts() {
             {rows.length === 0 && <tr><td colSpan={7} className="p-6 text-center text-gray-500">No central collections yet</td></tr>}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+function Messaging({ canEdit }: { canEdit: boolean }) {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({ queryKey: ['msg-overview'], queryFn: API.getMessagingOverview, refetchInterval: 60000 });
+  const { data: tpl } = useQuery({ queryKey: ['msg-templates'], queryFn: API.getMessagingTemplates });
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [tq, setTq] = useState('');
+
+  const saveTpl = useMutation({
+    mutationFn: ({ key, body }: { key: string; body: string }) => API.saveMessagingTemplate(key, body),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['msg-templates'] }); toast.success('Default template saved'); },
+    onError: () => toast.error('Failed to save template'),
+  });
+
+  if (isLoading || !data) return <div className="text-gray-400 text-sm">Loading…</div>;
+  const t = data.totals;
+  const rows = data.tenants.filter(r => !tq || r.name.toLowerCase().includes(tq.toLowerCase()) || r.subdomain.toLowerCase().includes(tq.toLowerCase()));
+  const templates = tpl?.templates || [];
+
+  return (
+    <div>
+      <h2 className="text-lg font-bold mb-3">Messaging</h2>
+
+      {/* Stat cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+        <Card label="Dartbit Gateway Balance" value={data.gatewayBalance != null ? data.gatewayBalance.toLocaleString() + ' SMS' : '—'} sub="central BlessedTexts account" />
+        <Card label="Sent This Month" value={t.sentThisMonth.toLocaleString()} sub="all tenants" />
+        <Card label="Sent Lifetime" value={t.sentLifetime.toLocaleString()} sub="all tenants" />
+        <Card label="Tenant SMS Units" value={t.totalUnits.toLocaleString()} sub={kes(t.totalBalanceKes) + ' wallet value'} />
+      </div>
+
+      {/* Per-tenant table */}
+      <div className="bg-gray-900 rounded-xl border border-gray-800 p-5 mb-6">
+        <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
+          <h3 className="text-sm font-semibold text-gray-300">Per-tenant SMS</h3>
+          <input value={tq} onChange={e => setTq(e.target.value)} placeholder="Search tenant…" className="bg-gray-950 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 w-48" />
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-gray-500 border-b border-gray-800">
+                <th className="p-2">Tenant</th>
+                <th className="p-2 text-right">Units</th>
+                <th className="p-2 text-right">Wallet</th>
+                <th className="p-2 text-right">This month</th>
+                <th className="p-2 text-right">Lifetime</th>
+                <th className="p-2 text-right">Spent</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length === 0 ? <tr><td colSpan={6} className="p-4 text-center text-gray-500">No tenants</td></tr> :
+                rows.map(r => (
+                  <tr key={r.tenantId} className="border-b border-gray-800/60">
+                    <td className="p-2"><div className="text-gray-100 font-medium">{r.name}</div><div className="text-xs text-gray-500">{r.subdomain}</div></td>
+                    <td className="p-2 text-right text-gray-200 font-semibold">{r.units.toLocaleString()}</td>
+                    <td className="p-2 text-right text-gray-300">{kes(r.balanceKes)}</td>
+                    <td className="p-2 text-right text-gray-300">{r.sentThisMonth.toLocaleString()}</td>
+                    <td className="p-2 text-right text-gray-300">{r.sentLifetime.toLocaleString()}</td>
+                    <td className="p-2 text-right text-gray-400">{kes(r.spentKes)}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Default templates editor */}
+      <div className="bg-gray-900 rounded-xl border border-gray-800 p-5">
+        <h3 className="text-sm font-semibold text-gray-300 mb-1">Default Message Templates</h3>
+        <p className="text-xs text-gray-500 mb-4">These are the platform defaults tenants start from (and can override). Editing here changes the baseline for all tenants who haven&apos;t customized that template, including the system alerts for offline/online routers and low SMS balance.</p>
+        <div className="space-y-4">
+          {templates.map(tp => {
+            const draft = drafts[tp.key] ?? tp.body;
+            const dirty = draft !== tp.body;
+            return (
+              <div key={tp.key} className="border border-gray-800 rounded-lg p-3">
+                <div className="flex items-center justify-between mb-1 gap-2 flex-wrap">
+                  <div>
+                    <span className="text-sm font-medium text-gray-200">{tp.label}</span>
+                    {tp.group === 'system' && <span className="ml-2 text-[10px] uppercase tracking-wide bg-amber-900/40 text-amber-300 px-1.5 py-0.5 rounded">system</span>}
+                    {tp.isDefault && <span className="ml-2 text-[10px] uppercase tracking-wide text-gray-500">default</span>}
+                  </div>
+                  <span className="text-xs text-gray-600">{tp.placeholders.join(' ')}</span>
+                </div>
+                <p className="text-xs text-gray-500 mb-2">{tp.description}</p>
+                <textarea
+                  value={draft}
+                  onChange={e => setDrafts(d => ({ ...d, [tp.key]: e.target.value }))}
+                  disabled={!canEdit}
+                  className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 min-h-[60px] disabled:opacity-60"
+                />
+                {canEdit && (
+                  <div className="flex justify-end gap-2 mt-2">
+                    {!tp.isDefault && (
+                      <button onClick={() => saveTpl.mutate({ key: tp.key, body: '' })} className="text-xs text-gray-400 hover:text-gray-200 flex items-center gap-1"><RotateCcw size={12} /> Reset to built-in</button>
+                    )}
+                    <button onClick={() => saveTpl.mutate({ key: tp.key, body: draft })} disabled={!dirty || saveTpl.isPending} className="text-xs bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg flex items-center gap-1"><Save size={12} /> Save</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

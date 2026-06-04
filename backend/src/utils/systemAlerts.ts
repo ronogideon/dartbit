@@ -10,6 +10,18 @@ import { resolveTemplate, renderTemplate } from './messageTemplates';
 const TICK_MS = 60 * 1000;            // check every minute
 const OFFLINE_AFTER_MS = 5 * 60 * 1000; // 5 minutes
 
+// Human-friendly outage duration, e.g. "12 min", "1 hr 5 min", "2 days 3 hr".
+function formatDuration(ms: number): string {
+  const mins = Math.round(ms / 60000);
+  if (mins < 60) return `${mins} min`;
+  const hrs = Math.floor(mins / 60);
+  const remMin = mins % 60;
+  if (hrs < 24) return remMin ? `${hrs} hr ${remMin} min` : `${hrs} hr`;
+  const days = Math.floor(hrs / 24);
+  const remHr = hrs % 24;
+  return remHr ? `${days} day${days > 1 ? 's' : ''} ${remHr} hr` : `${days} day${days > 1 ? 's' : ''}`;
+}
+
 // Collect the alert recipients for a tenant: the phone they signed up with (Tenant.phone) plus
 // any extra alert numbers they configured.
 async function alertRecipients(tenantId: string, cfgAlertPhones: string[]): Promise<string[]> {
@@ -25,18 +37,44 @@ async function tickOnce() {
 
   // ---- 1. Router offline > 5 min ----
   const routers = await prisma.mikrotikRouter.findMany({
-    select: { id: true, name: true, tenantId: true, lastSeenAt: true, status: true, offlineAlertSent: true },
+    select: { id: true, name: true, tenantId: true, lastSeenAt: true, status: true, offlineAlertSent: true, offlineSince: true },
   });
   for (const r of routers) {
     const lastSeen = r.lastSeenAt ? r.lastSeenAt.getTime() : 0;
     const isOffline = !lastSeen || (now - lastSeen) > OFFLINE_AFTER_MS;
 
     if (!isOffline) {
-      // Back online — clear the alert flag so a future outage alerts again.
+      // Back online. If we had alerted about this outage, send a "back online" alert with the
+      // outage duration, then clear the outage flags so a future outage alerts again.
       if (r.offlineAlertSent) {
-        await prisma.mikrotikRouter.update({ where: { id: r.id }, data: { offlineAlertSent: false } }).catch(() => {});
+        const cfg = await prisma.notificationConfig.findUnique({ where: { tenantId: r.tenantId } });
+        // Respect the same toggle as offline alerts (one switch governs router status alerts).
+        if (!cfg || cfg.routerOfflineAlert !== false) {
+          const tenant = await prisma.tenant.findUnique({ where: { id: r.tenantId }, select: { name: true } });
+          const recipients = await alertRecipients(r.tenantId, cfg?.alertPhones || []);
+          if (recipients.length > 0) {
+            // Outage spanned from offlineSince (when it went down) until lastSeen (first beat back).
+            const downStart = r.offlineSince ? r.offlineSince.getTime() : (lastSeen - OFFLINE_AFTER_MS);
+            const durationMs = Math.max(0, lastSeen - downStart);
+            const overrides = (cfg?.templates as Record<string, string> | null) || null;
+            const body = renderTemplate(resolveTemplate('system_router_online', overrides), {
+              tenant: tenant?.name || 'Dartbit', router: r.name, duration: formatDuration(durationMs),
+            });
+            for (const phone of recipients) {
+              await sendNotification({
+                tenantId: r.tenantId, phone, body, category: 'SYSTEM',
+                dedupKey: `SYS:ROUTER_ONLINE:${r.id}:${Math.floor(downStart / 1000)}`,
+              }).catch(e => console.error('[alerts] router online send:', e instanceof Error ? e.message : e));
+            }
+          }
+        }
+        await prisma.mikrotikRouter.update({ where: { id: r.id }, data: { offlineAlertSent: false, offlineSince: null } }).catch(() => {});
       }
       continue;
+    }
+    // Currently offline: record when the outage began (first time we notice it down).
+    if (!r.offlineSince && lastSeen) {
+      await prisma.mikrotikRouter.update({ where: { id: r.id }, data: { offlineSince: new Date(lastSeen) } }).catch(() => {});
     }
     if (r.offlineAlertSent) continue; // already alerted for this episode
     if (!lastSeen) continue;          // never connected — don't alert on never-seen routers

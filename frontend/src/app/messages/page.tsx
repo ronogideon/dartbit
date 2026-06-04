@@ -1,17 +1,19 @@
 'use client';
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getMessages, sendMessage, getSmsBalance, topupSms, type MessageRow } from '@/lib/api';
+import { getMessages, sendMessage, getSmsBalance, topupSms, broadcastMessage, getRouters, type MessageRow } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import toast from 'react-hot-toast';
-import { Plus, MessageSquare, Wallet, RefreshCw } from 'lucide-react';
+import { Plus, MessageSquare, Wallet, RefreshCw, Users, Send } from 'lucide-react';
 import SearchInput from '@/components/ui/SearchInput';
 
 export default function MessagesPage() {
   const qc = useQueryClient();
   const [modalOpen, setModalOpen] = useState(false);
   const [topupOpen, setTopupOpen] = useState(false);
+  const [bcastOpen, setBcastOpen] = useState(false);
+  const [bcast, setBcast] = useState<{ body: string; routerIds: string[]; services: string[]; statuses: string[] }>({ body: '', routerIds: [], services: [], statuses: [] });
   const [search, setSearch] = useState('');
   const [form, setForm] = useState({ recipient: '', body: '' });
   const [topup, setTopup] = useState({ amount: 500, phone: '' });
@@ -26,6 +28,25 @@ export default function MessagesPage() {
     queryFn: getSmsBalance,
     refetchInterval: 60000,
     retry: false,
+  });
+
+  const { data: routers = [] } = useQuery({ queryKey: ['routers'], queryFn: getRouters, staleTime: 60000 });
+
+  const bcastMut = useMutation({
+    mutationFn: () => broadcastMessage({
+      body: bcast.body,
+      routerIds: bcast.routerIds.length ? bcast.routerIds : undefined,
+      services: bcast.services.length ? bcast.services : undefined,
+      statuses: bcast.statuses.length ? bcast.statuses : undefined,
+    }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ['messages'] });
+      qc.invalidateQueries({ queryKey: ['sms-balance'] });
+      toast.success(`Sent to ${r.sent} of ${r.matched}${r.failed ? ` (${r.failed} failed)` : ''}`);
+      setBcastOpen(false);
+      setBcast({ body: '', routerIds: [], services: [], statuses: [] });
+    },
+    onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Broadcast failed'),
   });
 
   const sendMut = useMutation({
@@ -98,6 +119,9 @@ export default function MessagesPage() {
           </div>
           <button onClick={() => setTopupOpen(true)} className="btn-secondary flex items-center gap-2 text-sm">
             <Wallet size={16} /> Refill SMS
+          </button>
+          <button onClick={() => setBcastOpen(true)} className="btn-secondary flex items-center gap-2">
+            <Users size={16} /> Group Broadcast
           </button>
           <button onClick={() => setModalOpen(true)} className="btn-primary flex items-center gap-2">
             <Plus size={16} /> New Message
@@ -226,6 +250,60 @@ export default function MessagesPage() {
             </button>
           </div>
         </form>
+      </Modal>
+
+      <Modal isOpen={bcastOpen} onClose={() => setBcastOpen(false)} title="Group Broadcast">
+        <div className="space-y-4">
+          <p className="text-sm text-gray-500">Send one SMS to everyone matching the selected groups. Leave a group blank to not filter by it. Placeholders like <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1 rounded">{'{name}'}</code>, <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1 rounded">{'{package}'}</code>, <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1 rounded">{'{expiry}'}</code> are filled per subscriber.</p>
+
+          <div>
+            <label className="label">User type</label>
+            <div className="flex flex-wrap gap-2">
+              {(['PPPOE', 'HOTSPOT', 'STATIC'] as const).map(s => {
+                const on = bcast.services.includes(s);
+                return <button key={s} type="button" onClick={() => setBcast(b => ({ ...b, services: on ? b.services.filter(x => x !== s) : [...b.services, s] }))}
+                  className={`px-3 py-1.5 rounded-lg text-sm border ${on ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-700'}`}>{s === 'PPPOE' ? 'PPPoE' : s.charAt(0) + s.slice(1).toLowerCase()}</button>;
+              })}
+            </div>
+          </div>
+
+          <div>
+            <label className="label">Status</label>
+            <div className="flex flex-wrap gap-2">
+              {(['ACTIVE', 'EXPIRED'] as const).map(s => {
+                const on = bcast.statuses.includes(s);
+                return <button key={s} type="button" onClick={() => setBcast(b => ({ ...b, statuses: on ? b.statuses.filter(x => x !== s) : [...b.statuses, s] }))}
+                  className={`px-3 py-1.5 rounded-lg text-sm border ${on ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-700'}`}>{s.charAt(0) + s.slice(1).toLowerCase()}</button>;
+              })}
+            </div>
+          </div>
+
+          <div>
+            <label className="label">Routers</label>
+            <div className="flex flex-wrap gap-2 max-h-28 overflow-y-auto">
+              {(routers as { id: string; name: string }[]).length === 0 ? <span className="text-sm text-gray-400">No routers</span> :
+                (routers as { id: string; name: string }[]).map(r => {
+                  const on = bcast.routerIds.includes(r.id);
+                  return <button key={r.id} type="button" onClick={() => setBcast(b => ({ ...b, routerIds: on ? b.routerIds.filter(x => x !== r.id) : [...b.routerIds, r.id] }))}
+                    className={`px-3 py-1.5 rounded-lg text-sm border ${on ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-700'}`}>{r.name}</button>;
+                })}
+            </div>
+            <p className="text-xs text-gray-400 mt-1">No selection = all users system-wide for this ISP.</p>
+          </div>
+
+          <div>
+            <label className="label">Message</label>
+            <textarea className="input min-h-[90px]" value={bcast.body} onChange={e => setBcast(b => ({ ...b, body: e.target.value }))} placeholder="Hi {name}, your {package} plan expires on {expiry}…" />
+            <p className="text-xs text-gray-400 mt-1">{bcast.body.length} chars · ~{Math.max(1, Math.ceil(bcast.body.length / 160))} SMS each</p>
+          </div>
+
+          <div className="flex gap-2 justify-end pt-1">
+            <button onClick={() => setBcastOpen(false)} className="btn-secondary">Cancel</button>
+            <button onClick={() => bcast.body.trim() ? bcastMut.mutate() : toast.error('Enter a message')} disabled={bcastMut.isPending} className="btn-primary flex items-center gap-2">
+              <Send size={15} /> {bcastMut.isPending ? 'Sending…' : 'Send broadcast'}
+            </button>
+          </div>
+        </div>
       </Modal>
     </AppLayout>
   );

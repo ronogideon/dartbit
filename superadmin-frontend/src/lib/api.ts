@@ -25,3 +25,15 @@ export const resetTeamPassword = (id: string) => api.post(`/superadmin/team/${id
 export const deleteTeamMember = (id: string) => api.delete(`/superadmin/team/${id}`).then((r) => r.data.data);
 export const getSmsRate = () => api.get('/superadmin/sms-rate').then((r) => r.data.data as { rate: number });
 export const setSmsRate = (rate: number) => api.put('/superadmin/sms-rate', { rate }).then((r) => r.data.data as { rate: number });
+
+export interface MsgTenantRow { tenantId: string; name: string; subdomain: string; balanceKes: number; units: number; spentKes: number; sentThisMonth: number; sentLifetime: number }
+export interface MsgOverview {
+  rate: number;
+  gatewayBalance: number | null;
+  totals: { sentThisMonth: number; sentLifetime: number; totalUnits: number; totalBalanceKes: number };
+  tenants: MsgTenantRow[];
+}
+export interface MsgTemplate { key: string; group: string; label: string; description: string; body: string; isDefault: boolean; editable: boolean; placeholders: string[] }
+export const getMessagingOverview = () => api.get('/superadmin/messaging/overview').then((r) => r.data.data as MsgOverview);
+export const getMessagingTemplates = () => api.get('/superadmin/messaging/templates').then((r) => r.data.data as { templates: MsgTemplate[] });
+export const saveMessagingTemplate = (key: string, body: string) => api.put(`/superadmin/messaging/templates/${key}`, { body }).then((r) => r.data.data);

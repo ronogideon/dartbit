@@ -171,6 +171,7 @@ model MikrotikRouter {
   uptime         String?
   lastSeenAt     DateTime?
   offlineAlertSent Boolean                 @default(false) // true once an offline alert SMS was sent; reset when back online
+  offlineSince     DateTime?               // when the current/last outage began (for back-online duration)
   tenantId       String
   tenant         Tenant                    @relation(fields: [tenantId], references: [id])
   interfaces     RouterInterface[]
