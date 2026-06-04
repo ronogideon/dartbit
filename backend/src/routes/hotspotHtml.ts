@@ -210,7 +210,9 @@ button.primary svg{width:14px;height:14px}
   // === BUY: load packages from backend ===
   function loadPackages(){
     var xhr=new XMLHttpRequest();
-    xhr.open('GET',BACKEND+'/hotspot/packages?apiKey='+API_KEY,true);
+    // Cache-buster (_=timestamp) so the device never shows a stale package list — new packages
+    // appear immediately, not just after a cache expiry.
+    xhr.open('GET',BACKEND+'/hotspot/packages?apiKey='+API_KEY+'&_='+Date.now(),true);
     xhr.timeout=10000;
     xhr.onload=function(){
       try{

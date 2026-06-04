@@ -177,9 +177,9 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // how long the MAC binding survives a disconnect (1 day here). On reconnect within
     // that window, RouterOS auto-logs them back in; after it expires, the portal voucher
     // form is the fallback.
-    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,http-pap http-cookie-lifetime=1d use-radius=no }`);
+    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,http-pap http-cookie-lifetime=7d use-radius=no }`);
     // Always sync the profile settings (idempotent — no disruption)
-    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,http-pap http-cookie-lifetime=1d use-radius=no`);
+    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,http-pap http-cookie-lifetime=7d use-radius=no`);
     // User profile — one device per credential, with MAC cookie so reconnects auto-login
     add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 address-pool=dhcp-pool }`);
     add(`:do { /ip hotspot user profile set [find name="dartbit-default"] add-mac-cookie=yes } on-error={}`);
@@ -245,6 +245,12 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     for (const ip of allowIps) {
       add(`/ip firewall address-list add list=dartbit-backend address=${ip} comment="Dartbit backend"`);
     }
+    // ALSO add the hostnames by FQDN. RouterOS 7 resolves these and keeps the address-list entry
+    // updated as the IPs change, and (critically) covers the tenant subdomains/portal whose CDN
+    // IPs may differ from the apex. This is what lets a no-package PPPoE/static user reach the
+    // tenant subdomain to buy a plan, not just the apex.
+    add(`/ip firewall address-list add list=dartbit-backend address=${backendHost} comment="Dartbit backend fqdn"`);
+    add(`/ip firewall address-list add list=dartbit-backend address=${portalBaseHost} comment="Dartbit portal fqdn"`);
     add('');
 
     add('# 6d. (Dartbit redirect rules removed — relying on MikroTik native hotspot interception)');

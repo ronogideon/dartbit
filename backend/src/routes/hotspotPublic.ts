@@ -123,6 +123,12 @@ router.post('/redeem', async (req: Request, res: Response) => {
 // GET /hotspot/packages?apiKey=xxx
 router.get('/packages', async (req: Request, res: Response) => {
   try {
+    // Never cache the package list — newly added/edited packages must show immediately on the
+    // captive portal. Without this, devices/proxies cached the list and missed new packages
+    // (while deletions appeared to take effect because purchasing a gone package 404s).
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
     const apiKey = String(req.query.apiKey || '');
     if (!apiKey) return res.status(400).json({ success: false, error: 'apiKey required' });
     const r = await prisma.mikrotikRouter.findUnique({
