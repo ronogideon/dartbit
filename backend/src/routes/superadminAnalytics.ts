@@ -28,7 +28,8 @@ router.get('/overview', requireSuperAdminRead, async (_req: AuthRequest, res: Re
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
     const [tenantCount, activeTenants, subscriberCount, routerCount,
-           trialTenants, overdueTenants, dueSoonTenants, suspendedTenants] = await Promise.all([
+           trialTenants, overdueTenants, dueSoonTenants, suspendedTenants,
+           renewedTenants] = await Promise.all([
       prisma.tenant.count(),
       prisma.tenant.count({ where: { status: 'ACTIVE' } }),
       prisma.subscriber.count(),
@@ -37,7 +38,10 @@ router.get('/overview', requireSuperAdminRead, async (_req: AuthRequest, res: Re
       prisma.tenant.count({ where: { billingStatus: 'OVERDUE' } }),
       prisma.tenant.count({ where: { billingStatus: 'DUE_SOON' } }),
       prisma.tenant.count({ where: { status: 'SUSPENDED' } }),
+      // Renewed = tenants whose Dartbit subscription is paid up.
+      prisma.tenant.count({ where: { billingStatus: 'PAID' } }),
     ]);
+    const notRenewedTenants = Math.max(0, tenantCount - renewedTenants);
 
     // Dartbit subscription revenue (what tenants pay Dartbit via Paystack)
     const paidPlatform = await prisma.tenantPayment.findMany({
@@ -131,6 +135,7 @@ router.get('/overview', requireSuperAdminRead, async (_req: AuthRequest, res: Re
       tenants: {
         total: tenantCount, active: activeTenants, trial: trialTenants,
         overdue: overdueTenants, dueSoon: dueSoonTenants, suspended: suspendedTenants,
+        renewed: renewedTenants, notRenewed: notRenewedTenants,
       },
       subscribers: subscriberCount,
       routers: routerCount,
