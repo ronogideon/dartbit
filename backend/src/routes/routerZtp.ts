@@ -642,8 +642,11 @@ router.all('/sessions', async (req: Request, res: Response) => {
         return { ...s, subscriberId: subByUsername[s.username]?.id || undefined };
       });
 
-      // Strip the transient macAddress field (not an OnlineSession column).
-      const onlineRows = sessionsWithIds.map(({ macAddress: _mac, ...rest }) => rest);
+      // Strip the transient `service` marker — it's used only for SessionRecord classification
+      // and is NOT an OnlineSession column. Leaving it in made Prisma throw "Unknown argument
+      // service" → 500 on every sessions report (the dartbit-sessions scheduler errors in the
+      // router log). macAddress IS a valid column, so we keep it.
+      const onlineRows = sessionsWithIds.map(({ service: _svc, ...rest }) => rest);
 
       if (onlineRows.length > 0) {
         await prisma.onlineSession.createMany({ data: onlineRows });
