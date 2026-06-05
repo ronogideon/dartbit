@@ -636,6 +636,11 @@ router.all('/sessions', async (req: Request, res: Response) => {
         if (s.macAddress) subByMac[s.macAddress.toUpperCase()] = { id: s.id, service: s.service, username: s.username };
       }
 
+      // Recognise a username that is actually a MAC address (from the MAC auto-login user). We
+      // map it back to the owning subscriber so the active page shows the D-number + phone, never
+      // the raw MAC. The MAC user is purely a router-side auth entry.
+      const looksLikeMac = (u: string) => /^([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}$/.test(u || '');
+
       const sessionsWithIds = sessions.map(s => {
         if (!s.username && s.macAddress) {
           // Bypass device — resolve by MAC and backfill the real username.
@@ -643,7 +648,19 @@ router.all('/sessions', async (req: Request, res: Response) => {
           if (m) return { ...s, username: m.username, subscriberId: m.id };
           return { ...s, username: s.macAddress }; // unknown device; show its MAC
         }
-        return { ...s, subscriberId: subByUsername[s.username]?.id || undefined };
+        // MAC auto-login: the session's username IS the device MAC. Resolve to the subscriber and
+        // replace the displayed username with their D-number so the MAC never surfaces in the UI.
+        if (looksLikeMac(s.username)) {
+          const m = subByMac[s.username.toUpperCase()];
+          if (m) return { ...s, username: m.username, macAddress: s.username, subscriberId: m.id };
+        }
+        // Also backfill via the session's own MAC if the username didn't resolve to a subscriber.
+        const direct = subByUsername[s.username];
+        if (!direct && s.macAddress) {
+          const m = subByMac[s.macAddress.toUpperCase()];
+          if (m) return { ...s, username: m.username, subscriberId: m.id };
+        }
+        return { ...s, subscriberId: direct?.id || undefined };
       });
 
       // Strip the transient `service` marker — it's used only for SessionRecord classification
@@ -665,7 +682,7 @@ router.all('/sessions', async (req: Request, res: Response) => {
       }
 
       // === Persistent session history (SessionRecord) ===
-      await recordSessionHistory(r.id, r.tenantId, sessions, subByUsername, now);
+      await recordSessionHistory(r.id, r.tenantId, sessionsWithIds, subByUsername, now);
     } else {
       // Empty poll = no active sessions. End all currently-tracked sessions for this router.
       await recordSessionHistory(r.id, r.tenantId, [], {}, Date.now());
