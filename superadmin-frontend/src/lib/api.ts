@@ -30,10 +30,13 @@ export interface MsgTenantRow { tenantId: string; name: string; subdomain: strin
 export interface MsgOverview {
   rate: number;
   gatewayBalance: number | null;
+  defaultProvider: 'BLESSEDTEXTS' | 'TALKSASA';
   totals: { sentThisMonth: number; sentLifetime: number; totalUnits: number; totalBalanceKes: number };
   tenants: MsgTenantRow[];
 }
 export interface MsgTemplate { key: string; group: string; label: string; description: string; body: string; isDefault: boolean; editable: boolean; placeholders: string[] }
 export const getMessagingOverview = () => api.get('/superadmin/messaging/overview').then((r) => r.data.data as MsgOverview);
+export const getMessagingProvider = () => api.get('/superadmin/messaging/provider').then((r) => r.data.data as { provider: 'BLESSEDTEXTS' | 'TALKSASA'; configured: { BLESSEDTEXTS: boolean; TALKSASA: boolean } });
+export const setMessagingProvider = (provider: 'BLESSEDTEXTS' | 'TALKSASA') => api.put('/superadmin/messaging/provider', { provider }).then((r) => r.data.data);
 export const getMessagingTemplates = () => api.get('/superadmin/messaging/templates').then((r) => r.data.data as { templates: MsgTemplate[] });
 export const saveMessagingTemplate = (key: string, body: string) => api.put(`/superadmin/messaging/templates/${key}`, { body }).then((r) => r.data.data);

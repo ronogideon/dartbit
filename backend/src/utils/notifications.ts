@@ -3,7 +3,8 @@
 // credentials or Dartbit's shared BlessedTexts account, and to record every send to the
 // Message table for the Messages tab.
 import prisma from './prisma';
-import { dartbitDefaultCreds, decryptApiKey, normalizeKenyanPhone, sendSms, type SmsCreds } from './blessedtexts';
+import { normalizeKenyanPhone } from './blessedtexts';
+import { resolveGateway, sendViaProvider } from './smsGateway';
 import { canSend, debitForSms } from './smsWallet';
 
 type Category = 'WELCOME' | 'RECEIPT' | 'REMINDER' | 'EXPIRED' | 'SYSTEM' | 'MANUAL' | 'OTHER';
@@ -28,17 +29,7 @@ export interface NotifyResult {
 
 // Resolves the SMS credentials for a tenant: tenant's own when gateway=CUSTOM and apiKey is
 // set, otherwise the shared Dartbit account from env. Returns null when nothing is configured.
-export async function resolveSmsCreds(tenantId: string): Promise<SmsCreds | null> {
-  const cfg = await prisma.notificationConfig.findUnique({ where: { tenantId } });
-  if (cfg && cfg.gateway === 'CUSTOM' && cfg.apiKey && cfg.senderId) {
-    try {
-      return { apiKey: decryptApiKey(cfg.apiKey), senderId: cfg.senderId };
-    } catch (e) {
-      console.error('[sms] failed to decrypt tenant api key, falling back to dartbit:', e);
-    }
-  }
-  return dartbitDefaultCreds();
-}
+export { resolveGateway } from './smsGateway';
 
 // Whether a particular category is enabled for the tenant (defaults: all on).
 export async function isCategoryEnabled(tenantId: string, category: Category): Promise<boolean> {
@@ -107,8 +98,8 @@ export async function sendNotification(args: SendNotifyArgs): Promise<NotifyResu
     return { ok: false, reason: 'insufficient SMS balance' };
   }
 
-  const creds = await resolveSmsCreds(tenantId);
-  if (!creds) {
+  const gw = await resolveGateway(tenantId);
+  if (!gw) {
     await prisma.message.create({
       data: { tenantId, type: 'SMS', recipient: to, body, status: 'FAILED', errorMessage: 'No SMS gateway configured', category, dedupKey: dedupKey || undefined, subscriberId: subscriberId || undefined, username: username || undefined },
     });
@@ -122,7 +113,7 @@ export async function sendNotification(args: SendNotifyArgs): Promise<NotifyResu
     msg = await prisma.message.create({
       data: {
         tenantId, type: 'SMS', recipient: to, body,
-        status: 'PENDING', gateway: 'BLESSEDTEXTS',
+        status: 'PENDING', gateway: gw.provider,
         category, dedupKey: dedupKey || undefined,
         subscriberId: subscriberId || undefined, username: username || undefined,
       },
@@ -137,7 +128,7 @@ export async function sendNotification(args: SendNotifyArgs): Promise<NotifyResu
   }
 
   try {
-    const result = await sendSms(creds, to, body);
+    const result = await sendViaProvider(gw.provider, gw.creds, to, body);
     await prisma.message.update({
       where: { id: msg.id },
       data: {
@@ -148,8 +139,9 @@ export async function sendNotification(args: SendNotifyArgs): Promise<NotifyResu
         errorMessage: result.ok ? null : result.statusDesc || null,
       },
     });
-    // Debit the prepaid wallet only on a successful send (Dartbit-gateway tenants only).
-    if (result.ok) {
+    // Debit the prepaid Dartbit wallet only on a successful send AND only when using the Dartbit
+    // shared gateway. Tenants on their own gateway (CUSTOM) pay their provider directly — no wallet.
+    if (result.ok && gw.usesDartbit) {
       try { await debitForSms(tenantId, segments, result.messageId || msg.id); }
       catch (e) { console.error('[wallet] debit failed:', e instanceof Error ? e.message : e); }
     }

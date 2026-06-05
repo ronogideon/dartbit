@@ -457,8 +457,9 @@ model NotificationConfig {
   tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   // Gateway
   gateway           String   @default("DARTBIT")    // DARTBIT (shared) | CUSTOM (tenant's own)
+  provider          String   @default("BLESSEDTEXTS") // BLESSEDTEXTS | TALKSASA — which gateway the CUSTOM creds are for
   apiKey            String?                          // encrypted; only used when gateway=CUSTOM
-  senderId          String?                          // tenant's BlessedTexts sender ID
+  senderId          String?                          // tenant's sender ID
   // Auto notifications (defaults: on for welcome/receipt/expiry-reminders)
   sendWelcome       Boolean  @default(true)
   sendPaymentReceipt Boolean @default(true)

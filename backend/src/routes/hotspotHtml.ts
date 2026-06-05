@@ -176,6 +176,24 @@ button.primary svg{width:14px;height:14px}
   function clr(){st.className='status';st.innerHTML=''}
   function spinner(){return '<span class="spinner"></span>'}
 
+  // LOOP BREAKER for expired devices: if this captive portal is showing, the device does NOT have
+  // an active package (an active device is auto-logged-in by the router's MAC/cookie auth BEFORE
+  // the portal is ever shown). A stale MAC cookie can otherwise keep half-logging-in an expired
+  // device, bouncing it back here repeatedly. So on the FIRST load we clear any stale hotspot auth
+  // state once (via the MikroTik logout link) so the device settles on the package list instead of
+  // looping. We use a sessionStorage guard so this happens at most once per portal visit.
+  (function(){
+    try{
+      var logoutUrl='$(link-logout)';
+      // Only meaningful if MikroTik populated the logout link (i.e. there's a session/cookie to clear).
+      if(logoutUrl && logoutUrl.indexOf('link-logout')===-1 && !sessionStorage.getItem('db_cleared')){
+        sessionStorage.setItem('db_cleared','1');
+        // Fire-and-forget logout to drop the stale cookie/session, then continue to packages.
+        var img=new Image(); img.src=logoutUrl+(logoutUrl.indexOf('?')>=0?'&':'?')+'_='+Date.now();
+      }
+    }catch(e){}
+  })();
+
   // Tab switching
   var tabs=document.querySelectorAll('.tab');
   for(var i=0;i<tabs.length;i++){

@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import prisma from '../utils/prisma';
 import { authenticate, AuthRequest, requireSuperAdmin, requireSuperAdminRead } from '../middleware/auth';
 import { sendSuccess, sendError } from '../utils/response';
-import { getSmsBalance } from '../utils/blessedtexts';
+import { getDefaultProvider, dartbitCredsFor, balanceViaProvider } from '../utils/smsGateway';
 import { getSmsRate, setSmsRate } from '../utils/smsWallet';
 
 const router = Router();
@@ -93,13 +93,16 @@ router.get('/overview', requireSuperAdminRead, async (_req: AuthRequest, res: Re
     let smsBalance: number | null = null;
     let smsBalanceError: string | null = null;
     try {
-      const apiKey = process.env.BLESSEDTEXTS_API_KEY;
-      if (!apiKey) {
-        smsBalanceError = 'BLESSEDTEXTS_API_KEY not set on backend';
+      const provider = await getDefaultProvider();
+      const creds = dartbitCredsFor(provider);
+      if (!creds) {
+        smsBalanceError = `${provider} central credentials not set on backend`;
       } else {
-        const bal = await getSmsBalance({ apiKey });
-        if (bal.ok) {
+        const bal = await balanceViaProvider(provider, creds);
+        if (bal.ok && bal.balance != null) {
           smsBalance = bal.balance;
+        } else if (provider === 'TALKSASA') {
+          smsBalanceError = 'TalkSasa has no balance API';
         } else {
           smsBalanceError = 'gateway returned non-success';
           console.error('[superadmin] SMS balance fetch not ok:', JSON.stringify(bal.raw));

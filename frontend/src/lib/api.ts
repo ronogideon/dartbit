@@ -197,6 +197,7 @@ export interface MessageTemplate {
 }
 export interface NotificationConfig {
   gateway: 'DARTBIT' | 'CUSTOM';
+  provider?: 'BLESSEDTEXTS' | 'TALKSASA';
   apiKey: string | null;
   apiKeyMasked: string | null;
   senderId: string | null;

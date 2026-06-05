@@ -412,6 +412,12 @@ function Messaging({ canEdit }: { canEdit: boolean }) {
   const qc = useQueryClient();
   const { data, isLoading } = useQuery({ queryKey: ['msg-overview'], queryFn: API.getMessagingOverview, refetchInterval: 60000 });
   const { data: tpl } = useQuery({ queryKey: ['msg-templates'], queryFn: API.getMessagingTemplates });
+  const { data: prov } = useQuery({ queryKey: ['msg-provider'], queryFn: API.getMessagingProvider });
+  const setProv = useMutation({
+    mutationFn: (p: 'BLESSEDTEXTS' | 'TALKSASA') => API.setMessagingProvider(p),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['msg-provider'] }); qc.invalidateQueries({ queryKey: ['msg-overview'] }); toast.success('Default SMS gateway switched'); },
+    onError: () => toast.error('Failed to switch gateway'),
+  });
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [tq, setTq] = useState('');
 
@@ -432,10 +438,30 @@ function Messaging({ canEdit }: { canEdit: boolean }) {
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-        <Card label="Dartbit Gateway Balance" value={data.gatewayBalance != null ? data.gatewayBalance.toLocaleString() + ' SMS' : '—'} sub="central BlessedTexts account" />
+        <Card label="Dartbit Gateway Balance" value={data.gatewayBalance != null ? data.gatewayBalance.toLocaleString() + ' SMS' : '—'} sub={`central ${data.defaultProvider === 'TALKSASA' ? 'TalkSasa' : 'BlessedTexts'} account`} />
         <Card label="Sent This Month" value={t.sentThisMonth.toLocaleString()} sub="all tenants" />
         <Card label="Sent Lifetime" value={t.sentLifetime.toLocaleString()} sub="all tenants" />
         <Card label="Tenant SMS Units" value={t.totalUnits.toLocaleString()} sub={kes(t.totalBalanceKes) + ' wallet value'} />
+      </div>
+
+      {/* Default SMS gateway switch */}
+      <div className="bg-gray-900 rounded-xl border border-gray-800 p-5 mb-6">
+        <h3 className="text-sm font-semibold text-gray-300 mb-1">Dartbit Default SMS Gateway</h3>
+        <p className="text-xs text-gray-500 mb-3">The gateway used for all tenants on the shared Dartbit wallet (tenants with their own gateway are unaffected).</p>
+        <div className="flex gap-2 flex-wrap">
+          {(['TALKSASA', 'BLESSEDTEXTS'] as const).map(p => {
+            const active = prov?.provider === p;
+            const configured = prov?.configured?.[p];
+            return (
+              <button key={p} onClick={() => !active && setProv.mutate(p)} disabled={setProv.isPending || active}
+                className={`px-4 py-2 rounded-lg text-sm border transition ${active ? 'border-blue-500 bg-blue-600/20 text-blue-300' : 'border-gray-700 text-gray-300 hover:border-gray-500'}`}>
+                {p === 'TALKSASA' ? 'TalkSasa' : 'BlessedTexts'}
+                {active && ' ✓'}
+                {!configured && <span className="block text-[10px] text-amber-400 mt-0.5">creds not set on backend</span>}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* Per-tenant table */}

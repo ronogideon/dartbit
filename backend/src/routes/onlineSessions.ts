@@ -16,7 +16,17 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       include: { subscriber: true, router: true },
       orderBy: { updatedAt: 'desc' },
     });
-    sendSuccess(res, sessions);
+    // Hide expired subscribers from the active page. Expired PPPoE/static devices are deliberately
+    // kept connected (portal-only) so they can reach tenant.dartbittech.com to renew — but they
+    // are NOT "active" customers, so they should not clutter the active-users view.
+    const now = Date.now();
+    const visible = sessions.filter(s => {
+      const sub = s.subscriber;
+      if (!sub) return true; // unidentified sessions still shown
+      const expired = sub.expiresAt ? new Date(sub.expiresAt).getTime() <= now : false;
+      return sub.isActive && !expired;
+    });
+    sendSuccess(res, visible);
   } catch {
     sendError(res, 'Failed to fetch sessions', 500);
   }

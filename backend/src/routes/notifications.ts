@@ -5,7 +5,8 @@ import prisma from '../utils/prisma';
 import { authenticate, AuthRequest, requireTenantAdmin } from '../middleware/auth';
 import { sendSuccess, sendError } from '../utils/response';
 import { dartbitDefaultCreds, decryptApiKey, encryptApiKey, getSmsBalance, topupSms, normalizeKenyanPhone } from '../utils/blessedtexts';
-import { resolveSmsCreds, sendNotification } from '../utils/notifications';
+import { sendNotification } from '../utils/notifications';
+import { resolveGateway, balanceViaProvider } from '../utils/smsGateway';
 import { getWalletBalance, getSmsRate } from '../utils/smsWallet';
 import { centralDarajaCreds, stkPush, normalizeBackendUrl } from '../utils/daraja';
 import { mask } from '../utils/crypto';
@@ -19,6 +20,7 @@ const DEFAULT_OFFSETS = [7200, 4320, 240];
 
 const configSchema = z.object({
   gateway: z.enum(['DARTBIT', 'CUSTOM']).default('DARTBIT'),
+  provider: z.enum(['BLESSEDTEXTS', 'TALKSASA']).default('BLESSEDTEXTS'), // which gateway the CUSTOM creds are for
   apiKey: z.string().optional().nullable(),   // only used when gateway=CUSTOM. Plain text from UI.
   senderId: z.string().optional().nullable(),
   sendWelcome: z.boolean().default(true),
@@ -45,7 +47,7 @@ router.get('/config', async (req: AuthRequest, res: Response) => {
     if (!cfg) {
       // Return the defaults so the UI can render even before save.
       return sendSuccess(res, {
-        gateway: 'DARTBIT', apiKey: null, apiKeyMasked: null, senderId: null,
+        gateway: 'DARTBIT', provider: 'BLESSEDTEXTS', apiKey: null, apiKeyMasked: null, senderId: null,
         sendWelcome: true, sendPaymentReceipt: true, sendExpiryReminders: true,
         reminderOffsets: DEFAULT_OFFSETS,
         templates: allTemplatesWithDefaults(null),
@@ -56,6 +58,7 @@ router.get('/config', async (req: AuthRequest, res: Response) => {
     }
     sendSuccess(res, {
       gateway: cfg.gateway,
+      provider: cfg.provider || "BLESSEDTEXTS",
       apiKey: null,                                   // never return the plain key
       apiKeyMasked: cfg.apiKey ? mask(decryptApiKey(cfg.apiKey)) : null,
       senderId: cfg.senderId,
@@ -104,6 +107,7 @@ router.put('/config', requireTenantAdmin, async (req: AuthRequest, res: Response
 
     const updateData: Record<string, unknown> = {
       gateway: d.gateway,
+      provider: d.provider,
       sendWelcome: d.sendWelcome,
       sendPaymentReceipt: d.sendPaymentReceipt,
       sendExpiryReminders: d.sendExpiryReminders,
@@ -128,6 +132,7 @@ router.put('/config', requireTenantAdmin, async (req: AuthRequest, res: Response
       create: {
         tenantId,
         gateway: d.gateway,
+        provider: d.provider,
         apiKey: d.gateway === 'CUSTOM' && d.apiKey ? encryptApiKey(d.apiKey) : null,
         senderId: d.gateway === 'CUSTOM' ? d.senderId || null : null,
         sendWelcome: d.sendWelcome,
@@ -177,11 +182,12 @@ router.get('/balance', async (req: AuthRequest, res: Response) => {
       const smsRemaining = rate > 0 ? Math.floor(walletBal / rate) : 0;
       return sendSuccess(res, { mode: 'WALLET', balanceKES: walletBal, rate, smsRemaining, balance: smsRemaining });
     }
-    // CUSTOM gateway: show the tenant's own provider balance.
-    const creds = await resolveSmsCreds(tenantId);
-    if (!creds) return sendError(res, 'No SMS gateway configured', 400);
-    const result = await getSmsBalance({ apiKey: creds.apiKey });
-    sendSuccess(res, { mode: 'CUSTOM', balance: result.balance, ok: result.ok });
+    // CUSTOM gateway: show the tenant's own provider balance (BlessedTexts shows a number;
+    // TalkSasa has no balance API so balance is null and the UI shows "—").
+    const gw = await resolveGateway(tenantId);
+    if (!gw) return sendError(res, 'No SMS gateway configured', 400);
+    const result = await balanceViaProvider(gw.provider, gw.creds);
+    sendSuccess(res, { mode: 'CUSTOM', provider: gw.provider, balance: result.balance, ok: result.ok });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);
   }

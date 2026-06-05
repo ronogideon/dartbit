@@ -5,7 +5,7 @@ import { z } from 'zod';
 import prisma from '../utils/prisma';
 import { authenticate, requireSuperAdmin, AuthRequest } from '../middleware/auth';
 import { sendSuccess, sendError } from '../utils/response';
-import { getSmsBalance } from '../utils/blessedtexts';
+import { getDefaultProvider, setDefaultProvider, dartbitCredsFor, balanceViaProvider, type SmsProvider } from '../utils/smsGateway';
 import { getSmsRate } from '../utils/smsWallet';
 import { allTemplatesForPlatform, codeDefaultTemplate, setPlatformDefaults } from '../utils/messageTemplates';
 
@@ -39,11 +39,13 @@ router.get('/overview', requireSuperRead, async (_req: AuthRequest, res: Respons
   try {
     const rate = await getSmsRate();
 
-    // Dartbit gateway balance (central BlessedTexts account).
+    // Dartbit gateway balance for the CURRENT default provider. TalkSasa has no balance API so it
+    // returns null (UI shows "—"); BlessedTexts returns a number.
+    const defaultProvider = await getDefaultProvider();
     let gatewayBalance: number | null = null;
-    const apiKey = process.env.BLESSEDTEXTS_API_KEY;
-    if (apiKey) {
-      const bal = await getSmsBalance({ apiKey }).catch(() => ({ ok: false, balance: 0 }));
+    const dartbitCreds = dartbitCredsFor(defaultProvider);
+    if (dartbitCreds) {
+      const bal = await balanceViaProvider(defaultProvider, dartbitCreds).catch(() => ({ ok: false, balance: null as number | null }));
       if (bal.ok) gatewayBalance = bal.balance;
     }
 
@@ -84,7 +86,7 @@ router.get('/overview', requireSuperRead, async (_req: AuthRequest, res: Respons
       totalBalanceKes: rows.reduce((s, r) => s + r.balanceKes, 0),
     };
 
-    sendSuccess(res, { rate, gatewayBalance, totals, tenants: rows });
+    sendSuccess(res, { rate, gatewayBalance, defaultProvider, totals, tenants: rows });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);
   }
@@ -125,6 +127,36 @@ router.put('/templates/:key', requireSuperAdmin, async (req: AuthRequest, res: R
     }
     await loadPlatformDefaults(); // refresh the in-memory baseline used by notifications
     sendSuccess(res, { key, body });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
+// GET /superadmin/messaging/provider — current Dartbit default SMS provider.
+router.get('/provider', requireSuperRead, async (_req: AuthRequest, res: Response) => {
+  try {
+    const provider = await getDefaultProvider();
+    // Report which providers have central creds configured (so the UI can warn).
+    sendSuccess(res, {
+      provider,
+      configured: {
+        BLESSEDTEXTS: !!dartbitCredsFor('BLESSEDTEXTS'),
+        TALKSASA: !!dartbitCredsFor('TALKSASA'),
+      },
+    });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
+// PUT /superadmin/messaging/provider — switch the Dartbit default SMS gateway. Body: { provider }.
+const provSchema = z.object({ provider: z.enum(['BLESSEDTEXTS', 'TALKSASA']) });
+router.put('/provider', requireSuperAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const parsed = provSchema.safeParse(req.body);
+    if (!parsed.success) return sendError(res, 'Invalid provider', 400);
+    await setDefaultProvider(parsed.data.provider as SmsProvider);
+    sendSuccess(res, { provider: parsed.data.provider });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);
   }

@@ -234,6 +234,7 @@ function NotificationsTab() {
       lowBalanceThreshold: form!.lowBalanceThreshold,
     };
     if (form!.gateway === 'CUSTOM') {
+      payload.provider = form!.provider || 'BLESSEDTEXTS';
       payload.senderId = form!.senderId || null;
       if (newApiKey) payload.apiKey = newApiKey;
     }
@@ -296,28 +297,42 @@ function NotificationsTab() {
         </div>
 
         {form.gateway === 'CUSTOM' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+          <div className="mt-4 p-4 rounded-lg bg-gray-50 dark:bg-gray-800/50 space-y-4">
             <div>
-              <label className="text-xs text-gray-500 mb-1 block">BlessedTexts API key</label>
-              <input
-                type="password"
-                placeholder={form.apiKeyMasked ? form.apiKeyMasked : 'Paste your API key'}
-                value={newApiKey}
-                onChange={e => setNewApiKey(e.target.value)}
-                className="input w-full"
-              />
-              {form.apiKeyMasked && !newApiKey && <div className="text-xs text-gray-500 mt-1">Saved key on file. Leave blank to keep it.</div>}
+              <label className="text-xs text-gray-500 mb-1 block">Gateway provider</label>
+              <div className="flex gap-2">
+                {(['BLESSEDTEXTS', 'TALKSASA'] as const).map(p => (
+                  <button key={p} type="button" onClick={() => setForm({ ...form, provider: p })}
+                    className={`px-3 py-1.5 rounded-lg text-sm border ${form.provider === p ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-700'}`}>
+                    {p === 'BLESSEDTEXTS' ? 'BlessedTexts' : 'TalkSasa'}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div>
-              <label className="text-xs text-gray-500 mb-1 block">Sender ID</label>
-              <input
-                type="text"
-                placeholder="e.g. 23107"
-                value={form.senderId || ''}
-                onChange={e => setForm({ ...form, senderId: e.target.value })}
-                className="input w-full"
-              />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">{form.provider === 'TALKSASA' ? 'TalkSasa API token (Bearer)' : 'BlessedTexts API key'}</label>
+                <input
+                  type="password"
+                  placeholder={form.apiKeyMasked ? form.apiKeyMasked : (form.provider === 'TALKSASA' ? 'Paste your API token' : 'Paste your API key')}
+                  value={newApiKey}
+                  onChange={e => setNewApiKey(e.target.value)}
+                  className="input w-full"
+                />
+                {form.apiKeyMasked && !newApiKey && <div className="text-xs text-gray-500 mt-1">Saved key on file. Leave blank to keep it.</div>}
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Sender ID</label>
+                <input
+                  type="text"
+                  placeholder="e.g. TALKSASA"
+                  value={form.senderId || ''}
+                  onChange={e => setForm({ ...form, senderId: e.target.value })}
+                  className="input w-full"
+                />
+              </div>
             </div>
+            {form.provider === 'TALKSASA' && <div className="text-xs text-amber-600">Note: TalkSasa has no balance API, so your balance will show as &quot;—&quot;. Messages still send normally.</div>}
           </div>
         )}
 
