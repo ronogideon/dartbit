@@ -129,23 +129,29 @@ export async function sendNotification(args: SendNotifyArgs): Promise<NotifyResu
 
   try {
     const result = await sendViaProvider(gw.provider, gw.creds, to, body);
+    // Determine the cost to record on the Message:
+    //  - Dartbit shared gateway: the tenant is charged the superadmin-set rate × segments, so we
+    //    record THAT as the cost (the gateway's own reported cost is irrelevant to the tenant and
+    //    is often 0 — which previously showed as a dash). This guarantees a real cost is shown.
+    //  - Tenant's own gateway (CUSTOM): record whatever the provider reported (they pay it directly).
+    let recordedCost = result.cost || 0;
+    let debited = 0;
+    if (result.ok && gw.usesDartbit) {
+      try { debited = await debitForSms(tenantId, segments, result.messageId || msg.id); }
+      catch (e) { console.error('[wallet] debit failed:', e instanceof Error ? e.message : e); }
+      recordedCost = debited; // the actual amount charged to the wallet (rate × segments)
+    }
     await prisma.message.update({
       where: { id: msg.id },
       data: {
         status: result.ok ? 'SENT' : 'FAILED',
         gatewayMsgId: result.messageId,
-        cost: result.cost,
+        cost: recordedCost,
         errorCode: result.ok ? null : result.statusCode || null,
         errorMessage: result.ok ? null : result.statusDesc || null,
       },
     });
-    // Debit the prepaid Dartbit wallet only on a successful send AND only when using the Dartbit
-    // shared gateway. Tenants on their own gateway (CUSTOM) pay their provider directly — no wallet.
-    if (result.ok && gw.usesDartbit) {
-      try { await debitForSms(tenantId, segments, result.messageId || msg.id); }
-      catch (e) { console.error('[wallet] debit failed:', e instanceof Error ? e.message : e); }
-    }
-    return { ok: result.ok, messageId: result.messageId, cost: result.cost, reason: result.ok ? undefined : result.statusDesc };
+    return { ok: result.ok, messageId: result.messageId, cost: recordedCost, reason: result.ok ? undefined : result.statusDesc };
   } catch (err) {
     await prisma.message.update({
       where: { id: msg.id },

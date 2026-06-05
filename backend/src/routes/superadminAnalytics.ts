@@ -101,8 +101,6 @@ router.get('/overview', requireSuperAdminRead, async (_req: AuthRequest, res: Re
         const bal = await balanceViaProvider(provider, creds);
         if (bal.ok && bal.balance != null) {
           smsBalance = bal.balance;
-        } else if (provider === 'TALKSASA') {
-          smsBalanceError = 'TalkSasa has no balance API';
         } else {
           smsBalanceError = 'gateway returned non-success';
           console.error('[superadmin] SMS balance fetch not ok:', JSON.stringify(bal.raw));

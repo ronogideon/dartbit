@@ -332,7 +332,7 @@ function NotificationsTab() {
                 />
               </div>
             </div>
-            {form.provider === 'TALKSASA' && <div className="text-xs text-amber-600">Note: TalkSasa has no balance API, so your balance will show as &quot;—&quot;. Messages still send normally.</div>}
+            {form.provider === 'TALKSASA' && <div className="text-xs text-gray-500">Enter your TalkSasa API token (Bearer) and approved sender ID.</div>}
           </div>
         )}
 
@@ -340,7 +340,7 @@ function NotificationsTab() {
           <div className="text-sm">
             SMS balance:{' '}
             {balanceData ? (
-              <span className="font-semibold">{balanceData.mode === 'WALLET' ? `KES ${(balanceData.balanceKES ?? 0).toLocaleString()} (~${(balanceData.smsRemaining ?? 0).toLocaleString()} SMS)` : `${balanceData.balance.toLocaleString()} credits`}</span>
+              <span className="font-semibold">{balanceData.mode === 'WALLET' ? `KES ${(balanceData.balanceKES ?? 0).toLocaleString()} (~${(balanceData.smsRemaining ?? 0).toLocaleString()} SMS)` : `${balanceData.balance != null ? balanceData.balance.toLocaleString() : "—"} credits`}</span>
             ) : (
               <span className="text-gray-400">—</span>
             )}

@@ -108,9 +108,10 @@ export default function MessagesPage() {
                   SMS wallet:{' '}
                   <span className="font-semibold">KES {(balanceData.balanceKES ?? 0).toLocaleString()}</span>
                   <span className="text-gray-400"> · ~{(balanceData.smsRemaining ?? 0).toLocaleString()} SMS</span>
+                  {balanceData.rate ? <span className="text-gray-400"> · KES {balanceData.rate}/SMS</span> : null}
                 </>
               ) : (
-                <>SMS balance: <span className="font-semibold">{balanceData ? balanceData.balance.toLocaleString() : '—'}</span></>
+                <>SMS balance: <span className="font-semibold">{balanceData && balanceData.balance != null ? balanceData.balance.toLocaleString() : 'your gateway'}</span></>
               )}
             </span>
             <button onClick={() => refetchBalance()} className="text-gray-400 hover:text-gray-600" title="Refresh balance">
@@ -171,7 +172,7 @@ export default function MessagesPage() {
                     )}
                   </td>
                   <td className="table-td text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                    {m.cost ? `KES ${m.cost.toFixed(2)}` : '—'}
+                    {(m.status === 'SENT' || m.status === 'DELIVERED') ? `KES ${(m.cost || 0).toFixed(2)}` : (m.cost ? `KES ${m.cost.toFixed(2)}` : '—')}
                   </td>
                 </tr>
               ))}

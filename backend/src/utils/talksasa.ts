@@ -1,7 +1,7 @@
 // TalkSasa (bulksms.talksasa.com) SMS gateway client. Implements the same SmsCreds/SendSmsResult
 // shape as the BlessedTexts client so the unified gateway dispatcher can use either provider.
 // Auth: Bearer {api_token}. Send: POST /api/v3/sms/send. Balance: the v3 API does not expose a
-// documented credit-balance endpoint, so balance returns null (UI shows "—" for TalkSasa).
+// balance via GET /api/v3/balance.
 import https from 'https';
 import type { SmsCreds, SendSmsResult } from './blessedtexts';
 
@@ -67,6 +67,27 @@ export async function sendSmsTalkSasa(creds: SmsCreds, phone: string, message: s
 }
 
 // TalkSasa v3 has no documented credit-balance endpoint; balance is not retrievable via API.
-export async function getSmsBalanceTalkSasa(_token: string): Promise<{ ok: boolean; balance: number | null; raw: unknown }> {
-  return { ok: false, balance: null, raw: { note: 'TalkSasa v3 API does not expose a balance endpoint' } };
+// TalkSasa balance via GET /api/v3/balance. Returns { status, data } where data holds the SMS
+// unit info. The exact shape of `data` isn't strictly documented (described as "sms unit with all
+// details"), so we parse defensively: accept a number, a numeric string, or an object with a
+// balance/units/credit/sms field.
+export async function getSmsBalanceTalkSasa(token: string): Promise<{ ok: boolean; balance: number | null; raw: unknown }> {
+  const { status, json } = await request<Record<string, unknown>>('GET', '/api/v3/balance', token);
+  const ok = status >= 200 && status < 300 && String(json?.status ?? '').toLowerCase() === 'success';
+  if (!ok) return { ok: false, balance: null, raw: json };
+
+  const data = json?.data as unknown;
+  let balance: number | null = null;
+  if (typeof data === 'number') {
+    balance = data;
+  } else if (typeof data === 'string') {
+    const n = Number(data.replace(/[^\d.]/g, ''));
+    balance = Number.isFinite(n) ? n : null;
+  } else if (data && typeof data === 'object') {
+    const o = data as Record<string, unknown>;
+    const cand = o.balance ?? o.units ?? o.sms_unit ?? o.sms_units ?? o.credit ?? o.sms ?? o.amount;
+    const n = Number(typeof cand === 'string' ? cand.replace(/[^\d.]/g, '') : cand);
+    balance = Number.isFinite(n) ? n : null;
+  }
+  return { ok: true, balance, raw: json };
 }

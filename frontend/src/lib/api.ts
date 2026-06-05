@@ -220,7 +220,8 @@ export const saveNotificationConfig = (data: Record<string, unknown>) =>
   api.put('/notifications/config', data).then(r => r.data.data as NotificationConfig);
 export interface SmsBalance {
   mode: 'WALLET' | 'CUSTOM';
-  balance: number;          // SMS count remaining (both modes)
+  provider?: 'BLESSEDTEXTS' | 'TALKSASA';
+  balance: number | null;   // SMS count remaining; null for providers with no balance API (TalkSasa)
   balanceKES?: number;      // wallet KES (WALLET mode)
   rate?: number;            // KES per SMS (WALLET mode)
   smsRemaining?: number;    // SMS the wallet buys (WALLET mode)
