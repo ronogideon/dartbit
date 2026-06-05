@@ -162,4 +162,35 @@ router.put('/provider', requireSuperAdmin, async (req: AuthRequest, res: Respons
   }
 });
 
+// GET /superadmin/messaging/diagnose — surfaces exactly why the gateway balance may be empty:
+// which provider is active, whether central creds are present, and the RAW provider response so
+// we can see the actual balance field shape. Superadmin-only.
+router.get('/diagnose', requireSuperAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const provider = await getDefaultProvider();
+    const creds = dartbitCredsFor(provider);
+    const out: Record<string, unknown> = {
+      activeProvider: provider,
+      credsPresent: !!creds,
+      senderIdPresent: !!creds?.senderId,
+      env: {
+        TALKSASA_API_TOKEN: !!process.env.TALKSASA_API_TOKEN,
+        TALKSASA_SENDER_ID: !!process.env.TALKSASA_SENDER_ID,
+        BLESSEDTEXTS_API_KEY: !!process.env.BLESSEDTEXTS_API_KEY,
+        BLESSEDTEXTS_SENDER_ID: !!process.env.BLESSEDTEXTS_SENDER_ID,
+        SMS_DEFAULT_PROVIDER: process.env.SMS_DEFAULT_PROVIDER || null,
+      },
+    };
+    if (creds) {
+      const bal = await balanceViaProvider(provider, creds).catch((e) => ({ ok: false, balance: null, raw: { error: e instanceof Error ? e.message : String(e) } }));
+      out.balanceOk = bal.ok;
+      out.parsedBalance = bal.balance;
+      out.rawProviderResponse = bal.raw; // <-- shows the actual JSON so we can pin the field name
+    }
+    sendSuccess(res, out);
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
 export default router;
