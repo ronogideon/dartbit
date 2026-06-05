@@ -386,37 +386,12 @@ button.primary svg{width:14px;height:14px}
   if(err&&err!=='$(error)'&&err!==''){show('error','Login failed: '+err);}
 
   // Load packages on startup
-  // === AUTO-LOGIN: on load, check if THIS device's MAC has an active package and, if so, log in
-  // immediately. This is the primary, most-seamless path — works any time for any returning device
-  // with an active plan, with no dependency on a pre-installed per-purchase script. Falls through
-  // to the normal buy/voucher UI if there's no active package for the MAC.
-  function tryAutoLogin(){
-    if(!MAC){ loadPackages(); return; }
-    // Loop guard: if we already attempted auto-login this cycle (flag in the URL hash) and got
-    // bounced back to the portal, the credentials didn't take — show packages instead of retrying.
-    if(window.location.hash.indexOf('al=1')>=0){ loadPackages(); return; }
-    var xhr=new XMLHttpRequest();
-    xhr.open('POST',BACKEND+'/hotspot/auto-login',true);
-    xhr.setRequestHeader('Content-Type','application/json');
-    xhr.timeout=8000;
-    xhr.onload=function(){
-      try{
-        var d=JSON.parse(xhr.responseText);
-        if(d&&d.success&&d.username){
-          show('success','<span class="spinner"></span> Welcome back — reconnecting you...');
-          try{ window.location.hash='al=1'; }catch(e){}
-          submitMikrotik(d.username,d.password);
-          return;
-        }
-      }catch(e){}
-      loadPackages();
-    };
-    xhr.onerror=function(){ loadPackages(); };
-    xhr.ontimeout=function(){ loadPackages(); };
-    xhr.send(JSON.stringify({routerApiKey:API_KEY,mac:MAC}));
-  }
-
-  tryAutoLogin();
+  // NOTE: We deliberately do NOT attempt auto-login from this captive portal page.
+  // Auto-login for an active device is handled by the router itself (login-by=mac + MAC cookie)
+  // BEFORE the portal is ever shown. So if this page is loading, the device has NO active package
+  // and must buy one — we go straight to the package list. (A previous JS auto-login here caused an
+  // endless "reconnecting…" loop on expired devices and blocked the purchase flow.)
+  loadPackages();
 })();
 </script>
 </body>

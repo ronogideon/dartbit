@@ -253,6 +253,14 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   // Primary user (D-name + 4-digit pwd), bound to the paying device's MAC. Recreate fresh.
   cmds.push(`:foreach u in=[/ip hotspot user find name="${loginUser}"] do={ /ip hotspot user remove \$u }`);
   cmds.push(`/ip hotspot user add name=${loginUser} password=${password} profile=${profileName} limit-uptime=${sessionSec}s${macBind} comment="Dbm:${displayName}"`);
+  // Immediately create the MAC-named auth user so login-by=mac works on the very next reconnect,
+  // without waiting for the 60s sync. This is the device's silent auto-login identity (the MAC is
+  // never shown in the UI; sessions resolve back to the D-number). Password matches the profile's
+  // mac-auth-password ("dartbit").
+  if (macUC) {
+    cmds.push(`:foreach u in=[/ip hotspot user find name="${macUC}"] do={ /ip hotspot user remove \$u }`);
+    cmds.push(`/ip hotspot user add name=${macUC} password=dartbit mac-address=${macUC} profile=${profileName} comment="DbMac:${displayName}"`);
+  }
   // NOTE: The M-Pesa receipt code is ALSO a valid login for this same device — but we do NOT
   // create a separate hotspot user for it here. It's registered as a voucher (below) tagged
   // batchId="MPESA", and the voucher sync creates it under the SAME profile + same MAC + same
