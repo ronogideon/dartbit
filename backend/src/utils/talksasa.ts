@@ -78,16 +78,22 @@ export async function getSmsBalanceTalkSasa(token: string): Promise<{ ok: boolea
 
   const data = json?.data as unknown;
   let balance: number | null = null;
-  if (typeof data === 'number') {
-    balance = data;
-  } else if (typeof data === 'string') {
-    const n = Number(data.replace(/[^\d.]/g, ''));
-    balance = Number.isFinite(n) ? n : null;
+  const toNum = (v: unknown): number | null => {
+    if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+    if (typeof v === 'string') {
+      // Strip currency prefixes/labels like "Ksh150", "KES 150", "150 SMS".
+      const n = Number(v.replace(/[^\d.]/g, ''));
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
+  };
+  if (typeof data === 'number' || typeof data === 'string') {
+    balance = toNum(data);
   } else if (data && typeof data === 'object') {
     const o = data as Record<string, unknown>;
-    const cand = o.balance ?? o.units ?? o.sms_unit ?? o.sms_units ?? o.credit ?? o.sms ?? o.amount;
-    const n = Number(typeof cand === 'string' ? cand.replace(/[^\d.]/g, '') : cand);
-    balance = Number.isFinite(n) ? n : null;
+    // TalkSasa returns { remaining_balance: "Ksh150" }. Also accept common alternatives.
+    const cand = o.remaining_balance ?? o.balance ?? o.units ?? o.sms_unit ?? o.sms_units ?? o.credit ?? o.sms ?? o.amount;
+    balance = toNum(cand);
   }
   return { ok: true, balance, raw: json };
 }
