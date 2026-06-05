@@ -1070,6 +1070,34 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       add(`:foreach s in=[/ip hotspot user find comment~"Dartbit:"] do={ /ip hotspot user disable \$s }`);
     }
 
+    // ===== RECONCILIATION SWEEP for MAC auto-login users =====
+    // The per-subscriber logic above removes a MAC user when its owner becomes unentitled, but an
+    // ORPHANED MAC user (owner deleted, MAC reassigned, duplicate rows, or any past bug) could
+    // linger and keep a device online by MAC forever. This sweep is the safety net: it removes
+    // EVERY Dartbit MAC-login user (comment DbMac:/DbVMac:) whose MAC is not in the current
+    // entitled-MAC allowlist, and drops that device's live session + host so it's logged out.
+    const entitledMacs = new Set<string>();
+    for (const s of hsUsers) {
+      const ent = s.isActive && !!s.packageId && !(s.expiresAt && s.expiresAt <= now);
+      if (ent && s.macAddress) entitledMacs.add(s.macAddress.toUpperCase());
+    }
+    for (const v of vouchers) {
+      const notExpired = !(v.expiresAt && v.expiresAt <= now);
+      if (notExpired && v.usedByMac) entitledMacs.add(v.usedByMac.toUpperCase());
+    }
+    const allow = Array.from(entitledMacs).map(m => `"${m}"`).join(';');
+    add('');
+    add('# Reconciliation: remove orphaned/expired MAC auto-login users + drop their sessions');
+    add(`:local emacs {${allow}}`);
+    // Remove any DbMac/DbVMac hotspot user whose MAC (its name) is NOT entitled. Two separate
+    // sweeps (DbMac, DbVMac) keep each line shorter and avoid non-standard "or" in find.
+    add(`:foreach u in=[/ip hotspot user find comment~"DbMac:"] do={ :local m [/ip hotspot user get \$u name]; :local k false; :foreach e in=\$emacs do={ :if (\$m=\$e) do={ :set k true } }; :if (!\$k) do={ /ip hotspot user remove \$u } }`);
+    add(`:foreach u in=[/ip hotspot user find comment~"DbVMac:"] do={ :local m [/ip hotspot user get \$u name]; :local k false; :foreach e in=\$emacs do={ :if (\$m=\$e) do={ :set k true } }; :if (!\$k) do={ /ip hotspot user remove \$u } }`);
+    // Kick any ACTIVE session whose MAC is not entitled (covers stale sessions with no user too).
+    add(`:foreach a in=[/ip hotspot active find] do={ :local m [/ip hotspot active get \$a mac-address]; :local k false; :foreach e in=\$emacs do={ :if (\$m=\$e) do={ :set k true } }; :if (!\$k) do={ /ip hotspot active remove \$a } }`);
+    // Clear cookies/hosts for non-entitled MACs so the captive portal (sign-in) shows next request.
+    add(`:foreach c in=[/ip hotspot cookie find] do={ :local m [/ip hotspot cookie get \$c mac-address]; :local k false; :foreach e in=\$emacs do={ :if (\$m=\$e) do={ :set k true } }; :if (!\$k) do={ /ip hotspot cookie remove \$c } }`);
+
     res.type('text/plain').send(lines.join('\n'));
   } catch (err) {
     console.error('Sync script error:', err);
