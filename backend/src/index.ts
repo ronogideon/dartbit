@@ -93,8 +93,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.0', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.0', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.1', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.1', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -125,7 +125,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.0 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.1 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -497,7 +497,7 @@ async function patchDatabase() {
       )`);
     await safeExec(prisma, 'MpesaTx checkout unique', `CREATE UNIQUE INDEX IF NOT EXISTS "MpesaTransaction_checkoutRequestId_key" ON "MpesaTransaction"("checkoutRequestId")`);
     await safeExec(prisma, 'MpesaTx tenant idx', `CREATE INDEX IF NOT EXISTS "MpesaTransaction_tenantId_status_idx" ON "MpesaTransaction"("tenantId","status")`);
-    // v1.10.0 payout/fee columns
+    // v1.10.1 payout/fee columns
     await safeExec(prisma, 'MpesaTx collectedVia', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "collectedVia" TEXT DEFAULT 'TENANT'`);
     await safeExec(prisma, 'MpesaTx platformFee', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "platformFee" DOUBLE PRECISION NOT NULL DEFAULT 0`);
     await safeExec(prisma, 'MpesaTx netToTenant', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "netToTenant" DOUBLE PRECISION NOT NULL DEFAULT 0`);
@@ -599,7 +599,7 @@ async function patchDatabase() {
     await safeExec(prisma, 'PlatformSetting key unique', `CREATE UNIQUE INDEX IF NOT EXISTS "PlatformSetting_key_key" ON "PlatformSetting"("key")`);
     await safeExec(prisma, 'MpesaTransaction purpose', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "purpose" TEXT`);
 
-    // v1.10.0 — editable templates + system alerts.
+    // v1.10.1 — editable templates + system alerts.
     await safeExec(prisma, 'NotifConfig templates', `ALTER TABLE "NotificationConfig" ADD COLUMN IF NOT EXISTS "templates" JSONB`);
     await safeExec(prisma, 'NotifConfig alertPhones', `ALTER TABLE "NotificationConfig" ADD COLUMN IF NOT EXISTS "alertPhones" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[]`);
     await safeExec(prisma, 'NotifConfig routerOfflineAlert', `ALTER TABLE "NotificationConfig" ADD COLUMN IF NOT EXISTS "routerOfflineAlert" BOOLEAN NOT NULL DEFAULT true`);

@@ -386,7 +386,37 @@ button.primary svg{width:14px;height:14px}
   if(err&&err!=='$(error)'&&err!==''){show('error','Login failed: '+err);}
 
   // Load packages on startup
-  loadPackages();
+  // === AUTO-LOGIN: on load, check if THIS device's MAC has an active package and, if so, log in
+  // immediately. This is the primary, most-seamless path — works any time for any returning device
+  // with an active plan, with no dependency on a pre-installed per-purchase script. Falls through
+  // to the normal buy/voucher UI if there's no active package for the MAC.
+  function tryAutoLogin(){
+    if(!MAC){ loadPackages(); return; }
+    // Loop guard: if we already attempted auto-login this cycle (flag in the URL hash) and got
+    // bounced back to the portal, the credentials didn't take — show packages instead of retrying.
+    if(window.location.hash.indexOf('al=1')>=0){ loadPackages(); return; }
+    var xhr=new XMLHttpRequest();
+    xhr.open('POST',BACKEND+'/hotspot/auto-login',true);
+    xhr.setRequestHeader('Content-Type','application/json');
+    xhr.timeout=8000;
+    xhr.onload=function(){
+      try{
+        var d=JSON.parse(xhr.responseText);
+        if(d&&d.success&&d.username){
+          show('success','<span class="spinner"></span> Welcome back — reconnecting you...');
+          try{ window.location.hash='al=1'; }catch(e){}
+          submitMikrotik(d.username,d.password);
+          return;
+        }
+      }catch(e){}
+      loadPackages();
+    };
+    xhr.onerror=function(){ loadPackages(); };
+    xhr.ontimeout=function(){ loadPackages(); };
+    xhr.send(JSON.stringify({routerApiKey:API_KEY,mac:MAC}));
+  }
+
+  tryAutoLogin();
 })();
 </script>
 </body>

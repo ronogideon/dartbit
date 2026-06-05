@@ -172,14 +172,18 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
 
     // 6. Hotspot — captive portal with DHCP managed by the hotspot itself
     add('# 6. Hotspot — captive portal');
-    // login-by includes "cookie" so a returning client (same MAC, within cookie lifetime)
-    // is auto-authenticated without re-entering their voucher. http-cookie-lifetime sets
-    // how long the MAC binding survives a disconnect (1 day here). On reconnect within
-    // that window, RouterOS auto-logs them back in; after it expires, the portal voucher
-    // form is the fallback.
-    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,http-pap http-cookie-lifetime=7d use-radius=no }`);
+    // login-by includes "mac" AND "cookie":
+    //  - mac: MikroTik auto-authenticates a device whose MAC matches a hotspot user named after
+    //    that MAC (with mac-auth-password). This is the most robust auto-login — zero portal
+    //    interaction, fires the instant the device connects. The sync maintains a MAC-named user
+    //    for every active device (see hotspot sync), so it keeps working indefinitely without
+    //    reprovision once login-by=mac is set.
+    //  - cookie: a returning client within the cookie lifetime is auto-authenticated via the
+    //    stored MAC cookie as a secondary path.
+    // http-cookie-lifetime sets how long the MAC cookie survives a disconnect.
+    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=mac,cookie,http-pap mac-auth-password=dartbit http-cookie-lifetime=7d use-radius=no }`);
     // Always sync the profile settings (idempotent — no disruption)
-    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,http-pap http-cookie-lifetime=7d use-radius=no`);
+    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=mac,cookie,http-pap mac-auth-password=dartbit http-cookie-lifetime=7d use-radius=no`);
     // User profile — one device per credential, with MAC cookie so reconnects auto-login
     add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 address-pool=dhcp-pool }`);
     add(`:do { /ip hotspot user profile set [find name="dartbit-default"] add-mac-cookie=yes } on-error={}`);
@@ -848,9 +852,28 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       add(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=yes address-pool=dhcp-pool`);
       add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] = 0) do={ /ip hotspot user add name="${sub.username}" password="${sub.secret}" profile=${profileName}${macBind} comment="Dartbit:${sub.id}" }`);
       add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] > 0) do={ /ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${disabled ? 'yes' : 'no'}${macBind} }`);
+
+      // NATIVE MAC AUTO-LOGIN: maintain a hotspot user NAMED after the device MAC with the
+      // profile's mac-auth-password ("dartbit"). With login-by=mac on the server profile, MikroTik
+      // auto-authenticates this device the instant it connects — no portal, no script, works months
+      // after provisioning because the sync (every 60s) keeps this user current. Removed on expiry.
+      if (sub.macAddress) {
+        const macU = sub.macAddress.toUpperCase();
+        if (disabled) {
+          add(`:foreach u in=[/ip hotspot user find name="${macU}"] do={ /ip hotspot user remove \$u }`);
+        } else {
+          add(`:if ([:len [/ip hotspot user find name="${macU}"]] = 0) do={ /ip hotspot user add name="${macU}" password=dartbit mac-address=${macU} profile=${profileName} comment="DbMac:${sub.id}" }`);
+          add(`:if ([:len [/ip hotspot user find name="${macU}"]] > 0) do={ /ip hotspot user set [find name="${macU}"] password=dartbit mac-address=${macU} profile=${profileName} disabled=no }`);
+        }
+      }
       if (expired) {
         add(`:foreach a in=[/ip hotspot active find user="${sub.username}"] do={ /ip hotspot active remove \$a }`);
         add(`:foreach c in=[/ip hotspot cookie find user="${sub.username}"] do={ /ip hotspot cookie remove \$c }`);
+        if (sub.macAddress) {
+          const macU = sub.macAddress.toUpperCase();
+          add(`:foreach a in=[/ip hotspot active find user="${macU}"] do={ /ip hotspot active remove \$a }`);
+          add(`:foreach c in=[/ip hotspot cookie find mac-address="${macU}"] do={ /ip hotspot cookie remove \$c }`);
+        }
       }
     }
 
@@ -974,6 +997,18 @@ router.get('/sync-script', async (req: Request, res: Response) => {
         add(`:foreach c in=[/ip hotspot cookie find user="${v.code}"] do={ /ip hotspot cookie remove \$c }`);
       } else {
         add(`:if ([:len [/ip hotspot user find name="${v.code}"]] > 0) do={ /ip hotspot user set [find name="${v.code}"] disabled=no }`);
+      }
+      // Native MAC auto-login for this voucher's device (login-by=mac). For M-Pesa vouchers the
+      // subscriber sync already creates the MAC user, but this also covers standalone vouchers.
+      // Skip if there's a same-MAC subscriber (avoid duplicate user churn) — the subscriber path
+      // owns it. We detect that on-router by only adding if no DbMac user already exists.
+      if (v.usedByMac) {
+        const macU = v.usedByMac.toUpperCase();
+        if (expired) {
+          add(`:foreach u in=[/ip hotspot user find name="${macU}" comment~"DbVMac"] do={ /ip hotspot user remove \$u }`);
+        } else {
+          add(`:if ([:len [/ip hotspot user find name="${macU}"]] = 0) do={ /ip hotspot user add name="${macU}" password=dartbit mac-address=${macU} profile=${profileName} comment="DbVMac:${shortId}" }`);
+        }
       }
     }
     // Clean up voucher-users for vouchers that are no longer in our active list.

@@ -83,7 +83,7 @@ router.post('/redeem', async (req: Request, res: Response) => {
 
     // Mark as used and capture session info
     const sessionExpiresAt = new Date(now.getTime() + voucher.durationMinutes * 60 * 1000);
-    const usedMac = typeof mac === 'string' ? mac.replace(/[^A-Fa-f0-9:.\-]/g, '').substring(0, 20) : null;
+    const usedMac = typeof mac === 'string' ? mac.replace(/[^A-Fa-f0-9:.\-]/g, '').substring(0, 20).toUpperCase() : null;
     const usedIp = typeof ip === 'string' ? ip.replace(/[^0-9.]/g, '').substring(0, 16) : null;
 
     await prisma.voucher.update({
@@ -115,6 +115,79 @@ router.post('/redeem', async (req: Request, res: Response) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed';
     console.error('Voucher redeem error:', msg);
+    res.status(500).json({ success: false, error: msg });
+  }
+});
+
+// POST /hotspot/auto-login
+// body: { routerApiKey: string, mac: string }
+// The captive portal calls this on load with the device's MAC. If that MAC belongs to a
+// subscriber (or M-Pesa voucher) with an ACTIVE package on this router's tenant, we return the
+// login credentials so the portal immediately logs the device in — seamless reconnect that works
+// any time, for any device, regardless of how long ago the router was provisioned (it's a live
+// DB lookup, not a pre-installed script). This is the primary auto-login mechanism.
+router.post('/auto-login', async (req: Request, res: Response) => {
+  try {
+    const { routerApiKey, mac } = req.body || {};
+    if (!routerApiKey || typeof routerApiKey !== 'string') {
+      return res.status(400).json({ success: false, error: 'routerApiKey required' });
+    }
+    const reqMac = typeof mac === 'string' ? mac.replace(/[^A-Fa-f0-9:.\-]/g, '').substring(0, 20).toUpperCase() : '';
+    if (!reqMac) return res.json({ success: false, reason: 'no-mac' });
+
+    const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey: routerApiKey }, select: { id: true, tenantId: true } });
+    if (!r) return res.status(404).json({ success: false, error: 'Router not found' });
+
+    const now = new Date();
+
+    // 1) Prefer a HOTSPOT subscriber bound to this MAC with an active subscription. This is the
+    //    unified identity (username/password + M-Pesa code + MAC all share one expiry).
+    const sub = await prisma.subscriber.findFirst({
+      where: {
+        tenantId: r.tenantId,
+        service: 'HOTSPOT',
+        macAddress: reqMac,
+        isActive: true,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
+      select: { username: true, secret: true, expiresAt: true, package: { select: { name: true } } },
+      orderBy: { expiresAt: 'desc' },
+    });
+    if (sub) {
+      return res.json({
+        success: true,
+        username: sub.username,
+        password: sub.secret,
+        package: sub.package?.name || null,
+        expiresAt: sub.expiresAt,
+      });
+    }
+
+    // 2) Fall back to an M-Pesa/voucher record bound to this MAC, still within its session window.
+    const voucher = await prisma.voucher.findFirst({
+      where: {
+        tenantId: r.tenantId,
+        usedByMac: reqMac,
+        expiresAt: { gt: now },
+      },
+      select: { code: true, expiresAt: true, package: { select: { name: true } } },
+      orderBy: { expiresAt: 'desc' },
+    });
+    if (voucher) {
+      return res.json({
+        success: true,
+        username: voucher.code,
+        password: voucher.code,
+        package: voucher.package?.name || null,
+        expiresAt: voucher.expiresAt,
+      });
+    }
+
+    // No active package for this MAC — portal shows the normal buy/voucher options.
+    return res.json({ success: false, reason: 'no-active-package' });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed';
+    console.error('Auto-login error:', msg);
     res.status(500).json({ success: false, error: msg });
   }
 });
