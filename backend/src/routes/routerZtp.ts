@@ -361,7 +361,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
       add(`:foreach s in=[/system scheduler find comment="Dartbit cmd"] do={ /system scheduler remove $s }`);
       add(`:foreach s in=[/system script find name="dartbit-cmd"] do={ /system script remove $s }`);
       add(`/system script add name=dartbit-cmd policy=read,write,test,reboot source={/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ /import file-name=dartbit-cmd.rsc; :delay 1s; /file remove [find name="dartbit-cmd.rsc"] }}`);
-      add(`/system scheduler add name=dartbit-cmd interval=5s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`);
+      add(`/system scheduler add name=dartbit-cmd interval=2s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`);
     } else {
       // Reprovision path: we can't recreate dartbit-cmd inline (it's the script running this
       // import — that interrupts it). But the poller must be updated when the backend URL
@@ -380,7 +380,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add('# 12. Active session reporter');
     add(`:foreach s in=[/system scheduler find comment="Dartbit session sync"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-sessions"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . "|P,"); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :local bi 0; :local bo 0; :do { :set bi [/ip hotspot active get \$a bytes-in]; :set bo [/ip hotspot active get \$a bytes-out]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$bi . "|" . \$bo . "|H,"); }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
+    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . "|P,"); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :local mac [/ip hotspot active get \$a mac-address]; :local bi 0; :local bo 0; :do { :set bi [/ip hotspot active get \$a bytes-in]; :set bo [/ip hotspot active get \$a bytes-out]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$bi . "|" . \$bo . "|H|" . \$mac . ","); }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
     add(`/system scheduler add name=dartbit-sessions interval=5s on-event="/system script run dartbit-sessions" comment="Dartbit session sync"`);
     add('');
 
@@ -406,7 +406,7 @@ router.get('/cmd-script', async (req: Request, res: Response) => {
       `:foreach s in=[/system scheduler find comment="Dartbit cmd"] do={ /system scheduler remove $s }`,
       `:foreach s in=[/system script find name="dartbit-cmd"] do={ /system script remove $s }`,
       `/system script add name=dartbit-cmd policy=read,write,test,reboot source={/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ /import file-name=dartbit-cmd.rsc; :delay 1s; /file remove [find name="dartbit-cmd.rsc"] }}`,
-      `/system scheduler add name=dartbit-cmd interval=5s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`,
+      `/system scheduler add name=dartbit-cmd interval=2s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`,
       ':log info "Dartbit: cmd poller now on current backend"',
     ];
     res.type('text/plain').send(lines.join('\n'));
@@ -565,10 +565,16 @@ router.all('/sessions', async (req: Request, res: Response) => {
           uptime = parts[2] || '';
           rxBytes = parseInt(parts[3] || '0', 10) || 0;
           txBytes = parseInt(parts[4] || '0', 10) || 0;
-          // Field 5 is either the bypass MAC (legacy) or the service marker. The reporter now
-          // appends a final P/H marker; detect it regardless of position.
-          macAddress = (parts[5] && parts[5] !== 'P' && parts[5] !== 'H') ? parts[5] : '';
-          svcMark = parts.find(p => p === 'P' || p === 'H') || '';
+          // New reporter format: user|ip|uptime|bytesIn|bytesOut|<P or H>|<mac>
+          // (PPPoE sends an empty mac field). Detect the service marker, then take the MAC from
+          // the field AFTER it. Fall back to legacy: a MAC sitting in field 5 with no marker.
+          const markIdx = parts.findIndex(p => p === 'P' || p === 'H');
+          svcMark = markIdx >= 0 ? parts[markIdx] : '';
+          if (markIdx >= 0 && parts[markIdx + 1]) {
+            macAddress = parts[markIdx + 1];
+          } else if (parts[5] && parts[5] !== 'P' && parts[5] !== 'H') {
+            macAddress = parts[5];
+          }
         } else {
           const [u, ip] = e.split(':');
           username = u || '';
@@ -615,16 +621,27 @@ router.all('/sessions', async (req: Request, res: Response) => {
         });
       }
 
-      // Resolve subscribers: normal sessions link by username; bypass devices link by MAC
-      // (their username field was blanked). For bypass rows we backfill the real username.
+      // Resolve subscribers: normal sessions link by username; MAC auto-login sessions have the
+      // MAC as their username; bypass devices link by the session MAC. Collect all candidate MACs
+      // (from BOTH the username field — when it's a MAC — and the macAddress field) so we can map
+      // a MAC-authenticated session back to its owning subscriber's D-number.
+      const looksLikeMacEarly = (u: string) => /^([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}$/.test(u || '');
       const usernames = sessions.map(s => s.username).filter(Boolean);
-      const macs = sessions.map(s => s.macAddress).filter(Boolean) as string[];
+      const macSet = new Set<string>();
+      for (const s of sessions) {
+        if (s.macAddress) macSet.add(s.macAddress.toUpperCase());
+        if (s.username && looksLikeMacEarly(s.username)) macSet.add(s.username.toUpperCase());
+      }
+      const macs = Array.from(macSet);
+      // Match MACs case-insensitively: subscribers store uppercase MACs, but pull both the exact
+      // and lowercase forms to be safe across RouterOS casing.
+      const macVariants = macs.flatMap(m => [m, m.toLowerCase()]);
       const subs = await prisma.subscriber.findMany({
         where: {
           tenantId: r.tenantId,
           OR: [
             usernames.length ? { username: { in: usernames } } : undefined,
-            macs.length ? { macAddress: { in: macs } } : undefined,
+            macVariants.length ? { macAddress: { in: macVariants } } : undefined,
           ].filter(Boolean) as object[],
         },
         select: { id: true, username: true, service: true, macAddress: true },
@@ -816,6 +833,10 @@ router.get('/sync-script', async (req: Request, res: Response) => {
 
     add(`:log info "Dartbit: Syncing ${subscribers.length} subscribers"`);
     add('');
+    // Keep the command poller fast (2s) so purchases/changes apply near-instantly. Updating it here
+    // means the speed-up takes effect WITHOUT a reprovision.
+    add(`:foreach s in=[/system scheduler find name="dartbit-cmd"] do={ /system scheduler set \$s interval=2s }`);
+    add('');
 
     function rosDate(d: Date): { date: string; time: string } {
       const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
@@ -859,35 +880,54 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       const speed = sub.package ? `${sub.package.speedUpKbps}k/${sub.package.speedDownKbps}k` : '5M/5M';
       const profileName = sub.package ? `db-h-${sub.package.id.substring(0, 8)}` : 'dartbit-default';
       const expired = sub.expiresAt && sub.expiresAt <= now;
+      // A subscriber must have a CURRENT package to get network access. "Entitled" = active account,
+      // not expired, AND has a package with a future (or no) expiry. Without this, a subscriber whose
+      // package was removed (no packageId / no expiresAt) would keep getting MAC auto-login forever.
       const hasPackage = !!sub.packageId;
       const entitled = sub.isActive && !expired && hasPackage;
-      const macU = sub.macAddress ? sub.macAddress.toUpperCase() : '';
-      const macBind = macU ? ` mac-address=${macU}` : '';
+      // Bind to the subscriber's device MAC (uppercased to match how MikroTik stores MACs) so the
+      // credentials only work on that one device. This is the primary login identity.
+      const macBind = sub.macAddress ? ` mac-address=${sub.macAddress.toUpperCase()}` : '';
 
-      if (!entitled) {
-        // NOT entitled (expired, inactive, or no package): write NOTHING. Actively REMOVE both the
-        // D-name user and the MAC auto-login user, and drop the device's session/cookie/host so it
-        // is logged out and re-prompted to sign in. This is why expired accounts must never be
-        // "downloaded" — only active accounts are pushed to the router.
-        add(`:foreach u in=[/ip hotspot user find name="${sub.username}"] do={ /ip hotspot user remove \$u }`);
-        if (macU) {
-          add(`:foreach u in=[/ip hotspot user find name="${macU}"] do={ /ip hotspot user remove \$u }`);
-          add(`:foreach a in=[/ip hotspot active find mac-address="${macU}"] do={ /ip hotspot active remove \$a }`);
-          add(`:foreach c in=[/ip hotspot cookie find mac-address="${macU}"] do={ /ip hotspot cookie remove \$c }`);
-          add(`:foreach h in=[/ip hotspot host find mac-address="${macU}"] do={ /ip hotspot host remove \$h }`);
-        }
-        add(`:foreach a in=[/ip hotspot active find user="${sub.username}"] do={ /ip hotspot active remove \$a }`);
-        continue; // do not write any user for this subscriber
-      }
-
-      // ENTITLED: ensure the profile, the D-name login user (MAC-bound), and the MAC auto-login user.
+      // Profile: split add+set so each line is short. Ensure address-pool so logins route.
       add(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} address-pool=dhcp-pool }`);
       add(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=no address-pool=dhcp-pool`);
       add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] = 0) do={ /ip hotspot user add name="${sub.username}" password="${sub.secret}" profile=${profileName}${macBind} comment="Dartbit:${sub.id}" }`);
-      add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] > 0) do={ /ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=no${macBind} }`);
-      if (macU) {
-        add(`:if ([:len [/ip hotspot user find name="${macU}"]] = 0) do={ /ip hotspot user add name="${macU}" password=dartbit mac-address=${macU} profile=${profileName} comment="DbMac:${sub.id}" }`);
-        add(`:if ([:len [/ip hotspot user find name="${macU}"]] > 0) do={ /ip hotspot user set [find name="${macU}"] password=dartbit mac-address=${macU} profile=${profileName} disabled=no }`);
+      add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] > 0) do={ /ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${!entitled ? 'yes' : 'no'}${macBind} }`);
+
+      // NATIVE MAC AUTO-LOGIN: maintain a hotspot user NAMED after the device MAC with the
+      // profile's mac-auth-password ("dartbit"). With login-by=mac on the server profile, MikroTik
+      // auto-authenticates this device the instant it connects — no portal, no script, works months
+      // after provisioning because the sync (every 60s) keeps this user current. Removed on expiry.
+      if (sub.macAddress) {
+        const macU = sub.macAddress.toUpperCase();
+        if (!entitled) {
+          // Not entitled (inactive, expired, or no package) → remove the MAC auto-login user so the
+          // device is no longer auto-authenticated and must sign in / buy a package.
+          add(`:foreach u in=[/ip hotspot user find name="${macU}"] do={ /ip hotspot user remove \$u }`);
+        } else {
+          add(`:if ([:len [/ip hotspot user find name="${macU}"]] = 0) do={ /ip hotspot user add name="${macU}" password=dartbit mac-address=${macU} profile=${profileName} comment="DbMac:${sub.id}" }`);
+          add(`:if ([:len [/ip hotspot user find name="${macU}"]] > 0) do={ /ip hotspot user set [find name="${macU}"] password=dartbit mac-address=${macU} profile=${profileName} disabled=no }`);
+        }
+      }
+      if (!entitled) {
+        // SEAMLESS DISCONNECT: the device is no longer entitled (expired, inactive, or package
+        // removed). Drop any live session immediately so it's logged out and re-prompted to sign in.
+        // We match the active session BOTH by user-name (D-name and MAC-named user) AND by the
+        // device MAC directly — because depending on how the device authenticated, the active
+        // entry's "user" field may be the D-name or the MAC. Matching by mac-address guarantees we
+        // catch it regardless.
+        add(`:foreach a in=[/ip hotspot active find user="${sub.username}"] do={ /ip hotspot active remove \$a }`);
+        add(`:foreach c in=[/ip hotspot cookie find user="${sub.username}"] do={ /ip hotspot cookie remove \$c }`);
+        if (sub.macAddress) {
+          const macU = sub.macAddress.toUpperCase();
+          add(`:foreach a in=[/ip hotspot active find user="${macU}"] do={ /ip hotspot active remove \$a }`);
+          add(`:foreach a in=[/ip hotspot active find mac-address="${macU}"] do={ /ip hotspot active remove \$a }`);
+          add(`:foreach c in=[/ip hotspot cookie find mac-address="${macU}"] do={ /ip hotspot cookie remove \$c }`);
+          // Also clear any host/binding entry so the device fully re-enters the unauthenticated
+          // state and the captive portal (sign-in) is shown on its next request.
+          add(`:foreach h in=[/ip hotspot host find mac-address="${macU}"] do={ /ip hotspot host remove \$h }`);
+        }
       }
     }
 
@@ -1050,31 +1090,6 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       add(`:foreach s in=[/ppp secret find comment~"Dartbit:"] do={ /ppp secret disable \$s }`);
       add(`:foreach s in=[/ip hotspot user find comment~"Dartbit:"] do={ /ip hotspot user disable \$s }`);
     }
-
-    // ===== RECONCILIATION SWEEP for MAC auto-login users =====
-    // The per-subscriber logic above removes a MAC user when its owner becomes unentitled, but an
-    // ORPHANED MAC user (owner deleted, MAC reassigned, duplicate rows, or any past bug) could
-    // linger and keep a device online by MAC forever. This sweep is the safety net: it removes
-    // EVERY Dartbit MAC-login user (comment DbMac:/DbVMac:) whose MAC is not in the current
-    // entitled-MAC allowlist, and drops that device's live session + host so it's logged out.
-    const entitledMacs = new Set<string>();
-    for (const s of hsUsers) {
-      const ent = s.isActive && !!s.packageId && !(s.expiresAt && s.expiresAt <= now);
-      if (ent && s.macAddress) entitledMacs.add(s.macAddress.toUpperCase());
-    }
-    for (const v of vouchers) {
-      const notExpired = !(v.expiresAt && v.expiresAt <= now);
-      if (notExpired && v.usedByMac) entitledMacs.add(v.usedByMac.toUpperCase());
-    }
-    // Comma-separated string (NOT a {..} literal — an empty {} broke the import with a syntax
-    // error). [:toarray ""] yields a valid empty array; [:toarray "AA,BB"] a 2-element array.
-    const allow = Array.from(entitledMacs).join(',');
-    add('');
-    add('# Reconciliation: remove orphaned/expired MAC auto-login users + drop their sessions');
-    add(`:local emacs [:toarray "${allow}"]`);
-    add(`:foreach u in=[/ip hotspot user find comment~"DbMac:"] do={ :local m [/ip hotspot user get \$u name]; :local k false; :foreach e in=\$emacs do={ :if (\$m=\$e) do={ :set k true } }; :if (!\$k) do={ /ip hotspot user remove \$u } }`);
-    add(`:foreach u in=[/ip hotspot user find comment~"DbVMac:"] do={ :local m [/ip hotspot user get \$u name]; :local k false; :foreach e in=\$emacs do={ :if (\$m=\$e) do={ :set k true } }; :if (!\$k) do={ /ip hotspot user remove \$u } }`);
-    add(`:foreach a in=[/ip hotspot active find] do={ :local m [/ip hotspot active get \$a mac-address]; :local k false; :foreach e in=\$emacs do={ :if (\$m=\$e) do={ :set k true } }; :if (!\$k) do={ /ip hotspot active remove \$a } }`);
 
     res.type('text/plain').send(lines.join('\n'));
   } catch (err) {

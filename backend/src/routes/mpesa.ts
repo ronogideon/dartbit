@@ -268,27 +268,22 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   // as one identity sharing one session end. Creating it twice (here + sync, under different
   // profiles) was what left the code in limbo (shown active but no traffic / no redirect).
 
-  // Auto-login the paid MAC: the router receives this go-ahead on its next ~5s poll and logs the
-  // device in as a REAL session under the rate-limited profile (so it's speed-capped, tracked,
-  // and shows in active users). CRITICAL FIRST STEP: remove any leftover type=bypassed binding
-  // for this MAC from older versions — a bypassed device skips the hotspot entirely (full
-  // bandwidth, no session), which silently overrides the login. We also clear any stale active
-  // session, then run the login in a self-removing one-shot script (proper scope + retries).
+  // Auto-login the paid MAC immediately. The MAC auto-login user is (re)created by the push/sync,
+  // and with login-by=mac the device auto-authenticates on its next connection. To make it INSTANT
+  // (no reconnect needed), we also issue a single direct login here. We first clear any stale
+  // bypassed binding + active session for this MAC so the new rate-limited session takes hold.
+  // No self-removing scheduler script (that produced "interrupted" log errors) — just direct cmds
+  // delivered on the ~2s command poll.
   if (macUC) {
     const ipArg = tx.clientIp ? ` ip=${tx.clientIp}` : '';
     cmds.push(`:foreach b in=[/ip hotspot ip-binding find mac-address="${macUC}"] do={ /ip hotspot ip-binding remove \$b }`);
     cmds.push(`:foreach a in=[/ip hotspot active find mac-address="${macUC}"] do={ /ip hotspot active remove \$a }`);
-    const body =
-      `:delay 2s; ` +
-      `:local done false; ` +
-      `:for i from=1 to=6 do={ :if (\\$done = false) do={ :do { /ip hotspot active login user=${loginUser}${ipArg} mac-address=${macUC}; :set done true } on-error={ :delay 2s } } }; ` +
-      `:if (\\$done) do={ :log info \\"Dartbit: login ok ${loginUser}\\" } else={ :log warning \\"Dartbit: login retry exhausted ${loginUser}\\" }; ` +
-      `/system scheduler remove [find name=\\"db-login\\"]; ` +
-      `/system script remove [find name=\\"db-login\\"]`;
+    // Single best-effort direct login (wrapped so a failure doesn't abort the batch). If it doesn't
+    // take immediately, login-by=mac logs the device in on its next request within seconds.
+    cmds.push(`:do { /ip hotspot active login user=${loginUser}${ipArg} mac-address=${macUC} } on-error={}`);
+    // Clean up any leftover db-login script/scheduler from older versions.
     cmds.push(`:foreach s in=[/system scheduler find name="db-login"] do={ /system scheduler remove \$s }`);
     cmds.push(`:foreach s in=[/system script find name="db-login"] do={ /system script remove \$s }`);
-    cmds.push(`/system script add name=db-login policy=read,write,test source="${body}"`);
-    cmds.push(`/system scheduler add name=db-login interval=3s on-event="/system script run db-login" comment="Dartbit auto-login"`);
   }
 
   if (tx.routerId) await enqueueCommand(tx.routerId, cmds.join('\n'));

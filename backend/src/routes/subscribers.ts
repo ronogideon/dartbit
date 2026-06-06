@@ -142,12 +142,19 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
       return sendError(res, 'Not authorized', 403);
     }
 
-    // Immediately push removal to the router (applied within ~5s by the cmd poller) so the
-    // device is kicked off without waiting for the 60s sync.
+    // Best-effort: remove the user from the router so they're kicked off immediately.
     if (sub.routerId) {
       try {
-        const { pushSubscriberRemoval } = await import('../utils/pushSubscriber');
-        await pushSubscriberRemoval(sub.routerId, sub.username, sub.macAddress);
+        const { enqueueCommand } = await import('../utils/commandQueue');
+        if (sub.service === 'HOTSPOT') {
+          await enqueueCommand(sub.routerId,
+            `:foreach a in=[/ip hotspot active find user="${sub.username}"] do={ /ip hotspot active remove $a }\n` +
+            `:foreach u in=[/ip hotspot user find name="${sub.username}"] do={ /ip hotspot user remove $u }`);
+        } else {
+          await enqueueCommand(sub.routerId,
+            `:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove $a }\n` +
+            `:foreach s in=[/ppp secret find name="${sub.username}"] do={ /ppp secret remove $s }`);
+        }
       } catch (e) {
         console.error('subscriber delete: router cleanup failed (continuing):', e instanceof Error ? e.message : e);
       }
@@ -206,15 +213,13 @@ router.post('/:id/extend', async (req: AuthRequest, res: Response) => {
       }
     }
 
-    // Push the change to the router immediately (applied within ~5s) so the renewed user is
-    // (re)created with the correct profile/MAC and reconnects without waiting for the 60s sync.
+    // Push the change to the router (re-enable + update) via a sync so the user isn't kicked.
     if (sub.routerId) {
       try {
+        const { enqueueCommand } = await import('../utils/commandQueue');
         if (sub.service === 'HOTSPOT') {
-          const { pushSubscriberToRouter } = await import('../utils/pushSubscriber');
-          await pushSubscriberToRouter(sub.id);
+          await enqueueCommand(sub.routerId, `:foreach u in=[/ip hotspot user find name="${sub.username}"] do={ /ip hotspot user set $u disabled=no }`);
         } else {
-          const { enqueueCommand } = await import('../utils/commandQueue');
           await enqueueCommand(sub.routerId, `:foreach s in=[/ppp secret find name="${sub.username}"] do={ /ppp secret set $s disabled=no }`);
         }
       } catch (e) {
