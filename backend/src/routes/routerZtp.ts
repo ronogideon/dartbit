@@ -1066,18 +1066,15 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       const notExpired = !(v.expiresAt && v.expiresAt <= now);
       if (notExpired && v.usedByMac) entitledMacs.add(v.usedByMac.toUpperCase());
     }
-    const allow = Array.from(entitledMacs).map(m => `"${m}"`).join(';');
+    // Comma-separated string (NOT a {..} literal — an empty {} broke the import with a syntax
+    // error). [:toarray ""] yields a valid empty array; [:toarray "AA,BB"] a 2-element array.
+    const allow = Array.from(entitledMacs).join(',');
     add('');
     add('# Reconciliation: remove orphaned/expired MAC auto-login users + drop their sessions');
-    add(`:local emacs {${allow}}`);
-    // Remove any DbMac/DbVMac hotspot user whose MAC (its name) is NOT entitled. Two separate
-    // sweeps (DbMac, DbVMac) keep each line shorter and avoid non-standard "or" in find.
+    add(`:local emacs [:toarray "${allow}"]`);
     add(`:foreach u in=[/ip hotspot user find comment~"DbMac:"] do={ :local m [/ip hotspot user get \$u name]; :local k false; :foreach e in=\$emacs do={ :if (\$m=\$e) do={ :set k true } }; :if (!\$k) do={ /ip hotspot user remove \$u } }`);
     add(`:foreach u in=[/ip hotspot user find comment~"DbVMac:"] do={ :local m [/ip hotspot user get \$u name]; :local k false; :foreach e in=\$emacs do={ :if (\$m=\$e) do={ :set k true } }; :if (!\$k) do={ /ip hotspot user remove \$u } }`);
-    // Kick any ACTIVE session whose MAC is not entitled (covers stale sessions with no user too).
     add(`:foreach a in=[/ip hotspot active find] do={ :local m [/ip hotspot active get \$a mac-address]; :local k false; :foreach e in=\$emacs do={ :if (\$m=\$e) do={ :set k true } }; :if (!\$k) do={ /ip hotspot active remove \$a } }`);
-    // Clear cookies/hosts for non-entitled MACs so the captive portal (sign-in) shows next request.
-    add(`:foreach c in=[/ip hotspot cookie find] do={ :local m [/ip hotspot cookie get \$c mac-address]; :local k false; :foreach e in=\$emacs do={ :if (\$m=\$e) do={ :set k true } }; :if (!\$k) do={ /ip hotspot cookie remove \$c } }`);
 
     res.type('text/plain').send(lines.join('\n'));
   } catch (err) {
