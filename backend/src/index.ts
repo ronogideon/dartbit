@@ -129,6 +129,7 @@ const server = app.listen(PORT, () => {
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
+  startExpiryWatcher();
   startReminderScheduler();
   startSystemAlerts();
 });
@@ -199,6 +200,44 @@ function startBillingStatusUpdater() {
   };
   run();
   setInterval(run, 30 * 60 * 1000); // every 30 min
+}
+
+// Watch for hotspot subscribers whose package has just expired and push their removal to the
+// router immediately (within ~5s via the cmd poller), instead of waiting for the 60s sync. This
+// gives near-instant kick-off on expiry. The full sync remains the safety-net reconciler.
+function startExpiryWatcher() {
+  const prisma = new PrismaClient();
+  const pushedExpired = new Set<string>(); // ids already pushed this process-lifetime
+  const run = async () => {
+    try {
+      const now = new Date();
+      // Hotspot subscribers that are expired (or deactivated) but were recently active enough to
+      // still have router entries. We look at a rolling window so the set stays small.
+      const justExpired = await prisma.subscriber.findMany({
+        where: {
+          service: 'HOTSPOT',
+          routerId: { not: null },
+          OR: [
+            { expiresAt: { lte: now, gte: new Date(now.getTime() - 10 * 60 * 1000) } }, // expired in last 10 min
+            { isActive: false },
+          ],
+        },
+        select: { id: true, expiresAt: true },
+      });
+      const { pushSubscriberToRouter } = await import('./utils/pushSubscriber');
+      for (const s of justExpired) {
+        if (pushedExpired.has(s.id)) continue;
+        await pushSubscriberToRouter(s.id); // builds removal cmds for an unentitled sub
+        pushedExpired.add(s.id);
+      }
+      // Keep the dedup set from growing unbounded.
+      if (pushedExpired.size > 5000) pushedExpired.clear();
+    } catch (err) {
+      console.error('Expiry watcher error:', err instanceof Error ? err.message : err);
+    }
+  };
+  run();
+  setInterval(run, 30 * 1000); // every 30s
 }
 
 server.on('error', (err) => {

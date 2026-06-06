@@ -859,54 +859,35 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       const speed = sub.package ? `${sub.package.speedUpKbps}k/${sub.package.speedDownKbps}k` : '5M/5M';
       const profileName = sub.package ? `db-h-${sub.package.id.substring(0, 8)}` : 'dartbit-default';
       const expired = sub.expiresAt && sub.expiresAt <= now;
-      // A subscriber must have a CURRENT package to get network access. "Entitled" = active account,
-      // not expired, AND has a package with a future (or no) expiry. Without this, a subscriber whose
-      // package was removed (no packageId / no expiresAt) would keep getting MAC auto-login forever.
       const hasPackage = !!sub.packageId;
       const entitled = sub.isActive && !expired && hasPackage;
-      // Bind to the subscriber's device MAC (uppercased to match how MikroTik stores MACs) so the
-      // credentials only work on that one device. This is the primary login identity.
-      const macBind = sub.macAddress ? ` mac-address=${sub.macAddress.toUpperCase()}` : '';
+      const macU = sub.macAddress ? sub.macAddress.toUpperCase() : '';
+      const macBind = macU ? ` mac-address=${macU}` : '';
 
-      // Profile: split add+set so each line is short. Ensure address-pool so logins route.
+      if (!entitled) {
+        // NOT entitled (expired, inactive, or no package): write NOTHING. Actively REMOVE both the
+        // D-name user and the MAC auto-login user, and drop the device's session/cookie/host so it
+        // is logged out and re-prompted to sign in. This is why expired accounts must never be
+        // "downloaded" — only active accounts are pushed to the router.
+        add(`:foreach u in=[/ip hotspot user find name="${sub.username}"] do={ /ip hotspot user remove \$u }`);
+        if (macU) {
+          add(`:foreach u in=[/ip hotspot user find name="${macU}"] do={ /ip hotspot user remove \$u }`);
+          add(`:foreach a in=[/ip hotspot active find mac-address="${macU}"] do={ /ip hotspot active remove \$a }`);
+          add(`:foreach c in=[/ip hotspot cookie find mac-address="${macU}"] do={ /ip hotspot cookie remove \$c }`);
+          add(`:foreach h in=[/ip hotspot host find mac-address="${macU}"] do={ /ip hotspot host remove \$h }`);
+        }
+        add(`:foreach a in=[/ip hotspot active find user="${sub.username}"] do={ /ip hotspot active remove \$a }`);
+        continue; // do not write any user for this subscriber
+      }
+
+      // ENTITLED: ensure the profile, the D-name login user (MAC-bound), and the MAC auto-login user.
       add(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} address-pool=dhcp-pool }`);
       add(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=no address-pool=dhcp-pool`);
       add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] = 0) do={ /ip hotspot user add name="${sub.username}" password="${sub.secret}" profile=${profileName}${macBind} comment="Dartbit:${sub.id}" }`);
-      add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] > 0) do={ /ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=${!entitled ? 'yes' : 'no'}${macBind} }`);
-
-      // NATIVE MAC AUTO-LOGIN: maintain a hotspot user NAMED after the device MAC with the
-      // profile's mac-auth-password ("dartbit"). With login-by=mac on the server profile, MikroTik
-      // auto-authenticates this device the instant it connects — no portal, no script, works months
-      // after provisioning because the sync (every 60s) keeps this user current. Removed on expiry.
-      if (sub.macAddress) {
-        const macU = sub.macAddress.toUpperCase();
-        if (!entitled) {
-          // Not entitled (inactive, expired, or no package) → remove the MAC auto-login user so the
-          // device is no longer auto-authenticated and must sign in / buy a package.
-          add(`:foreach u in=[/ip hotspot user find name="${macU}"] do={ /ip hotspot user remove \$u }`);
-        } else {
-          add(`:if ([:len [/ip hotspot user find name="${macU}"]] = 0) do={ /ip hotspot user add name="${macU}" password=dartbit mac-address=${macU} profile=${profileName} comment="DbMac:${sub.id}" }`);
-          add(`:if ([:len [/ip hotspot user find name="${macU}"]] > 0) do={ /ip hotspot user set [find name="${macU}"] password=dartbit mac-address=${macU} profile=${profileName} disabled=no }`);
-        }
-      }
-      if (!entitled) {
-        // SEAMLESS DISCONNECT: the device is no longer entitled (expired, inactive, or package
-        // removed). Drop any live session immediately so it's logged out and re-prompted to sign in.
-        // We match the active session BOTH by user-name (D-name and MAC-named user) AND by the
-        // device MAC directly — because depending on how the device authenticated, the active
-        // entry's "user" field may be the D-name or the MAC. Matching by mac-address guarantees we
-        // catch it regardless.
-        add(`:foreach a in=[/ip hotspot active find user="${sub.username}"] do={ /ip hotspot active remove \$a }`);
-        add(`:foreach c in=[/ip hotspot cookie find user="${sub.username}"] do={ /ip hotspot cookie remove \$c }`);
-        if (sub.macAddress) {
-          const macU = sub.macAddress.toUpperCase();
-          add(`:foreach a in=[/ip hotspot active find user="${macU}"] do={ /ip hotspot active remove \$a }`);
-          add(`:foreach a in=[/ip hotspot active find mac-address="${macU}"] do={ /ip hotspot active remove \$a }`);
-          add(`:foreach c in=[/ip hotspot cookie find mac-address="${macU}"] do={ /ip hotspot cookie remove \$c }`);
-          // Also clear any host/binding entry so the device fully re-enters the unauthenticated
-          // state and the captive portal (sign-in) is shown on its next request.
-          add(`:foreach h in=[/ip hotspot host find mac-address="${macU}"] do={ /ip hotspot host remove \$h }`);
-        }
+      add(`:if ([:len [/ip hotspot user find name="${sub.username}"]] > 0) do={ /ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=no${macBind} }`);
+      if (macU) {
+        add(`:if ([:len [/ip hotspot user find name="${macU}"]] = 0) do={ /ip hotspot user add name="${macU}" password=dartbit mac-address=${macU} profile=${profileName} comment="DbMac:${sub.id}" }`);
+        add(`:if ([:len [/ip hotspot user find name="${macU}"]] > 0) do={ /ip hotspot user set [find name="${macU}"] password=dartbit mac-address=${macU} profile=${profileName} disabled=no }`);
       }
     }
 
