@@ -13,7 +13,19 @@ import { encryptApiKey, decryptApiKey } from './blessedtexts'; // reuse CREDENTI
 
 const WG_HOST = process.env.DARTBIT_WG_SSH_HOST || '';
 const WG_USER = process.env.DARTBIT_WG_SSH_USER || 'dartbit';
-const WG_KEY = (process.env.DARTBIT_WG_SSH_KEY || '').replace(/\\n/g, '\n'); // tolerate escaped newlines
+// Normalize the SSH key: Railway (and copy/paste) often mangle multi-line secrets. Handle keys
+// stored with literal "\n", escaped "\\n", or CRLF, and ensure a trailing newline (ssh2/OpenSSL
+// are picky about the final newline on PEM blocks).
+function normalizeKey(raw: string): string {
+  let k = raw || '';
+  if (!k.includes('\n')) {
+    k = k.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').replace(/\\r/g, '\n');
+  }
+  k = k.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (!k.endsWith('\n')) k += '\n';
+  return k;
+}
+const WG_KEY = normalizeKey(process.env.DARTBIT_WG_SSH_KEY || '');
 const WG_SERVER_PUBKEY = process.env.DARTBIT_WG_SERVER_PUBKEY || '';
 const WG_ENDPOINT = process.env.DARTBIT_WG_ENDPOINT || 'vpn.dartbittech.com:51820';
 const WG_SUBNET = process.env.DARTBIT_WG_SUBNET || '10.8.0.0/24';
@@ -176,3 +188,36 @@ export async function refreshWgStatus(): Promise<void> {
 }
 
 export const wgEnv = { endpoint: WG_ENDPOINT, subnet: WG_SUBNET, serverPublicKey: WG_SERVER_PUBKEY };
+
+// Diagnose the VPN provisioning chain so we can see exactly which link fails. Returns a structured
+// report rather than throwing. Superadmin/owner use only.
+export async function diagnoseWg(): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {
+    env: {
+      DARTBIT_WG_SSH_HOST: WG_HOST || null,
+      DARTBIT_WG_SSH_USER: WG_USER || null,
+      DARTBIT_WG_SSH_KEY_present: !!WG_KEY,
+      DARTBIT_WG_SSH_KEY_looksPEM: WG_KEY.includes('BEGIN') && WG_KEY.includes('PRIVATE KEY'),
+      DARTBIT_WG_SSH_KEY_hasRealNewlines: WG_KEY.includes('\n'),
+      DARTBIT_WG_SSH_KEY_length: WG_KEY.length,
+      DARTBIT_WG_SERVER_PUBKEY: WG_SERVER_PUBKEY || null,
+      DARTBIT_WG_ENDPOINT: WG_ENDPOINT,
+      DARTBIT_WG_SUBNET: WG_SUBNET,
+    },
+    configured: wgConfigured(),
+  };
+  if (!wgConfigured()) { out.result = 'NOT_CONFIGURED'; return out; }
+  // Try a harmless SSH command and capture the precise failure.
+  try {
+    const peers = await sshExec('sudo dartbit-list-peers');
+    out.sshConnect = 'OK';
+    out.listPeers = 'OK';
+    out.peerCount = peers ? peers.split('\n').filter(Boolean).length : 0;
+    out.result = 'OK';
+  } catch (e) {
+    out.sshConnect = 'FAILED';
+    out.error = e instanceof Error ? e.message : String(e);
+    out.result = 'SSH_FAILED';
+  }
+  return out;
+}

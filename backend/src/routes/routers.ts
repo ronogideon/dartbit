@@ -341,7 +341,9 @@ router.post('/:id/vpn/provision', async (req: AuthRequest, res: Response) => {
     const mikrotikConfig = buildMikrotikWgConfig({ wgIp: result.wgIp, privateKey: privPlain });
     sendSuccess(res, { wgIp: result.wgIp, endpoint: result.endpoint, mikrotikConfig });
   } catch (err) {
-    sendError(res, err instanceof Error ? err.message : 'VPN provisioning failed', 500);
+    const msg = err instanceof Error ? err.message : 'VPN provisioning failed';
+    console.error('[vpn] provision error:', msg);
+    sendError(res, `VPN setup failed: ${msg}`, 500);
   }
 });
 
@@ -368,6 +370,17 @@ router.get('/:id/vpn', async (req: AuthRequest, res: Response) => {
       lastHandshake: router_.wgLastHandshake,
       mikrotikConfig,
     });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
+// GET /mikrotiks/vpn/diagnose — tells us exactly which link in the VPN chain fails.
+router.get('/vpn/diagnose', async (_req: AuthRequest, res: Response) => {
+  try {
+    const { diagnoseWg } = await import('../utils/wireguard');
+    const report = await diagnoseWg();
+    sendSuccess(res, report);
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);
   }
