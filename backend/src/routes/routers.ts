@@ -88,6 +88,15 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const routerId = req.params.id;
 
+    // Remove the VPN peer from the droplet first (best-effort) so a deleted router can't keep a
+    // tunnel. Frees its 10.8.0.x for reuse.
+    try {
+      const { deprovisionRouterWg } = await import('../utils/wireguard');
+      await deprovisionRouterWg(routerId);
+    } catch (e) {
+      console.error('Router delete: VPN deprovision failed (continuing):', e instanceof Error ? e.message : e);
+    }
+
     // Remove ALL data tied to this router to keep server storage low. Session history and
     // usage (SessionRecord), live sessions, the command queue, interfaces and provisioning
     // config are deleted. Subscribers are unlinked (not deleted — they may move to another
@@ -310,6 +319,55 @@ router.post('/:id/lan-ports', async (req: AuthRequest, res: Response) => {
     await prisma.mikrotikRouter.update({ where: { id: r.id }, data: { setupStage: 'COMPLETE' } });
 
     sendSuccess(res, { queued: true, ports: cleanPorts });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
+// POST /mikrotiks/:id/vpn/provision — assign a VPN IP + keypair and register the peer on the
+// droplet. Returns the MikroTik config the router runs once to join the management VPN.
+router.post('/:id/vpn/provision', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const router_ = await prisma.mikrotikRouter.findFirst({ where: { id: req.params.id, ...(tenantId ? { tenantId } : {}) } });
+    if (!router_) return sendError(res, 'Router not found', 404);
+    const { wgConfigured, provisionRouterWg, buildMikrotikWgConfig } = await import('../utils/wireguard');
+    if (!wgConfigured()) return sendError(res, 'VPN is not configured on the server yet', 400);
+    const result = await provisionRouterWg(router_.id);
+    // Decrypt the private key just to render the one-time router config (not stored in the response log).
+    const fresh = await prisma.mikrotikRouter.findUnique({ where: { id: router_.id } });
+    const { decryptApiKey } = await import('../utils/blessedtexts');
+    const privPlain = fresh?.wgPrivateKey ? decryptApiKey(fresh.wgPrivateKey) : '';
+    const mikrotikConfig = buildMikrotikWgConfig({ wgIp: result.wgIp, privateKey: privPlain });
+    sendSuccess(res, { wgIp: result.wgIp, endpoint: result.endpoint, mikrotikConfig });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'VPN provisioning failed', 500);
+  }
+});
+
+// GET /mikrotiks/:id/vpn — VPN status + the one-time router config (owner tenant only). Keys are
+// NOT exposed except inside the router config block (which the tenant needs once to join).
+router.get('/:id/vpn', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const router_ = await prisma.mikrotikRouter.findFirst({ where: { id: req.params.id, ...(tenantId ? { tenantId } : {}) } });
+    if (!router_) return sendError(res, 'Router not found', 404);
+    const { wgEnv, buildMikrotikWgConfig } = await import('../utils/wireguard');
+    let mikrotikConfig: string | null = null;
+    if (router_.wgIp && router_.wgPrivateKey) {
+      const { decryptApiKey } = await import('../utils/blessedtexts');
+      mikrotikConfig = buildMikrotikWgConfig({ wgIp: router_.wgIp, privateKey: decryptApiKey(router_.wgPrivateKey) });
+    }
+    // "VPN online" = a handshake within the last ~3 minutes.
+    const online = router_.wgLastHandshake ? (Date.now() - new Date(router_.wgLastHandshake).getTime() < 3 * 60 * 1000) : false;
+    sendSuccess(res, {
+      provisioned: !!router_.wgIp,
+      wgIp: router_.wgIp,
+      endpoint: wgEnv.endpoint,
+      vpnOnline: online,
+      lastHandshake: router_.wgLastHandshake,
+      mikrotikConfig,
+    });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);
   }

@@ -172,6 +172,11 @@ model MikrotikRouter {
   lastSeenAt     DateTime?
   offlineAlertSent Boolean                 @default(false) // true once an offline alert SMS was sent; reset when back online
   offlineSince     DateTime?               // when the current/last outage began (for back-online duration)
+  wgIp           String?                   // assigned VPN IP, e.g. 10.8.0.11
+  wgPublicKey    String?                   // router's WireGuard public key
+  wgPrivateKey   String?                   // router's WireGuard private key (ENCRYPTED at rest)
+  wgPeerAdded    Boolean                   @default(false) // true once the peer is registered on the droplet
+  wgLastHandshake DateTime?                // last VPN handshake seen (for "VPN online" status)
   tenantId       String
   tenant         Tenant                    @relation(fields: [tenantId], references: [id])
   interfaces     RouterInterface[]

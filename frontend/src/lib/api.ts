@@ -175,6 +175,10 @@ export const getRouterLinkStatus = (id: string) => api.get(`/mikrotiks/${id}/lin
 export const getRouterInterfaces = (id: string) => api.get(`/router/list-interfaces/${id}`).then(r => r.data.data);
 export const getRouterZtpCommand = (id: string) => api.get(`/mikrotiks/${id}/ztp-command`).then(r => r.data.data);
 
+export interface RouterVpn { provisioned: boolean; wgIp: string | null; endpoint: string; vpnOnline: boolean; lastHandshake?: string | null; mikrotikConfig: string | null; }
+export const getRouterVpn = (id: string) => api.get(`/mikrotiks/${id}/vpn`).then(r => r.data.data as RouterVpn);
+export const provisionRouterVpn = (id: string) => api.post(`/mikrotiks/${id}/vpn/provision`).then(r => r.data.data as { wgIp: string; endpoint: string; mikrotikConfig: string });
+
 // Vouchers
 export const getVouchers = () => api.get('/vouchers').then(r => r.data.data);
 export const getVoucherBatches = () => api.get('/vouchers/batches').then(r => r.data.data);

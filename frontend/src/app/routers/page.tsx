@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getRouters, linkRouter, updateRouter, deleteRouter, getProvisionConfig, saveProvisionConfig, rebootRouter, changeRouterIdentity, updateRouterLanPorts, getRouterInterfaces, reprovisionRouter, getRouterZtpCommand } from '@/lib/api';
+import { getRouters, linkRouter, updateRouter, deleteRouter, getProvisionConfig, saveProvisionConfig, rebootRouter, changeRouterIdentity, updateRouterLanPorts, getRouterInterfaces, reprovisionRouter, getRouterZtpCommand, getRouterVpn, provisionRouterVpn } from '@/lib/api';
 import LinkWizard from '@/components/LinkWizard';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
@@ -156,6 +156,72 @@ function ProvisionPanel({ routerId }: { routerId: string }) {
 }
 
 // Options menu — identity change & LAN port update
+function VpnModal({ isOpen, onClose, routerId, routerName }: { isOpen: boolean; onClose: () => void; routerId: string; routerName: string }) {
+  const { data, isPending, refetch } = useQuery({
+    queryKey: ['router-vpn', routerId],
+    queryFn: () => getRouterVpn(routerId),
+    enabled: isOpen,
+    refetchInterval: isOpen ? 15000 : false,
+  });
+  const provisionMut = useMutation({
+    mutationFn: () => provisionRouterVpn(routerId),
+    onSuccess: () => { toast.success('VPN provisioned'); refetch(); },
+    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'VPN provisioning failed'),
+  });
+
+  const copyConfig = (cfg: string) => { navigator.clipboard.writeText(cfg); toast.success('Config copied'); };
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title={`VPN — ${routerName}`}>
+      {isPending ? (
+        <div className="text-center py-6 text-gray-500 text-sm">Loading VPN status…</div>
+      ) : !data ? (
+        <div className="text-center py-6 text-gray-500 text-sm">Could not load VPN info.</div>
+      ) : (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between p-3 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+            <div>
+              <div className="text-xs text-gray-500">VPN IP address</div>
+              <div className="font-mono text-sm font-semibold">{data.wgIp || 'Not assigned'}</div>
+            </div>
+            <div className="text-right">
+              <div className="text-xs text-gray-500">Status</div>
+              {data.provisioned ? (
+                <span className={`inline-flex items-center gap-1.5 text-sm font-medium ${data.vpnOnline ? 'text-green-600' : 'text-gray-400'}`}>
+                  <span className={`w-2 h-2 rounded-full ${data.vpnOnline ? 'bg-green-500' : 'bg-gray-400'}`} />
+                  {data.vpnOnline ? 'Connected' : 'Offline'}
+                </span>
+              ) : <span className="text-sm text-gray-400">Not set up</span>}
+            </div>
+          </div>
+
+          {!data.provisioned ? (
+            <div className="space-y-3">
+              <p className="text-sm text-gray-600 dark:text-gray-300">
+                Set up a secure VPN tunnel so this router can be managed remotely (Winbox/SSH over the VPN)
+                and reached by the central services.
+              </p>
+              <button onClick={() => provisionMut.mutate()} disabled={provisionMut.isPending} className="btn-primary w-full text-sm">
+                {provisionMut.isPending ? 'Setting up…' : 'Set up VPN'}
+              </button>
+            </div>
+          ) : data.mikrotikConfig ? (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs text-gray-500">Run this once on the router (Winbox terminal / SSH)</label>
+                <button onClick={() => copyConfig(data.mikrotikConfig!)} className="text-xs text-blue-600 flex items-center gap-1"><Copy size={12} /> Copy</button>
+              </div>
+              <pre className="text-[11px] bg-gray-900 text-gray-100 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-all max-h-56">{data.mikrotikConfig}</pre>
+              <p className="text-xs text-gray-500">Endpoint: <span className="font-mono">{data.endpoint}</span>. After running it, the status above turns green once the tunnel connects.</p>
+              <p className="text-xs text-gray-400">To reach this router via Winbox: connect your computer to the Dartbit VPN, then open Winbox to <span className="font-mono">{data.wgIp}</span>.</p>
+            </div>
+          ) : null}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function RouterOptionsMenu({ router, onReboot, onEdit, onDelete }: {
   router: MikrotikRouter;
   onReboot: () => void;
@@ -166,6 +232,7 @@ function RouterOptionsMenu({ router, onReboot, onEdit, onDelete }: {
   const [open, setOpen] = useState(false);
   const [identityModal, setIdentityModal] = useState(false);
   const [lanPortsModal, setLanPortsModal] = useState(false);
+  const [vpnModal, setVpnModal] = useState(false);
   const [reprovisionModal, setReprovisionModal] = useState<{ command: string } | null>(null);
   const [identity, setIdentity] = useState(router.identity || router.name);
   const [selectedPorts, setSelectedPorts] = useState<Set<string>>(new Set());
@@ -307,6 +374,12 @@ function RouterOptionsMenu({ router, onReboot, onEdit, onDelete }: {
             >
               <RotateCw size={14} className="text-orange-600" /> Reboot router
             </button>
+            <button
+              onClick={() => { setOpen(false); setVpnModal(true); }}
+              className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-800 flex items-center gap-2"
+            >
+              <Network size={14} className="text-indigo-600" /> Manage VPN
+            </button>
             <div className="border-t border-gray-200 dark:border-gray-700 my-1" />
             <button
               onClick={() => { setOpen(false); onEdit(); }}
@@ -323,6 +396,9 @@ function RouterOptionsMenu({ router, onReboot, onEdit, onDelete }: {
           </div>
         )}
       </div>
+
+      {/* VPN management modal */}
+      <VpnModal isOpen={vpnModal} onClose={() => setVpnModal(false)} routerId={router.id} routerName={router.name} />
 
       {/* Identity change modal */}
       <Modal isOpen={identityModal} onClose={() => setIdentityModal(false)} title="Change router identity">
