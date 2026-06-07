@@ -1,7 +1,7 @@
 // Builds the exact RouterOS commands for ONE hotspot subscriber's current state and pushes them to
-// the router's command queue for immediate application (the dartbit-cmd poller runs every ~5s),
-// rather than waiting for the 60s full sync. Used on create/extend/delete/expiry so backend changes
-// reflect on the router almost instantly. The 60s sync remains the safety-net reconciler.
+// the router's command queue for immediate application (the dartbit-cmd poller runs every ~2s),
+// rather than waiting for the 60s full sync. Used on create/extend/edit/delete/expiry so backend
+// changes reflect on the router almost instantly. The 60s sync remains the safety-net reconciler.
 import prisma from './prisma';
 import { enqueueCommand } from './commandQueue';
 
@@ -19,7 +19,8 @@ interface HsSubLike {
 }
 
 // Returns the RouterOS command lines to bring this hotspot subscriber's router entries in line with
-// its current entitlement. Entitled → ensure D-name + MAC users. Not entitled → remove them + kick.
+// its current entitlement. Entitled → ensure D-name + MAC users. Not entitled → remove them + kick
+// the live session, cookie and host so the device is thrown out and gets no more data.
 export function buildHotspotSubCommands(sub: HsSubLike): string[] {
   const lines: string[] = [];
   if (sub.service !== 'HOTSPOT') return lines;
@@ -36,6 +37,7 @@ export function buildHotspotSubCommands(sub: HsSubLike): string[] {
     lines.push(`:foreach a in=[/ip hotspot active find user="${sub.username}"] do={ /ip hotspot active remove $a }`);
     if (macU) {
       lines.push(`:foreach u in=[/ip hotspot user find name="${macU}"] do={ /ip hotspot user remove $u }`);
+      lines.push(`:foreach a in=[/ip hotspot active find user="${macU}"] do={ /ip hotspot active remove $a }`);
       lines.push(`:foreach a in=[/ip hotspot active find mac-address="${macU}"] do={ /ip hotspot active remove $a }`);
       lines.push(`:foreach c in=[/ip hotspot cookie find mac-address="${macU}"] do={ /ip hotspot cookie remove $c }`);
       lines.push(`:foreach h in=[/ip hotspot host find mac-address="${macU}"] do={ /ip hotspot host remove $h }`);

@@ -93,8 +93,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.9', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.9', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.10', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.10', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -125,10 +125,11 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.9 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.10 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
+  startExpiryWatcher();
   startReminderScheduler();
   startSystemAlerts();
 });
@@ -199,6 +200,48 @@ function startBillingStatusUpdater() {
   };
   run();
   setInterval(run, 30 * 60 * 1000); // every 30 min
+}
+
+// Aggressive expiry enforcement: every 5 seconds, find hotspot subscribers whose package has just
+// expired and push an immediate removal (user delete + session kick + host/cookie clear) so the
+// device is thrown out within ~5s of expiry and gets no more data until they buy again. A short
+// in-memory dedup set avoids re-pushing the same expiry every tick; entries age out after a few
+// minutes so a re-created session is caught again. The 60s sync remains the safety-net reconciler.
+function startExpiryWatcher() {
+  const prisma = new PrismaClient();
+  const pushed = new Map<string, number>(); // subscriberId -> expiry epoch already pushed
+  const run = async () => {
+    try {
+      const now = new Date();
+      const nowMs = now.getTime();
+      // Subscribers that have expired within the last 10 minutes (the live-enforcement window) and
+      // still have a router — these are the ones that may still have a session to kill. Older
+      // expiries are handled by the 60s sync's reconciliation sweep.
+      const recentlyExpired = await prisma.subscriber.findMany({
+        where: {
+          service: 'HOTSPOT',
+          routerId: { not: null },
+          expiresAt: { lte: now, gte: new Date(nowMs - 10 * 60 * 1000) },
+        },
+        select: { id: true, expiresAt: true },
+      });
+      const { pushSubscriberToRouter } = await import('./utils/pushSubscriber');
+      for (const s of recentlyExpired) {
+        const exp = s.expiresAt ? s.expiresAt.getTime() : 0;
+        // Re-push if we haven't pushed this exact expiry yet (handles expiry being changed/renewed).
+        if (pushed.get(s.id) === exp) continue;
+        await pushSubscriberToRouter(s.id); // builds removal cmds for an unentitled sub
+        pushed.set(s.id, exp);
+      }
+      // Age out the dedup map so a device that reconnects after a stale session is re-kicked, and
+      // so the map doesn't grow unbounded.
+      if (pushed.size > 5000) pushed.clear();
+    } catch (err) {
+      console.error('Expiry watcher error:', err instanceof Error ? err.message : err);
+    }
+  };
+  run();
+  setInterval(run, 3 * 1000); // every 3 seconds — aggressive enforcement (≈5s incl. 2s router poll)
 }
 
 server.on('error', (err) => {
@@ -497,7 +540,7 @@ async function patchDatabase() {
       )`);
     await safeExec(prisma, 'MpesaTx checkout unique', `CREATE UNIQUE INDEX IF NOT EXISTS "MpesaTransaction_checkoutRequestId_key" ON "MpesaTransaction"("checkoutRequestId")`);
     await safeExec(prisma, 'MpesaTx tenant idx', `CREATE INDEX IF NOT EXISTS "MpesaTransaction_tenantId_status_idx" ON "MpesaTransaction"("tenantId","status")`);
-    // v1.10.9 payout/fee columns
+    // v1.10.10 payout/fee columns
     await safeExec(prisma, 'MpesaTx collectedVia', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "collectedVia" TEXT DEFAULT 'TENANT'`);
     await safeExec(prisma, 'MpesaTx platformFee', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "platformFee" DOUBLE PRECISION NOT NULL DEFAULT 0`);
     await safeExec(prisma, 'MpesaTx netToTenant', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "netToTenant" DOUBLE PRECISION NOT NULL DEFAULT 0`);
@@ -599,7 +642,7 @@ async function patchDatabase() {
     await safeExec(prisma, 'PlatformSetting key unique', `CREATE UNIQUE INDEX IF NOT EXISTS "PlatformSetting_key_key" ON "PlatformSetting"("key")`);
     await safeExec(prisma, 'MpesaTransaction purpose', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "purpose" TEXT`);
 
-    // v1.10.9 — editable templates + system alerts.
+    // v1.10.10 — editable templates + system alerts.
     await safeExec(prisma, 'NotifConfig templates', `ALTER TABLE "NotificationConfig" ADD COLUMN IF NOT EXISTS "templates" JSONB`);
     await safeExec(prisma, 'NotifConfig provider', `ALTER TABLE "NotificationConfig" ADD COLUMN IF NOT EXISTS "provider" TEXT NOT NULL DEFAULT 'BLESSEDTEXTS'`);
     await safeExec(prisma, 'NotifConfig alertPhones', `ALTER TABLE "NotificationConfig" ADD COLUMN IF NOT EXISTS "alertPhones" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[]`);

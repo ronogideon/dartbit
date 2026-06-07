@@ -125,6 +125,36 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
       include: { package: true, router: true },
     });
 
+    // Push the change to the router immediately (applied within ~2s by the cmd poller) so a manual
+    // edit takes effect at once: if the subscriber is now expired/inactive/without a package, the
+    // helper emits removal + session-kick commands (the device is thrown out); if still entitled, it
+    // (re)creates the users. Covers the case of an admin setting expiry to the past to disconnect.
+    if (subscriber.routerId && subscriber.service === 'HOTSPOT') {
+      try {
+        const { pushSubscriberToRouter } = await import('../utils/pushSubscriber');
+        await pushSubscriberToRouter(subscriber.id);
+      } catch (e) {
+        console.error('update: router push failed (continuing):', e instanceof Error ? e.message : e);
+      }
+    } else if (subscriber.routerId) {
+      // PPPoE/static: toggle the secret enable/disable + kick active session to match new state.
+      try {
+        const { enqueueCommand } = await import('../utils/commandQueue');
+        const now = new Date();
+        const expired = subscriber.expiresAt ? subscriber.expiresAt <= now : false;
+        const entitled = subscriber.isActive && !expired;
+        if (entitled) {
+          await enqueueCommand(subscriber.routerId, `:foreach s in=[/ppp secret find name="${subscriber.username}"] do={ /ppp secret set $s disabled=no }`);
+        } else {
+          await enqueueCommand(subscriber.routerId,
+            `:foreach s in=[/ppp secret find name="${subscriber.username}"] do={ /ppp secret set $s disabled=yes }\n` +
+            `:foreach a in=[/ppp active find name="${subscriber.username}"] do={ /ppp active remove $a }`);
+        }
+      } catch (e) {
+        console.error('update: ppp router push failed (continuing):', e instanceof Error ? e.message : e);
+      }
+    }
+
     sendSuccess(res, subscriber);
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed to update subscriber';
@@ -142,15 +172,15 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
       return sendError(res, 'Not authorized', 403);
     }
 
-    // Best-effort: remove the user from the router so they're kicked off immediately.
+    // Remove from the router immediately so they're kicked off (within ~2s via the cmd poller).
+    // Use the shared helper so the MAC auto-login user + session/cookie/host are all cleared too.
     if (sub.routerId) {
       try {
-        const { enqueueCommand } = await import('../utils/commandQueue');
         if (sub.service === 'HOTSPOT') {
-          await enqueueCommand(sub.routerId,
-            `:foreach a in=[/ip hotspot active find user="${sub.username}"] do={ /ip hotspot active remove $a }\n` +
-            `:foreach u in=[/ip hotspot user find name="${sub.username}"] do={ /ip hotspot user remove $u }`);
+          const { pushSubscriberRemoval } = await import('../utils/pushSubscriber');
+          await pushSubscriberRemoval(sub.routerId, sub.username, sub.macAddress);
         } else {
+          const { enqueueCommand } = await import('../utils/commandQueue');
           await enqueueCommand(sub.routerId,
             `:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove $a }\n` +
             `:foreach s in=[/ppp secret find name="${sub.username}"] do={ /ppp secret remove $s }`);
