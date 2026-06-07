@@ -521,3 +521,16 @@ model PlatformSetting {
   value       String
   updatedAt   DateTime @updatedAt
 }
+
+// Records that a device (by MAC) has used a free trial — once per device, ever, per tenant.
+// Kept SEPARATE from Subscriber so deleting the trial subscriber does NOT reset the device's
+// eligibility (otherwise a device could delete-and-reclaim forever).
+model TrialClaim {
+  id         String   @id @default(cuid())
+  tenantId   String
+  macAddress String
+  packageId  String?
+  claimedAt  DateTime @default(now())
+  @@unique([tenantId, macAddress])
+  @@index([tenantId])
+}

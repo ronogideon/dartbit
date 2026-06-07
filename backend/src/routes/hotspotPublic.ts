@@ -244,22 +244,33 @@ router.post('/claim-trial', async (req: Request, res: Response) => {
     if (!pkg.isTrial) return res.status(400).json({ success: false, error: 'This package is not a free trial' });
 
     const now = new Date();
-    // One trial per MAC per package: if this MAC already has a trial subscriber on this package,
-    // don't grant a fresh one once it has expired (prevents endless free renewals).
-    const existing = await prisma.subscriber.findFirst({
-      where: { tenantId: r.tenantId, service: 'HOTSPOT', macAddress: reqMac, packageId: pkg.id },
-    });
-    if (existing) {
-      const expired = existing.expiresAt ? existing.expiresAt <= now : false;
-      if (expired) {
-        return res.status(409).json({ success: false, error: 'Your free trial for this package has already been used.' });
+
+    // ONCE PER DEVICE, EVER: a TrialClaim row (kept separate from Subscriber) records that this MAC
+    // has used a free trial on this tenant. If it exists, the device has already had its trial — even
+    // if the trial subscriber was later deleted. The only exception is reconnecting to a STILL-ACTIVE
+    // trial (same device, trial not yet expired), which just logs them back in.
+    const priorClaim = await prisma.trialClaim.findUnique({
+      where: { tenantId_macAddress: { tenantId: r.tenantId, macAddress: reqMac } },
+    }).catch(() => null);
+
+    if (priorClaim) {
+      // Allow reconnect ONLY if there's a still-active trial subscriber for this device.
+      const activeTrial = await prisma.subscriber.findFirst({
+        where: {
+          tenantId: r.tenantId, service: 'HOTSPOT', macAddress: reqMac, isActive: true,
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        },
+        orderBy: { expiresAt: 'desc' },
+      });
+      if (activeTrial) {
+        try {
+          const { pushSubscriberToRouter } = await import('../utils/pushSubscriber');
+          await pushSubscriberToRouter(activeTrial.id);
+        } catch { /* best-effort */ }
+        return res.json({ success: true, username: activeTrial.username, password: activeTrial.secret, reused: true });
       }
-      // Active trial — just push a login and return success.
-      try {
-        const { pushSubscriberToRouter } = await import('../utils/pushSubscriber');
-        await pushSubscriberToRouter(existing.id);
-      } catch { /* best-effort */ }
-      return res.json({ success: true, username: existing.username, password: existing.secret, reused: true });
+      // Trial already used and no longer active → deny.
+      return res.status(409).json({ success: false, error: 'This device has already used its free trial.' });
     }
 
     const expiresAt = new Date(now.getTime() + pkg.validityMinutes * 60 * 1000);
@@ -270,6 +281,7 @@ router.post('/claim-trial', async (req: Request, res: Response) => {
       data: {
         username: reqMac,
         secret: password,
+        fullName: `Trial ${reqMac}`,
         service: 'HOTSPOT',
         macAddress: reqMac,
         isActive: true,
@@ -279,6 +291,11 @@ router.post('/claim-trial', async (req: Request, res: Response) => {
         tenantId: r.tenantId,
       },
     });
+    // Record the device's trial usage so it can never claim another (once per device, ever).
+    await prisma.trialClaim.create({
+      data: { tenantId: r.tenantId, macAddress: reqMac, packageId: pkg.id },
+    }).catch(() => { /* unique race — already recorded, fine */ });
+
     // Push to router immediately so the device connects within ~2s.
     try {
       const { pushSubscriberToRouter } = await import('../utils/pushSubscriber');
