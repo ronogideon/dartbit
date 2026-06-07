@@ -249,7 +249,7 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   // Create-or-update the profile (carries the package rate-limit), verifying it exists before
   // adding users (a brand-new package's profile has never existed on this router).
   cmds.push(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} address-pool=dhcp-pool }`);
-  cmds.push(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=yes address-pool=dhcp-pool`);
+  cmds.push(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=no address-pool=dhcp-pool`);
   // Primary user (D-name + 4-digit pwd), bound to the paying device's MAC. Recreate fresh.
   cmds.push(`:foreach u in=[/ip hotspot user find name="${loginUser}"] do={ /ip hotspot user remove \$u }`);
   cmds.push(`/ip hotspot user add name=${loginUser} password=${password} profile=${profileName} limit-uptime=${sessionSec}s${macBind} comment="Dbm:${displayName}"`);

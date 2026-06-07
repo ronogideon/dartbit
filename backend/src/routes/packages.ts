@@ -14,6 +14,7 @@ const packageSchema = z.object({
   speedDownKbps: z.number().int().min(1),
   validityMinutes: z.number().int().min(1),
   price: z.number().min(0),
+  isTrial: z.boolean().optional().default(false),
 });
 
 router.get('/', async (req: AuthRequest, res: Response) => {

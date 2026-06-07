@@ -253,11 +253,14 @@ button.primary svg{width:14px;height:14px}
       var d=document.createElement('div');
       d.className='pkg-card';
       d.setAttribute('data-id',p.id);
-      d.innerHTML='<div><div class="pkg-name">'+escapeHtml(p.name)+'</div><div class="pkg-meta">'+fmtSpeed(p.speedDownKbps)+'bps · '+fmtDur(p.validityMinutes)+'</div></div>'+
-                  '<div class="pkg-price">KES '+p.price.toFixed(0)+'<small>'+fmtDur(p.validityMinutes)+'</small></div>';
+      var priceHtml=p.isTrial
+        ? '<div class="pkg-price" style="color:#10b981">FREE<small>'+fmtDur(p.validityMinutes)+'</small></div>'
+        : '<div class="pkg-price">KES '+p.price.toFixed(0)+'<small>'+fmtDur(p.validityMinutes)+'</small></div>';
+      d.innerHTML='<div><div class="pkg-name">'+escapeHtml(p.name)+(p.isTrial?' <span style="font-size:9px;background:#10b981;color:#fff;padding:1px 5px;border-radius:6px;vertical-align:middle">TRIAL</span>':'')+'</div><div class="pkg-meta">'+fmtSpeed(p.speedDownKbps)+'bps · '+fmtDur(p.validityMinutes)+'</div></div>'+priceHtml;
       d.addEventListener('click',function(){
         selectedPkg=p;
-        // Fill the pay summary and switch to the phone-entry step
+        if(p.isTrial){ claimTrial(p); return; }
+        // Paid package — fill the pay summary and switch to the phone-entry step
         document.getElementById('pay-summary').innerHTML=
           '<div><div class="ps-name">'+escapeHtml(p.name)+'</div><div class="ps-meta">'+fmtSpeed(p.speedDownKbps)+'bps · '+fmtDur(p.validityMinutes)+'</div></div>'+
           '<div class="ps-price">KES '+p.price.toFixed(0)+'</div>';
@@ -268,6 +271,30 @@ button.primary svg{width:14px;height:14px}
       });
       list.appendChild(d);
     });
+  }
+
+  // Free trial: claim using only the device MAC, then auto-login. No payment, no phone.
+  function claimTrial(p){
+    if(!MAC){ show('error','Your device could not be identified for the free trial.'); return; }
+    show('success',spinner()+' Activating your free trial...');
+    var xhr=new XMLHttpRequest();
+    xhr.open('POST',BACKEND+'/hotspot/claim-trial',true);
+    xhr.setRequestHeader('Content-Type','application/json');
+    xhr.timeout=20000;
+    xhr.onload=function(){
+      try{
+        var d=JSON.parse(xhr.responseText);
+        if(d&&d.success){
+          show('success',spinner()+' Trial active — connecting you...');
+          setTimeout(function(){ submitMikrotik(d.username,d.password); },1500);
+          return;
+        }
+        show('error',(d&&d.error)||'Could not activate the free trial.');
+      }catch(e){ show('error','Could not activate the free trial.'); }
+    };
+    xhr.onerror=function(){ show('error','Network error activating trial.'); };
+    xhr.ontimeout=function(){ show('error','Trial request timed out.'); };
+    xhr.send(JSON.stringify({packageId:p.id,routerApiKey:API_KEY,mac:MAC,ip:IP}));
   }
   function escapeHtml(s){var d=document.createElement('div');d.innerText=s;return d.innerHTML}
 

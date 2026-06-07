@@ -12,10 +12,10 @@ import { Plus, Edit2, Trash2 } from 'lucide-react';
 
 interface Package {
   id: string; name: string; service: string; speedUpKbps: number;
-  speedDownKbps: number; validityMinutes: number; price: number; isActive: boolean;
+  speedDownKbps: number; validityMinutes: number; price: number; isActive: boolean; isTrial?: boolean;
 }
 
-const emptyForm = { name: '', service: 'PPPOE', speedUpKbps: 10240, speedDownKbps: 10240, validityMinutes: 43200, price: 1500 };
+const emptyForm = { name: '', service: '', validityMinutes: '' as number | '', price: '' as number | '', isTrial: false };
 
 export default function PackagesPage() {
   const qc = useQueryClient();
@@ -23,9 +23,10 @@ export default function PackagesPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [editing, setEditing] = useState<Package | null>(null);
   const [form, setForm] = useState(emptyForm);
-  // Speed entered as value + unit (Kbps/Mbps/Gbps), converted to Kbps on submit.
-  const [upSpeed, setUpSpeed] = useState<{ value: number; unit: SpeedUnit }>({ value: 10, unit: 'Mbps' });
-  const [downSpeed, setDownSpeed] = useState<{ value: number; unit: SpeedUnit }>({ value: 10, unit: 'Mbps' });
+  // Speed entered as value + unit (Kbps/Mbps/Gbps), converted to Kbps on submit. Start EMPTY so the
+  // tenant must consciously choose — nothing is prefilled, preventing unintended speed/price/validity.
+  const [upSpeed, setUpSpeed] = useState<{ value: number | ''; unit: SpeedUnit }>({ value: '', unit: 'Mbps' });
+  const [downSpeed, setDownSpeed] = useState<{ value: number | ''; unit: SpeedUnit }>({ value: '', unit: 'Mbps' });
 
   const { data: packages = [], isPending } = useQuery({ queryKey: ['packages'], queryFn: getPackages });
 
@@ -47,12 +48,12 @@ export default function PackagesPage() {
 
   const openCreate = () => {
     setEditing(null); setForm(emptyForm);
-    setUpSpeed({ value: 10, unit: 'Mbps' }); setDownSpeed({ value: 10, unit: 'Mbps' });
+    setUpSpeed({ value: '', unit: 'Mbps' }); setDownSpeed({ value: '', unit: 'Mbps' });
     setModalOpen(true);
   };
   const openEdit = (p: Package) => {
     setEditing(p);
-    setForm({ name: p.name, service: p.service, speedUpKbps: p.speedUpKbps, speedDownKbps: p.speedDownKbps, validityMinutes: p.validityMinutes, price: p.price });
+    setForm({ name: p.name, service: p.service, validityMinutes: p.validityMinutes, price: p.price, isTrial: !!p.isTrial });
     setUpSpeed(fromKbps(p.speedUpKbps)); setDownSpeed(fromKbps(p.speedDownKbps));
     setModalOpen(true);
   };
@@ -60,12 +61,21 @@ export default function PackagesPage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    // Validate that every parameter was consciously chosen — nothing defaulted.
+    if (!form.name.trim()) { toast.error('Enter a package name'); return; }
+    if (!form.service) { toast.error('Select a service type'); return; }
+    if (form.validityMinutes === '' || Number(form.validityMinutes) <= 0) { toast.error('Select a validity period'); return; }
+    if (!form.isTrial && (form.price === '' || Number(form.price) < 0)) { toast.error('Enter a price'); return; }
+    if (upSpeed.value === '' || Number(upSpeed.value) <= 0) { toast.error('Enter an upload speed'); return; }
+    if (downSpeed.value === '' || Number(downSpeed.value) <= 0) { toast.error('Enter a download speed'); return; }
     const payload = {
-      ...form,
+      name: form.name,
+      service: form.service,
       speedUpKbps: toKbps(Number(upSpeed.value), upSpeed.unit),
       speedDownKbps: toKbps(Number(downSpeed.value), downSpeed.unit),
       validityMinutes: Number(form.validityMinutes),
-      price: Number(form.price),
+      price: form.isTrial ? 0 : Number(form.price),
+      isTrial: form.isTrial,
     };
     if (editing) updateMut.mutate({ id: editing.id, data: payload });
     else createMut.mutate(payload);
@@ -126,7 +136,8 @@ export default function PackagesPage() {
             </div>
             <div>
               <label className="label">Service Type</label>
-              <select className="input" value={form.service} onChange={e => setForm(f => ({ ...f, service: e.target.value }))}>
+              <select className="input" value={form.service} onChange={e => setForm(f => ({ ...f, service: e.target.value, isTrial: e.target.value === 'HOTSPOT' ? f.isTrial : false }))} required>
+                <option value="" disabled>Select service…</option>
                 <option value="PPPOE">PPPoE</option>
                 <option value="HOTSPOT">Hotspot</option>
                 <option value="STATIC">Static</option>
@@ -134,13 +145,24 @@ export default function PackagesPage() {
             </div>
             <div>
               <label className="label">Price (KES)</label>
-              <input className="input" type="number" value={form.price} onChange={e => setForm(f => ({ ...f, price: Number(e.target.value) }))} required min={0} />
+              <input className="input" type="number" value={form.isTrial ? 0 : form.price}
+                onChange={e => setForm(f => ({ ...f, price: e.target.value === '' ? '' : Number(e.target.value) }))}
+                disabled={form.isTrial} min={0} placeholder="Enter price" />
             </div>
+            {form.service === 'HOTSPOT' && (
+              <div className="col-span-2 flex items-start gap-2 p-3 rounded-lg bg-emerald-50 dark:bg-emerald-900/20">
+                <input id="isTrial" type="checkbox" className="mt-1" checked={form.isTrial}
+                  onChange={e => setForm(f => ({ ...f, isTrial: e.target.checked }))} />
+                <label htmlFor="isTrial" className="text-sm text-gray-700 dark:text-gray-300">
+                  <span className="font-medium">Free trial package</span> — price is 0 and the customer connects with just their device (no payment). Trial users appear on the dashboard by their device MAC.
+                </label>
+              </div>
+            )}
             <div>
               <label className="label">Upload Speed</label>
               <div className="flex gap-2">
                 <input className="input flex-1" type="number" step="any" value={upSpeed.value}
-                  onChange={e => setUpSpeed(s => ({ ...s, value: Number(e.target.value) }))} required min={0.1} />
+                  onChange={e => setUpSpeed(s => ({ ...s, value: e.target.value === '' ? '' : Number(e.target.value) }))} min={0.1} placeholder="e.g. 5" />
                 <select className="input w-24" value={upSpeed.unit}
                   onChange={e => setUpSpeed(s => ({ ...s, unit: e.target.value as SpeedUnit }))}>
                   <option value="Kbps">Kbps</option>
@@ -153,7 +175,7 @@ export default function PackagesPage() {
               <label className="label">Download Speed</label>
               <div className="flex gap-2">
                 <input className="input flex-1" type="number" step="any" value={downSpeed.value}
-                  onChange={e => setDownSpeed(s => ({ ...s, value: Number(e.target.value) }))} required min={0.1} />
+                  onChange={e => setDownSpeed(s => ({ ...s, value: e.target.value === '' ? '' : Number(e.target.value) }))} min={0.1} placeholder="e.g. 5" />
                 <select className="input w-24" value={downSpeed.unit}
                   onChange={e => setDownSpeed(s => ({ ...s, unit: e.target.value as SpeedUnit }))}>
                   <option value="Kbps">Kbps</option>
@@ -166,7 +188,7 @@ export default function PackagesPage() {
               <label className="label">Validity</label>
               <SearchableSelect
                 options={VALIDITY_OPTIONS.map(o => ({ label: o.label, value: o.minutes }))}
-                value={form.validityMinutes}
+                value={form.validityMinutes === '' ? '' : form.validityMinutes}
                 onChange={(v) => setForm(f => ({ ...f, validityMinutes: Number(v) }))}
                 placeholder="Select validity…"
               />

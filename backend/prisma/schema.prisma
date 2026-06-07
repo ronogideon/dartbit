@@ -259,6 +259,7 @@ model Package {
   speedDownKbps   Int
   validityMinutes Int
   price           Float
+  isTrial         Boolean      @default(false)  // free hotspot trial — MAC-only login, no payment
   isActive        Boolean      @default(true)
   tenantId        String
   tenant          Tenant       @relation(fields: [tenantId], references: [id])

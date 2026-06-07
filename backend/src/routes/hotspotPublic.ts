@@ -212,7 +212,7 @@ router.get('/packages', async (req: Request, res: Response) => {
 
     const packages = await prisma.package.findMany({
       where: { tenantId: r.tenantId, service: 'HOTSPOT', isActive: true },
-      select: { id: true, name: true, speedUpKbps: true, speedDownKbps: true, validityMinutes: true, price: true },
+      select: { id: true, name: true, speedUpKbps: true, speedDownKbps: true, validityMinutes: true, price: true, isTrial: true },
       orderBy: { price: 'asc' },
     });
     res.json({
@@ -220,6 +220,72 @@ router.get('/packages', async (req: Request, res: Response) => {
       tenantName: r.tenant.name,
       packages,
     });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : 'Failed' });
+  }
+});
+
+// POST /hotspot/claim-trial { packageId, routerApiKey, mac, ip? }
+// Free-trial claim: a device gets a free hotspot package using ONLY its MAC — no payment, no phone.
+// Creates (or reuses) a subscriber identified by the MAC, named by the MAC, so it appears on the
+// frontend as a MAC. One trial per MAC per package (re-claiming an unexpired trial just logs back in).
+router.post('/claim-trial', async (req: Request, res: Response) => {
+  try {
+    const { packageId, routerApiKey, mac } = req.body || {};
+    if (!routerApiKey || !packageId) return res.status(400).json({ success: false, error: 'packageId and routerApiKey required' });
+    const reqMac = typeof mac === 'string' ? mac.replace(/[^A-Fa-f0-9:.\-]/g, '').substring(0, 20).toUpperCase() : '';
+    if (!reqMac) return res.status(400).json({ success: false, error: 'A device MAC is required for the free trial' });
+
+    const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey: routerApiKey }, select: { id: true, tenantId: true } });
+    if (!r) return res.status(404).json({ success: false, error: 'Router not found' });
+
+    const pkg = await prisma.package.findFirst({ where: { id: packageId, tenantId: r.tenantId, service: 'HOTSPOT', isActive: true } });
+    if (!pkg) return res.status(404).json({ success: false, error: 'Package not found' });
+    if (!pkg.isTrial) return res.status(400).json({ success: false, error: 'This package is not a free trial' });
+
+    const now = new Date();
+    // One trial per MAC per package: if this MAC already has a trial subscriber on this package,
+    // don't grant a fresh one once it has expired (prevents endless free renewals).
+    const existing = await prisma.subscriber.findFirst({
+      where: { tenantId: r.tenantId, service: 'HOTSPOT', macAddress: reqMac, packageId: pkg.id },
+    });
+    if (existing) {
+      const expired = existing.expiresAt ? existing.expiresAt <= now : false;
+      if (expired) {
+        return res.status(409).json({ success: false, error: 'Your free trial for this package has already been used.' });
+      }
+      // Active trial — just push a login and return success.
+      try {
+        const { pushSubscriberToRouter } = await import('../utils/pushSubscriber');
+        await pushSubscriberToRouter(existing.id);
+      } catch { /* best-effort */ }
+      return res.json({ success: true, username: existing.username, password: existing.secret, reused: true });
+    }
+
+    const expiresAt = new Date(now.getTime() + pkg.validityMinutes * 60 * 1000);
+    // Name the subscriber by the MAC so it shows on the frontend as a MAC (trial identity). A short
+    // random password lets it also be used as a manual login if ever needed.
+    const password = Math.floor(1000 + Math.random() * 9000).toString();
+    const sub = await prisma.subscriber.create({
+      data: {
+        username: reqMac,
+        secret: password,
+        service: 'HOTSPOT',
+        macAddress: reqMac,
+        isActive: true,
+        expiresAt,
+        packageId: pkg.id,
+        routerId: r.id,
+        tenantId: r.tenantId,
+      },
+    });
+    // Push to router immediately so the device connects within ~2s.
+    try {
+      const { pushSubscriberToRouter } = await import('../utils/pushSubscriber');
+      await pushSubscriberToRouter(sub.id);
+    } catch { /* best-effort; sync will reconcile */ }
+
+    res.json({ success: true, username: sub.username, password, trial: true });
   } catch (err) {
     res.status(500).json({ success: false, error: err instanceof Error ? err.message : 'Failed' });
   }
