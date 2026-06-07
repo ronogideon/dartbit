@@ -3,7 +3,11 @@
 // once to join the management VPN. Reaching a router's Winbox is then: connect your laptop to the
 // same VPN and Winbox to the router's 10.8.0.x — no keys needed at connect time.
 import crypto from 'crypto';
-import { Client } from 'ssh2';
+// ssh2 ships without bundled types; import via require with an explicit any to keep strict tsc happy
+// without needing @types/ssh2 at build time.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const ssh2: any = require('ssh2');
+const SshClient: any = ssh2.Client;
 import prisma from './prisma';
 import { encryptApiKey, decryptApiKey } from './blessedtexts'; // reuse CREDENTIAL_ENCRYPTION_KEY
 
@@ -33,12 +37,12 @@ export function generateWgKeypair(): { privateKey: string; publicKey: string } {
 // never hangs a request.
 function sshExec(command: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const conn = new Client();
+    const conn = new SshClient();
     let out = '';
     let err = '';
     const timer = setTimeout(() => { conn.end(); reject(new Error('SSH timeout')); }, 15000);
     conn.on('ready', () => {
-      conn.exec(command, (e, stream) => {
+      conn.exec(command, (e: Error | undefined, stream: any) => {
         if (e) { clearTimeout(timer); conn.end(); return reject(e); }
         stream.on('close', (code: number) => {
           clearTimeout(timer); conn.end();
@@ -49,7 +53,7 @@ function sshExec(command: string): Promise<string> {
         stream.stderr.on('data', (d: Buffer) => { err += d.toString(); });
       });
     });
-    conn.on('error', (e) => { clearTimeout(timer); reject(e); });
+    conn.on('error', (e: Error) => { clearTimeout(timer); reject(e); });
     conn.connect({ host: WG_HOST, port: 22, username: WG_USER, privateKey: WG_KEY });
   });
 }
@@ -139,11 +143,9 @@ export function buildMikrotikWgConfig(opts: { wgIp: string; privateKey: string }
   const serverHost = WG_ENDPOINT.split(':')[0];
   const serverPort = WG_ENDPOINT.split(':')[1] || '51820';
   return [
-    `# Dartbit management VPN — run once on the router`,
     `/interface wireguard add name=dartbit-vpn private-key="${opts.privateKey}" listen-port=13231`,
-    `/ip address add address=${opts.wgIp}/24 interface=dartbit-vpn`,
-    `/interface wireguard peers add interface=dartbit-vpn public-key="${WG_SERVER_PUBKEY}" endpoint-address=${serverHost} endpoint-port=${serverPort} allowed-address=${WG_SUBNET} persistent-keepalive=25s`,
-    `# Allow management (Winbox/SSH/API) over the VPN only`,
+    `/ip address add address=${opts.wgIp}/24 interface=dartbit-vpn comment="Dartbit VPN"`,
+    `/interface wireguard peers add interface=dartbit-vpn public-key="${WG_SERVER_PUBKEY}" endpoint-address=${serverHost} endpoint-port=${serverPort} allowed-address=${WG_SUBNET} persistent-keepalive=25s comment="Dartbit VPN"`,
     `/ip firewall filter add chain=input src-address=${WG_SUBNET} action=accept comment="Dartbit VPN mgmt" place-before=0`,
   ].join('\n');
 }

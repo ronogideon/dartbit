@@ -339,6 +339,34 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add('');
 
     // === Heartbeat ===
+    // === 8d. Management VPN (WireGuard) ===
+    // Auto-join the Dartbit management VPN so the router is reachable for Winbox/RADIUS over a
+    // stable private IP — no manual config paste. Provisioned automatically when this script is
+    // generated; idempotent (re-running updates the same interface). Skipped silently if the VPN
+    // isn't configured on the backend yet.
+    try {
+      const { wgConfigured, provisionRouterWg, buildMikrotikWgConfig } = await import('../utils/wireguard');
+      if (wgConfigured()) {
+        const prov = await provisionRouterWg(r.id);
+        const fresh = await prisma.mikrotikRouter.findUnique({ where: { id: r.id } });
+        const { decryptApiKey } = await import('../utils/blessedtexts');
+        const priv = fresh?.wgPrivateKey ? decryptApiKey(fresh.wgPrivateKey) : '';
+        if (priv) {
+          add('# 8d. Dartbit management VPN (WireGuard) — auto-joined');
+          // Remove any prior Dartbit VPN interface so re-provisioning is clean.
+          add(`:foreach p in=[/interface wireguard peers find comment="Dartbit VPN"] do={ /interface wireguard peers remove $p }`);
+          add(`:foreach i in=[/interface wireguard find name="dartbit-vpn"] do={ /interface wireguard remove $i }`);
+          add(`:foreach a in=[/ip address find comment="Dartbit VPN"] do={ /ip address remove $a }`);
+          add(buildMikrotikWgConfig({ wgIp: prov.wgIp, privateKey: priv }));
+          add('');
+        }
+      }
+    } catch (e) {
+      // Never let a VPN hiccup break the whole provisioning script.
+      add(`# (Dartbit VPN auto-join skipped: ${e instanceof Error ? e.message.replace(/[\r\n]/g, ' ') : 'error'})`);
+      add('');
+    }
+
     add('# 9. Heartbeat');
     add(`:foreach s in=[/system scheduler find comment="Dartbit heartbeat"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-heartbeat"] do={ /system script remove $s }`);
