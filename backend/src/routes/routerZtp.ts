@@ -836,6 +836,13 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     // Keep the command poller fast (2s) so purchases/changes apply near-instantly. Updating it here
     // means the speed-up takes effect WITHOUT a reprovision.
     add(`:foreach s in=[/system scheduler find name="dartbit-cmd"] do={ /system scheduler set \$s interval=2s }`);
+    // Refresh the captive portal HTML from the backend each sync so portal logic changes (e.g. the
+    // free-trial one-tap flow) deploy WITHOUT requiring a reprovision. Best-effort; ignored on error.
+    {
+      const portalBackend = (process.env.BACKEND_URL || `https://${req.get('host')}`).replace(/\/$/, '');
+      add(`:do { /tool fetch url="${portalBackend}/hotspot-html/login?apiKey=${apiKey}" dst-path=hotspot/login.html mode=https check-certificate=no } on-error={}`);
+      add(`:do { /tool fetch url="${portalBackend}/hotspot-html/login?apiKey=${apiKey}" dst-path=hotspot/alogin.html mode=https check-certificate=no } on-error={}`);
+    }
     add('');
 
     function rosDate(d: Date): { date: string; time: string } {

@@ -132,32 +132,37 @@ export default function PackagesPage() {
           <div className="grid grid-cols-2 gap-4">
             <div className="col-span-2">
               <label className="label">Package Name</label>
-              <input className="input" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} required />
+              <input className="input" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} disabled={form.isTrial} required />
+              {form.isTrial && <div className="text-xs text-gray-500 mt-1">Name is set automatically for free trial packages.</div>}
             </div>
             <div>
               <label className="label">Service Type</label>
-              <select className="input" value={form.service} onChange={e => setForm(f => ({ ...f, service: e.target.value, isTrial: e.target.value === 'HOTSPOT' ? f.isTrial : false }))} required>
+              <select className="input"
+                value={form.isTrial ? 'TRIAL' : form.service}
+                onChange={e => {
+                  const v = e.target.value;
+                  if (v === 'TRIAL') {
+                    // Free trial = a hotspot package, no price, fixed name. Tenant only sets speeds + validity.
+                    setForm(f => ({ ...f, service: 'HOTSPOT', isTrial: true, name: f.name && !f.isTrial ? f.name : 'Free Trial', price: 0 }));
+                  } else {
+                    setForm(f => ({ ...f, service: v, isTrial: false, name: f.isTrial ? '' : f.name }));
+                  }
+                }}
+                required>
                 <option value="" disabled>Select service…</option>
                 <option value="PPPOE">PPPoE</option>
                 <option value="HOTSPOT">Hotspot</option>
                 <option value="STATIC">Static</option>
+                <option value="TRIAL">Free Trial (Hotspot)</option>
               </select>
             </div>
             <div>
               <label className="label">Price (KES)</label>
               <input className="input" type="number" value={form.isTrial ? 0 : form.price}
                 onChange={e => setForm(f => ({ ...f, price: e.target.value === '' ? '' : Number(e.target.value) }))}
-                disabled={form.isTrial} min={0} placeholder="Enter price" />
+                disabled={form.isTrial} min={0} placeholder={form.isTrial ? 'Free' : 'Enter price'} />
+              {form.isTrial && <div className="text-xs text-gray-500 mt-1">Free trials have no price.</div>}
             </div>
-            {form.service === 'HOTSPOT' && (
-              <div className="col-span-2 flex items-start gap-2 p-3 rounded-lg bg-emerald-50 dark:bg-emerald-900/20">
-                <input id="isTrial" type="checkbox" className="mt-1" checked={form.isTrial}
-                  onChange={e => setForm(f => ({ ...f, isTrial: e.target.checked }))} />
-                <label htmlFor="isTrial" className="text-sm text-gray-700 dark:text-gray-300">
-                  <span className="font-medium">Free trial package</span> — price is 0 and the customer connects with just their device (no payment). Trial users appear on the dashboard by their device MAC.
-                </label>
-              </div>
-            )}
             <div>
               <label className="label">Upload Speed</label>
               <div className="flex gap-2">
