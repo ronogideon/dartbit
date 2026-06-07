@@ -238,8 +238,15 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // Also resolve the portal frontend domain so expired PPPoE/hotspot clients can load the
     // portal web app (not just the API). Apex + a representative subdomain cover the CDN IPs.
     const portalBaseHost = (process.env.PORTAL_BASE_DOMAIN || 'dartbittech.com').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    // The tenant's actual portal subdomain (e.g. "jja.dartbittech.com") — this is the host an
+    // expired customer must reach to renew. We resolve BOTH the apex and this specific subdomain so
+    // its (possibly different CDN) IPs are whitelisted for unentitled/expired accounts.
+    const tenantPortalHost = r.tenant?.subdomain ? `${r.tenant.subdomain}.${portalBaseHost}` : '';
+    const tenantDomain = r.tenant?.domain || '';
     const portalIps = await resolveBackendIps(portalBaseHost).catch(() => [] as string[]);
-    const allowIps = Array.from(new Set([...backendIps, ...portalIps]));
+    const tenantPortalIps = tenantPortalHost ? await resolveBackendIps(tenantPortalHost).catch(() => [] as string[]) : [];
+    const tenantDomainIps = tenantDomain ? await resolveBackendIps(tenantDomain).catch(() => [] as string[]) : [];
+    const allowIps = Array.from(new Set([...backendIps, ...portalIps, ...tenantPortalIps, ...tenantDomainIps]));
 
     // 6c. CRITICAL: pre-seed DNS static and walled garden by IP FIRST so AJAX from
     //     captive portal can reach Dartbit without being caught by the force-redirect.
@@ -255,6 +262,10 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // tenant subdomain to buy a plan, not just the apex.
     add(`/ip firewall address-list add list=dartbit-backend address=${backendHost} comment="Dartbit backend fqdn"`);
     add(`/ip firewall address-list add list=dartbit-backend address=${portalBaseHost} comment="Dartbit portal fqdn"`);
+    // The tenant's own portal subdomain — explicitly allowed so an expired/unpaid customer on ANY
+    // account can always reach tenant.dartbittech.com to pay, regardless of payment status.
+    if (tenantPortalHost) add(`/ip firewall address-list add list=dartbit-backend address=${tenantPortalHost} comment="Dartbit tenant portal fqdn"`);
+    if (tenantDomain) add(`/ip firewall address-list add list=dartbit-backend address=${tenantDomain} comment="Dartbit tenant domain"`);
     add('');
 
     add('# 6d. (Dartbit redirect rules removed — relying on MikroTik native hotspot interception)');
@@ -272,6 +283,10 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // (and the apex) so an expired customer can load the portal page and renew without a plan.
     add(`/ip hotspot walled-garden add dst-host=${portalBase} comment="Dartbit portal"`);
     add(`/ip hotspot walled-garden add dst-host=*.${portalBase} comment="Dartbit portal wildcard"`);
+    if (tenantDomain) {
+      add(`/ip hotspot walled-garden add dst-host=${tenantDomain} comment="Dartbit tenant domain"`);
+      add(`/ip hotspot walled-garden add dst-host=*.${tenantDomain} comment="Dartbit tenant domain wildcard"`);
+    }
     add(`:foreach w in=[/ip hotspot walled-garden ip find comment~"Dartbit" !dynamic] do={ /ip hotspot walled-garden ip remove $w }`);
     // Walled-garden IP list lets unauthenticated traffic to these IPs pass through MikroTik's hotspot rejection
     for (const ip of allowIps) {
@@ -281,6 +296,13 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach s in=[/ip dns static find name="${backendHost}" comment~"Dartbit"] do={ /ip dns static remove $s }`);
     for (const ip of backendIps) {
       add(`/ip dns static add name=${backendHost} address=${ip} ttl=5m comment="Dartbit backend"`);
+    }
+    // Pre-seed DNS for the tenant portal subdomain so expired clients resolve + reach it.
+    if (tenantPortalHost && tenantPortalIps.length) {
+      add(`:foreach s in=[/ip dns static find name="${tenantPortalHost}" comment~"Dartbit"] do={ /ip dns static remove $s }`);
+      for (const ip of tenantPortalIps) {
+        add(`/ip dns static add name=${tenantPortalHost} address=${ip} ttl=5m comment="Dartbit tenant portal"`);
+      }
     }
     add('');
     add('');
