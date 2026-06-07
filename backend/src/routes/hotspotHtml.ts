@@ -75,10 +75,11 @@ button.primary svg{width:14px;height:14px}
 .pkg-meta{font-size:11px;color:#9ca3af}
 .pkg-price{font-size:16px;font-weight:700;color:#22c55e;text-align:right}
 .pkg-price small{font-size:10px;color:#6b7280;font-weight:500;display:block;margin-top:2px}
-.status{margin-top:14px;padding:10px 12px;border-radius:8px;font-size:13px;line-height:1.4;display:none}
-.status.error{background:rgba(239,68,68,.1);color:#fca5a5;border:1px solid rgba(239,68,68,.2);display:block}
-.status.success{background:rgba(34,197,94,.1);color:#86efac;border:1px solid rgba(34,197,94,.2);display:block}
-.status.info{background:rgba(37,99,235,.1);color:#93c5fd;border:1px solid rgba(37,99,235,.2);display:block}
+.status{position:fixed;top:16px;left:50%;transform:translateX(-50%) translateY(-20px);z-index:9999;max-width:90%;width:max-content;min-width:240px;padding:12px 16px;border-radius:10px;font-size:13px;line-height:1.4;display:none;opacity:0;transition:opacity .25s ease,transform .25s ease;box-shadow:0 8px 24px rgba(0,0,0,.25);text-align:center;backdrop-filter:blur(8px)}
+.status.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.status.error{background:rgba(127,29,29,.95);color:#fecaca;border:1px solid rgba(239,68,68,.4);display:block}
+.status.success{background:rgba(6,78,59,.95);color:#a7f3d0;border:1px solid rgba(34,197,94,.4);display:block}
+.status.info{background:rgba(30,58,138,.95);color:#bfdbfe;border:1px solid rgba(37,99,235,.4);display:block}
 .code-display{background:#030712;border:2px dashed #374151;border-radius:10px;padding:14px;text-align:center;margin:12px 0}
 .code-display .label{font-size:11px;color:#9ca3af;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px}
 .code-display .code{font-size:28px;font-weight:700;color:#22c55e;letter-spacing:4px;font-family:ui-monospace,"SF Mono",Menlo,monospace}
@@ -171,9 +172,26 @@ button.primary svg{width:14px;height:14px}
   var IP='$(ip)';
   var selectedPkg=null;
   var st=document.getElementById('status');
+  var stTimer=null;
 
-  function show(t,msg){st.className='status '+t;st.innerHTML=msg}
-  function clr(){st.className='status';st.innerHTML=''}
+  function show(t,msg){
+    if(stTimer){clearTimeout(stTimer);stTimer=null;}
+    st.className='status '+t;
+    st.innerHTML=msg;
+    // Force reflow so the fade/slide-in transition runs each time.
+    void st.offsetWidth;
+    st.classList.add('show');
+    // Auto-dismiss messages that are NOT in-progress (a spinner means "still working" — keep it up).
+    if(msg.indexOf('spinner')===-1){
+      stTimer=setTimeout(function(){ clr(); }, t==='error'?6000:4000);
+    }
+  }
+  function clr(){
+    if(stTimer){clearTimeout(stTimer);stTimer=null;}
+    st.classList.remove('show');
+    // Remove after the fade-out transition completes.
+    setTimeout(function(){ if(!st.classList.contains('show')){ st.className='status'; st.innerHTML=''; } }, 260);
+  }
   function spinner(){return '<span class="spinner"></span>'}
 
   // LOOP BREAKER for expired devices: if this captive portal is showing, the device does NOT have
