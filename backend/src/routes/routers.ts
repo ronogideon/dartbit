@@ -405,6 +405,36 @@ router.post('/:id/radius', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// POST /mikrotiks/radius/bulk-sync — push all entitled PPPoE subscribers (this tenant, or a given
+// router) into RADIUS. Use once to migrate existing customers before enabling RADIUS on the router.
+router.post('/radius/bulk-sync', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const routerId = typeof req.body?.routerId === 'string' ? req.body.routerId : undefined;
+    const { radiusConfigured, bulkSyncPppoeToRadius } = await import('../utils/radius');
+    if (!radiusConfigured()) return sendError(res, 'RADIUS not configured/enabled', 400);
+    const result = await bulkSyncPppoeToRadius({ tenantId: tenantId || undefined, routerId });
+    sendSuccess(res, result);
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Bulk sync failed', 500);
+  }
+});
+
+// POST /mikrotiks/radius/bulk-sync — one-time migration: push existing PPPoE subscribers into
+// RADIUS. Body: { allRouters?: boolean } (default false = only RADIUS-enabled routers).
+router.post('/radius/bulk-sync', async (req: AuthRequest, res: Response) => {
+  try {
+    const { radiusConfigured, bulkSyncPppoeToRadius } = await import('../utils/radius');
+    if (!radiusConfigured()) return sendError(res, 'RADIUS not configured/enabled', 400);
+    const tenantId = req.user?.tenantId;
+    const routerId = typeof req.body?.routerId === 'string' ? req.body.routerId : undefined;
+    const result = await bulkSyncPppoeToRadius({ ...(tenantId ? { tenantId } : {}), ...(routerId ? { routerId } : {}) });
+    sendSuccess(res, result);
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Bulk sync failed', 500);
+  }
+});
+
 // GET /mikrotiks/radius/diagnose — confirms the backend can reach RADIUS Postgres over SSH.
 router.get('/radius/diagnose', async (_req: AuthRequest, res: Response) => {
   try {

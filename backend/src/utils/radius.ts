@@ -113,6 +113,53 @@ async function disconnectSession(sub: RadiusSub): Promise<void> {
   await dropletExec(cmd).catch((e) => { throw e; });
 }
 
+// One-time / on-demand bulk sync: push ALL entitled PPPoE subscribers for a tenant (optionally a
+// single router) into RADIUS in a single batched psql call. Used to migrate existing customers into
+// RADIUS before enabling it on the router. Returns how many were written.
+export async function bulkSyncPppoeToRadius(opts: { tenantId?: string; routerId?: string }): Promise<{ synced: number; skipped: number }> {
+  if (!radiusConfigured()) throw new Error('RADIUS not configured');
+  const subs = await prisma.subscriber.findMany({
+    where: {
+      service: 'PPPOE',
+      ...(opts.tenantId ? { tenantId: opts.tenantId } : {}),
+      ...(opts.routerId ? { routerId: opts.routerId } : {}),
+    },
+    include: { package: true },
+  });
+
+  const now = new Date();
+  const stmts: string[] = [];
+  let synced = 0, skipped = 0;
+  for (const sub of subs) {
+    const expired = sub.expiresAt ? sub.expiresAt <= now : false;
+    const entitled = sub.isActive && !expired;
+    const u = sqlq(sub.username);
+    // Always clear prior rows for a clean upsert.
+    stmts.push(`DELETE FROM radcheck WHERE username='${u}';`);
+    stmts.push(`DELETE FROM radreply WHERE username='${u}';`);
+    if (!entitled) { skipped++; continue; }
+    const pwd = sqlq(sub.secret);
+    stmts.push(`INSERT INTO radcheck (username, attribute, op, value) VALUES ('${u}','Cleartext-Password',':=','${pwd}');`);
+    if (sub.expiresAt) {
+      const exp = sqlq(radiusExpiry(sub.expiresAt));
+      stmts.push(`INSERT INTO radcheck (username, attribute, op, value) VALUES ('${u}','Expiration',':=','${exp}');`);
+    }
+    const rl = sqlq(rateLimit(sub.package?.speedUpKbps, sub.package?.speedDownKbps));
+    stmts.push(`INSERT INTO radreply (username, attribute, op, value) VALUES ('${u}','Mikrotik-Rate-Limit',':=','${rl}');`);
+    synced++;
+  }
+
+  if (stmts.length) {
+    // Wrap in a transaction; run in chunks so the command line never gets too long.
+    const CHUNK = 200;
+    for (let i = 0; i < stmts.length; i += CHUNK) {
+      const chunk = stmts.slice(i, i + CHUNK).join(' ');
+      await radiusPsql(`BEGIN; ${chunk} COMMIT;`);
+    }
+  }
+  return { synced, skipped };
+}
+
 // Diagnostic: confirm the backend can reach RADIUS Postgres over SSH and count users.
 export async function diagnoseRadius(): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {
