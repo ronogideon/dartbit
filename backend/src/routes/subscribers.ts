@@ -91,6 +91,17 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       include: { package: true },
     });
 
+    // PPPoE-over-RADIUS pilot: if this is a PPPoE subscriber on a RADIUS-enabled router, write it
+    // into FreeRADIUS too. Best-effort + parallel to the legacy flow; never blocks the response.
+    try {
+      const { radiusConfigured, syncSubscriberToRadius } = await import('../utils/radius');
+      if (radiusConfigured() && subscriber.service === 'PPPOE') {
+        await syncSubscriberToRadius(subscriber.id);
+      }
+    } catch (e) {
+      console.error('radius sync (create) failed:', e instanceof Error ? e.message : e);
+    }
+
     sendSuccess(res, subscriber, 201);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to create subscriber';
@@ -155,6 +166,16 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
       }
     }
 
+    // PPPoE-over-RADIUS: reflect edits into FreeRADIUS + CoA-kick if now unentitled.
+    try {
+      const { radiusConfigured, syncSubscriberToRadius } = await import('../utils/radius');
+      if (radiusConfigured() && subscriber.service === 'PPPOE') {
+        await syncSubscriberToRadius(subscriber.id);
+      }
+    } catch (e) {
+      console.error('radius sync (update) failed:', e instanceof Error ? e.message : e);
+    }
+
     sendSuccess(res, subscriber);
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed to update subscriber';
@@ -188,6 +209,16 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
       } catch (e) {
         console.error('subscriber delete: router cleanup failed (continuing):', e instanceof Error ? e.message : e);
       }
+    }
+
+    // PPPoE-over-RADIUS: remove the user from FreeRADIUS + CoA-kick the live session.
+    try {
+      const { radiusConfigured, removeSubscriberFromRadius } = await import('../utils/radius');
+      if (radiusConfigured() && sub.service === 'PPPOE') {
+        await removeSubscriberFromRadius(sub as never);
+      }
+    } catch (e) {
+      console.error('radius removal (delete) failed:', e instanceof Error ? e.message : e);
     }
 
     // Remove the subscriber AND their session/usage data to keep server storage low.

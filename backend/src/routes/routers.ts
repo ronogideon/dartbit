@@ -386,4 +386,33 @@ router.get('/vpn/diagnose', async (_req: AuthRequest, res: Response) => {
   }
 });
 
+// POST /mikrotiks/:id/radius — enable/disable RADIUS on a router + set its shared secret (for the
+// PPPoE-over-RADIUS pilot). Body: { enabled: boolean, secret?: string }.
+router.post('/:id/radius', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const router_ = await prisma.mikrotikRouter.findFirst({ where: { id: req.params.id, ...(tenantId ? { tenantId } : {}) } });
+    if (!router_) return sendError(res, 'Router not found', 404);
+    const enabled = !!req.body?.enabled;
+    const secret = typeof req.body?.secret === 'string' ? req.body.secret.trim() : undefined;
+    await prisma.mikrotikRouter.update({
+      where: { id: router_.id },
+      data: { radiusEnabled: enabled, ...(secret ? { radiusSecret: secret } : {}) } as never,
+    });
+    sendSuccess(res, { radiusEnabled: enabled, hasSecret: !!(secret || (router_ as never as { radiusSecret?: string }).radiusSecret) });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
+// GET /mikrotiks/radius/diagnose — confirms the backend can reach RADIUS Postgres over SSH.
+router.get('/radius/diagnose', async (_req: AuthRequest, res: Response) => {
+  try {
+    const { diagnoseRadius } = await import('../utils/radius');
+    sendSuccess(res, await diagnoseRadius());
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
 export default router;
