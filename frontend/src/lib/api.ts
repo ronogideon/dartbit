@@ -85,6 +85,7 @@ export const deletePackage = (id: string) => api.delete(`/packages/${id}`).then(
 
 export const getPayments = () => api.get('/payments').then((r) => r.data.data);
 export const createPayment = (data: unknown) => api.post('/payments', data).then((r) => r.data.data);
+export const editPayment = (id: string, data: { amount?: number; notes?: string }) => api.patch(`/payments/${id}`, data).then((r) => r.data.data);
 export const deletePayment = (id: string) => api.delete(`/payments/${id}`).then((r) => r.data.data);
 
 // (Messages helpers — see bottom of file for the typed versions)

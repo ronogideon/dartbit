@@ -93,8 +93,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.22', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.22', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.23', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.23', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -125,7 +125,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.22 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.23 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -578,6 +578,11 @@ async function patchDatabase() {
     await safeExec(prisma, 'MpesaTx payoutStatus', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutStatus" TEXT`);
     await safeExec(prisma, 'MpesaTx payoutRef', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutRef" TEXT`);
     await safeExec(prisma, 'MpesaTx payoutAt', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutAt" TIMESTAMP(3)`);
+
+    // v1.10.23 — classify payments as AUTOMATIC (gateway-created) vs MANUAL (admin-recorded).
+    // Backfill: any existing payment that carries an M-Pesa receipt was gateway-created.
+    await safeExec(prisma, 'Payment.source', `ALTER TABLE "Payment" ADD COLUMN IF NOT EXISTS "source" TEXT NOT NULL DEFAULT 'MANUAL'`);
+    await safeExec(prisma, 'Payment.source backfill', `UPDATE "Payment" SET "source"='AUTOMATIC' WHERE "source"='MANUAL' AND "mpesaCode" IS NOT NULL`);
 
     // Persistent router command queue (replaces in-memory queue that lost commands on restart)
     await safeExec(prisma, 'RouterCommand table',

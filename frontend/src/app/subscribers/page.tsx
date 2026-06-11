@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getSubscribers, createSubscriber, updateSubscriber, deleteSubscriber, getPackages, getRouters } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
@@ -85,6 +85,23 @@ export default function SubscribersPage() {
   });
 
   const openCreate = () => { setEditing(null); setForm(emptyForm); setModalOpen(true); };
+
+  // Deep-link: /subscribers?focus=<id> (used by subscriber links elsewhere) opens that detail panel.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const id = new URLSearchParams(window.location.search).get('focus');
+    if (id) {
+      setDetailId(id);
+      // Clean the URL so a refresh doesn't keep re-opening it.
+      window.history.replaceState(null, '', '/subscribers');
+    }
+  }, []);
+
+  // Open the edit modal for a subscriber referenced by id (used from the detail panel's Edit button).
+  const openEditById = (id: string) => {
+    const s = (subscribers as Subscriber[]).find(x => x.id === id);
+    if (s) { setDetailId(null); openEdit(s); }
+  };
   const openEdit = (s: Subscriber) => {
     setEditing(s);
     setForm({
@@ -259,7 +276,7 @@ export default function SubscribersPage() {
         </div>
       </div>
 
-      <SubscriberDetail subscriberId={detailId} onClose={() => setDetailId(null)} />
+      <SubscriberDetail subscriberId={detailId} onClose={() => setDetailId(null)} onEdit={openEditById} />
 
       <Modal isOpen={modalOpen} onClose={closeModal} title={editing ? 'Edit Subscriber' : 'Add Subscriber'}>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -286,7 +303,7 @@ export default function SubscribersPage() {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="label">Service Type</label>
-              <select className="input" value={form.service} onChange={e => setForm(f => ({ ...f, service: e.target.value }))}>
+              <select className="input" value={form.service} onChange={e => setForm(f => ({ ...f, service: e.target.value, packageId: '' }))}>
                 <option value="PPPOE">PPPoE</option>
                 <option value="HOTSPOT">Hotspot</option>
                 <option value="STATIC">Static</option>
@@ -296,7 +313,7 @@ export default function SubscribersPage() {
               <label className="label">Package</label>
               <select className="input" value={form.packageId} onChange={e => setForm(f => ({ ...f, packageId: e.target.value }))}>
                 <option value="">-- Select Package --</option>
-                {(packages as Package[]).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                {(packages as Package[]).filter(p => p.service === form.service).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </div>
           </div>

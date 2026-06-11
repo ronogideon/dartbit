@@ -395,6 +395,7 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
         data: {
           amount: tx.amount,
           method: 'MPESA',
+          source: 'AUTOMATIC',
           reference: receipt || tx.checkoutRequestId || txId,
           mpesaCode: receipt || null,
           notes: `Hotspot ${pkg?.name || 'package'} • ${tx.phone || ''}`,

@@ -1,22 +1,25 @@
 'use client';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { getSubscribers, getRouters, getPayments, getOnlineSessions, getSmsBalance, getExpenseSummary } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import DashboardAnalytics from '@/components/DashboardAnalytics';
 import SearchInput from '@/components/ui/SearchInput';
-import { Users, Router, Activity, Wallet, TrendingUp, MessageSquare, CreditCard, Receipt } from 'lucide-react';
+import SubscriberLink from '@/components/ui/SubscriberLink';
+import { Users, Router, Activity, Wallet, TrendingUp, MessageSquare, CreditCard, Receipt, Eye, EyeOff } from 'lucide-react';
 
-function StatCard({ title, value, icon: Icon, color }: {
+function StatCard({ title, value, icon: Icon, color, sensitive, hidden }: {
   title: string; value: string | number; icon: React.ElementType; color: string;
+  sensitive?: boolean; hidden?: boolean;
 }) {
+  const masked = sensitive && hidden;
   return (
     <div className="card p-5">
       <div className="flex items-center justify-between">
         <div>
           <p className="text-sm text-gray-500 dark:text-gray-400">{title}</p>
-          <p className="text-2xl font-bold mt-1">{value}</p>
+          <p className="text-2xl font-bold mt-1">{masked ? '••••••' : value}</p>
         </div>
         <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${color}`}>
           <Icon size={22} className="text-white" />
@@ -53,6 +56,20 @@ export default function DashboardPage() {
   const serverProfit = expenseSummary?.profitThisMonth ?? (earnedThisMonth - expensesThisMonth);
   const profit = Math.min(serverProfit, earnedThisMonth);
 
+  // Hide/reveal monetary values across the dashboard cards (persisted so it sticks across reloads).
+  const [hideMoney, setHideMoney] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    setHideMoney(localStorage.getItem('dartbit_hide_money') === '1');
+  }, []);
+  const toggleHideMoney = () => {
+    setHideMoney(prev => {
+      const next = !prev;
+      if (typeof window !== 'undefined') localStorage.setItem('dartbit_hide_money', next ? '1' : '0');
+      return next;
+    });
+  };
+
   // Global search across subscribers, routers, and payments. Shows categorized quick
   // results that link to the relevant page.
   const [search, setSearch] = useState('');
@@ -70,9 +87,19 @@ export default function DashboardPage() {
 
   return (
     <AppLayout>
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold">Dashboard</h1>
-        <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">Welcome to Dartbit ISP Management</p>
+      <div className="mb-6 flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Dashboard</h1>
+          <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">Welcome to Dartbit ISP Management</p>
+        </div>
+        <button
+          onClick={toggleHideMoney}
+          className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+          title={hideMoney ? 'Show amounts' : 'Hide amounts'}
+        >
+          {hideMoney ? <EyeOff size={16} /> : <Eye size={16} />}
+          <span className="hidden sm:inline">{hideMoney ? 'Show amounts' : 'Hide amounts'}</span>
+        </button>
       </div>
 
       {/* Global search */}
@@ -88,7 +115,7 @@ export default function DashboardPage() {
                   <div className="p-2">
                     <div className="px-2 py-1 text-xs font-semibold text-gray-400 uppercase">Subscribers</div>
                     {subResults.map(s => (
-                      <Link key={s.id} href="/subscribers" className="flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-sm">
+                      <Link key={s.id} href={`/subscribers?focus=${s.id}`} className="flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-sm">
                         <Users size={14} className="text-blue-500" />
                         <span className="font-medium">{s.fullName || s.username}</span>
                         <span className="text-gray-400 text-xs">{s.username}{s.phone ? ` · ${s.phone}` : ''}</span>
@@ -132,12 +159,14 @@ export default function DashboardPage() {
           value={`KES ${earnedThisMonth.toLocaleString()}`}
           icon={TrendingUp}
           color="bg-green-600"
+          sensitive hidden={hideMoney}
         />
         <StatCard
           title="SMS Balance"
           value={smsBalance ? (smsBalance.mode === 'WALLET' ? `KES ${(smsBalance.balanceKES ?? 0).toLocaleString()}` : (smsBalance.balance != null ? smsBalance.balance.toLocaleString() : "—")) : '—'}
           icon={MessageSquare}
           color="bg-indigo-600"
+          sensitive hidden={hideMoney}
         />
         <StatCard
           title="Active / Total Subscribers"
@@ -162,12 +191,14 @@ export default function DashboardPage() {
           value={`KES ${expensesThisMonth.toLocaleString()}`}
           icon={Receipt}
           color="bg-rose-600"
+          sensitive hidden={hideMoney}
         />
         <StatCard
           title={`Profit in ${monthLabel}`}
           value={`KES ${profit.toLocaleString()}`}
           icon={Wallet}
           color={profit >= 0 ? 'bg-emerald-600' : 'bg-red-600'}
+          sensitive hidden={hideMoney}
         />
       </div>
 
@@ -178,16 +209,16 @@ export default function DashboardPage() {
         <div className="card p-5">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold flex items-center gap-2"><CreditCard size={16} /> Recent Payments</h2>
-            <span className="text-sm text-gray-500">Total: KES {totalRevenue.toLocaleString()}</span>
+            <span className="text-sm text-gray-500">Total: KES {hideMoney ? '••••••' : totalRevenue.toLocaleString()}</span>
           </div>
           <div className="space-y-2">
-            {(payments as { id: string; subscriber?: { fullName?: string }; amount: number; method: string; createdAt: string }[]).slice(0, 5).map((p) => (
+            {(payments as { id: string; subscriber?: { id?: string; fullName?: string }; amount: number; method: string; createdAt: string }[]).slice(0, 5).map((p) => (
               <div key={p.id} className="flex items-center justify-between py-2 border-b border-gray-100 dark:border-gray-800 last:border-0">
                 <div>
-                  <p className="text-sm font-medium">{p.subscriber?.fullName || 'Unknown'}</p>
+                  <p className="text-sm font-medium"><SubscriberLink id={p.subscriber?.id} name={p.subscriber?.fullName || 'Unknown'} /></p>
                   <p className="text-xs text-gray-500">{p.method} • {new Date(p.createdAt).toLocaleDateString()}</p>
                 </div>
-                <span className="text-sm font-semibold text-green-600">KES {p.amount.toLocaleString()}</span>
+                <span className="text-sm font-semibold text-green-600">KES {hideMoney ? '••••' : p.amount.toLocaleString()}</span>
               </div>
             ))}
             {payments.length === 0 && <p className="text-sm text-gray-400 text-center py-4">No payments yet</p>}

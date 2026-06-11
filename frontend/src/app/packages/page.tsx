@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useState, Fragment } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getPackages, createPackage, updatePackage, deletePackage } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
@@ -107,22 +107,41 @@ export default function PackagesPage() {
           <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
             {isPending ? (
               <tr><td colSpan={7} className="table-td text-center py-8 text-gray-400">Loading...</td></tr>
-            ) : (packages as Package[]).map(p => (
-              <tr key={p.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/30">
-                <td className="table-td font-medium">{p.name}</td>
-                <td className="table-td"><span className="badge-blue">{p.service}</span></td>
-                <td className="table-td">{formatSpeed(p.speedUpKbps)}</td>
-                <td className="table-td">{formatSpeed(p.speedDownKbps)}</td>
-                <td className="table-td">{formatValidity(p.validityMinutes)}</td>
-                <td className="table-td font-medium">{p.price.toLocaleString()}</td>
-                <td className="table-td">
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => openEdit(p)} className="p-1.5 text-gray-400 hover:text-blue-600"><Edit2 size={15} /></button>
-                    <button onClick={() => setDeleteId(p.id)} className="p-1.5 text-gray-400 hover:text-red-600"><Trash2 size={15} /></button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+            ) : (packages as Package[]).length === 0 ? (
+              <tr><td colSpan={7} className="table-td text-center py-8 text-gray-400">No packages yet</td></tr>
+            ) : ([
+              { key: 'PPPOE', label: 'PPPoE' },
+              { key: 'HOTSPOT', label: 'Hotspot' },
+              { key: 'STATIC', label: 'Static' },
+            ] as const).map(group => {
+              const items = (packages as Package[]).filter(p => p.service === group.key);
+              if (items.length === 0) return null;
+              return (
+                <Fragment key={group.key}>
+                  <tr className="bg-gray-50 dark:bg-gray-800/50">
+                    <td colSpan={7} className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                      {group.label} <span className="text-gray-400 font-normal normal-case">· {items.length}</span>
+                    </td>
+                  </tr>
+                  {items.map(p => (
+                    <tr key={p.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/30">
+                      <td className="table-td font-medium">{p.name}{p.isTrial && <span className="ml-2 badge-green text-xs">Trial</span>}</td>
+                      <td className="table-td"><span className="badge-blue">{p.service}</span></td>
+                      <td className="table-td">{formatSpeed(p.speedUpKbps)}</td>
+                      <td className="table-td">{formatSpeed(p.speedDownKbps)}</td>
+                      <td className="table-td">{formatValidity(p.validityMinutes)}</td>
+                      <td className="table-td font-medium">{p.price.toLocaleString()}</td>
+                      <td className="table-td">
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => openEdit(p)} className="p-1.5 text-gray-400 hover:text-blue-600"><Edit2 size={15} /></button>
+                          <button onClick={() => setDeleteId(p.id)} className="p-1.5 text-gray-400 hover:text-red-600"><Trash2 size={15} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>

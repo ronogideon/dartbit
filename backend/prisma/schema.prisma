@@ -281,6 +281,7 @@ model Payment {
   id           String     @id @default(cuid())
   amount       Float
   method       String     @default("MANUAL")
+  source       String     @default("MANUAL") // AUTOMATIC = gateway-created (M-Pesa callback); MANUAL = admin-recorded
   reference    String?
   mpesaCode    String?
   notes        String?

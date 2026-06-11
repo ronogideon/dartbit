@@ -48,7 +48,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
     if (!subscriber) return sendError(res, 'Subscriber not found', 404);
 
     const payment = await prisma.payment.create({
-      data: { ...parsed.data, packageId: subscriber.packageId || null, tenantId },
+      data: { ...parsed.data, source: 'MANUAL', packageId: subscriber.packageId || null, tenantId },
     });
 
     // Extend expiry automatically if subscriber has a package
@@ -71,8 +71,43 @@ router.post('/', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// PATCH /:id — edit a MANUAL payment's amount and/or notes. Automatic (gateway) records are
+// immutable — they're the financial source of truth from M-Pesa and must not be altered.
+const editSchema = z.object({
+  amount: z.number().min(0).optional(),
+  notes: z.string().optional(),
+});
+router.patch('/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const existing = await prisma.payment.findUnique({ where: { id: req.params.id } });
+    if (!existing) return sendError(res, 'Payment not found', 404);
+    if (tenantId && existing.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
+    if ((existing as { source?: string }).source === 'AUTOMATIC') {
+      return sendError(res, 'Automatic (gateway) payments cannot be edited', 403);
+    }
+    const parsed = editSchema.safeParse(req.body);
+    if (!parsed.success) return sendError(res, parsed.error.message, 400);
+    const data: Record<string, unknown> = {};
+    if (parsed.data.amount !== undefined) data.amount = parsed.data.amount;
+    if (parsed.data.notes !== undefined) data.notes = parsed.data.notes || null;
+    const updated = await prisma.payment.update({ where: { id: req.params.id }, data });
+    sendSuccess(res, updated);
+  } catch {
+    sendError(res, 'Failed to update payment', 500);
+  }
+});
+
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
+    const tenantId = req.user?.tenantId;
+    const existing = await prisma.payment.findUnique({ where: { id: req.params.id } });
+    if (!existing) return sendError(res, 'Payment not found', 404);
+    if (tenantId && existing.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
+    // Automatic (gateway) payments are an immutable financial record — never deletable.
+    if ((existing as { source?: string }).source === 'AUTOMATIC') {
+      return sendError(res, 'Automatic (gateway) payments cannot be deleted', 403);
+    }
     await prisma.payment.delete({ where: { id: req.params.id } });
     sendSuccess(res, { deleted: true });
   } catch {
