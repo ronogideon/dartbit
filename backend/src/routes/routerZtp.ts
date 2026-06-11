@@ -937,6 +937,21 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     add(`:foreach s in=[/system script find name~"^dartbit-exp-script-"] do={ /system script remove \$s }`);
     add('');
 
+    // RADIUS-managed router: FreeRADIUS is the single source of truth for hotspot + voucher auth,
+    // rate-limit and expiry. We STOP generating the local per-user push (the redundant sync) and
+    // purge the stale Dartbit-tagged hotspot/voucher users that local limit-uptime created, so they
+    // can't shadow RADIUS. The cmd-poller refresh, captive-portal refresh and expiry-scheduler
+    // cleanup above all still run. PPPoE /ppp secrets are left as-is (parallel pilot arrangement).
+    if ((r as any).radiusEnabled === true) {
+      add(`:foreach u in=[/ip hotspot user find comment~"Dartbit:"] do={ /ip hotspot user remove \$u }`);
+      add(`:foreach u in=[/ip hotspot user find comment~"DbMac:"] do={ /ip hotspot user remove \$u }`);
+      add(`:foreach u in=[/ip hotspot user find comment~"Dbm:"] do={ /ip hotspot user remove \$u }`);
+      add(`:foreach u in=[/ip hotspot user find comment~"Dbv:"] do={ /ip hotspot user remove \$u }`);
+      add(`:foreach u in=[/ip hotspot user find comment~"DbVMac:"] do={ /ip hotspot user remove \$u }`);
+      add(`:log info "Dartbit: RADIUS-managed router — local hotspot/voucher sync skipped (FreeRADIUS authoritative)"`);
+      return res.type('text/plain').send(lines.join('\n'));
+    }
+
     const pppoeUsers = subscribers.filter(s => s.service === 'PPPOE');
     for (const sub of pppoeUsers) {
       const speed = sub.package ? `${sub.package.speedUpKbps}k/${sub.package.speedDownKbps}k` : '10M/10M';

@@ -79,13 +79,15 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
       orderBy: { createdAt: 'desc' },
     });
 
-    // Immediately push vouchers to all routers as hotspot users.
-    // limit-uptime is cumulative session time — only starts counting once the user
-    // logs in for the first time. So vouchers can sit unused indefinitely.
+    // Immediately push vouchers to all NON-RADIUS routers as local hotspot users (limit-uptime is
+    // cumulative session time — only starts counting once the user logs in for the first time, so
+    // vouchers can sit unused indefinitely). RADIUS-enabled routers are handled by the bulk RADIUS
+    // sync below instead, where the same cumulative-uptime semantics come from the dartbit_uptime
+    // sqlcounter.
     try {
       const targetRouters = routerId
-        ? await prisma.mikrotikRouter.findMany({ where: { id: routerId, tenantId } })
-        : await prisma.mikrotikRouter.findMany({ where: { tenantId } });
+        ? await prisma.mikrotikRouter.findMany({ where: { id: routerId, tenantId, radiusEnabled: false } as any })
+        : await prisma.mikrotikRouter.findMany({ where: { tenantId, radiusEnabled: false } as any });
 
       for (const r of targetRouters) {
         // Determine profile and speed for the package
@@ -110,6 +112,17 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
       console.error('Voucher push to routers failed (will retry on next sync):', pushErr);
     }
 
+    // RADIUS-enabled routers: write the batch into FreeRADIUS (radcheck code + Max-All-Session cap +
+    // rate-limit). Cumulative uptime is enforced by the dartbit_uptime sqlcounter. Best-effort.
+    try {
+      const { radiusConfigured, bulkSyncVouchersToRadius } = await import('../utils/radius');
+      if (radiusConfigured()) {
+        await bulkSyncVouchersToRadius({ tenantId, batchId, ...(routerId ? { routerId } : {}) });
+      }
+    } catch (radErr) {
+      console.error('Voucher RADIUS sync failed:', radErr instanceof Error ? radErr.message : radErr);
+    }
+
     sendSuccess(res, { batchId, count: created.length, vouchers: created });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed to generate vouchers';
@@ -128,6 +141,10 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
     if (v.isUsed) return sendError(res, 'Cannot delete a used voucher', 400);
 
     await prisma.voucher.delete({ where: { id: req.params.id } });
+    try {
+      const { radiusConfigured, removeVoucherFromRadius } = await import('../utils/radius');
+      if (radiusConfigured()) await removeVoucherFromRadius(v.code);
+    } catch { /* best-effort */ }
     sendSuccess(res, { deleted: true });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);
@@ -144,7 +161,15 @@ router.delete('/batch/:batchId', async (req: AuthRequest, res: Response) => {
     };
     if (tenantId) where.tenantId = tenantId;
 
+    // Capture the codes about to be deleted so we can clear them from RADIUS too.
+    const doomed = await prisma.voucher.findMany({ where, select: { code: true } });
     const result = await prisma.voucher.deleteMany({ where });
+    try {
+      const { radiusConfigured, removeVoucherFromRadius } = await import('../utils/radius');
+      if (radiusConfigured()) {
+        for (const d of doomed) await removeVoucherFromRadius(d.code);
+      }
+    } catch { /* best-effort */ }
     sendSuccess(res, { deleted: result.count });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);

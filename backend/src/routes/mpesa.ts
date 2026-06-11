@@ -245,7 +245,14 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   // would silently block the MAC-bound login.
   const macUC = (tx.clientMac || '').toUpperCase();
   const macBind = macUC ? ` mac-address=${macUC}` : '';
+  // Is this router RADIUS-managed? If so, the device authenticates against FreeRADIUS (by MAC /
+  // D-name), so we DON'T create local hotspot users or push limit-uptime here — RADIUS owns auth,
+  // rate-limit and expiry. We still issue the instant active-login go-ahead, but only AFTER the
+  // radcheck rows are written (further down), so the login actually authorizes.
+  const radiusManaged = !!(tx.routerId && (await prisma.mikrotikRouter.findUnique({ where: { id: tx.routerId }, select: { radiusEnabled: true } as any }) as any)?.radiusEnabled);
+  const radiusLoginCmds: string[] = [];
   const cmds: string[] = [];
+  if (!radiusManaged) {
   // Create-or-update the profile (carries the package rate-limit), verifying it exists before
   // adding users (a brand-new package's profile has never existed on this router).
   cmds.push(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} address-pool=dhcp-pool }`);
@@ -260,6 +267,7 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   if (macUC) {
     cmds.push(`:foreach u in=[/ip hotspot user find name="${macUC}"] do={ /ip hotspot user remove \$u }`);
     cmds.push(`/ip hotspot user add name=${macUC} password=dartbit mac-address=${macUC} profile=${profileName} comment="DbMac:${displayName}"`);
+  }
   }
   // NOTE: The M-Pesa receipt code is ALSO a valid login for this same device — but we do NOT
   // create a separate hotspot user for it here. It's registered as a voucher (below) tagged
@@ -276,17 +284,18 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   // delivered on the ~2s command poll.
   if (macUC) {
     const ipArg = tx.clientIp ? ` ip=${tx.clientIp}` : '';
-    cmds.push(`:foreach b in=[/ip hotspot ip-binding find mac-address="${macUC}"] do={ /ip hotspot ip-binding remove \$b }`);
-    cmds.push(`:foreach a in=[/ip hotspot active find mac-address="${macUC}"] do={ /ip hotspot active remove \$a }`);
+    const loginBatch = radiusManaged ? radiusLoginCmds : cmds;
+    loginBatch.push(`:foreach b in=[/ip hotspot ip-binding find mac-address="${macUC}"] do={ /ip hotspot ip-binding remove \$b }`);
+    loginBatch.push(`:foreach a in=[/ip hotspot active find mac-address="${macUC}"] do={ /ip hotspot active remove \$a }`);
     // Single best-effort direct login (wrapped so a failure doesn't abort the batch). If it doesn't
     // take immediately, login-by=mac logs the device in on its next request within seconds.
-    cmds.push(`:do { /ip hotspot active login user=${loginUser}${ipArg} mac-address=${macUC} } on-error={}`);
+    loginBatch.push(`:do { /ip hotspot active login user=${loginUser}${ipArg} mac-address=${macUC} } on-error={}`);
     // Clean up any leftover db-login script/scheduler from older versions.
-    cmds.push(`:foreach s in=[/system scheduler find name="db-login"] do={ /system scheduler remove \$s }`);
-    cmds.push(`:foreach s in=[/system script find name="db-login"] do={ /system script remove \$s }`);
+    loginBatch.push(`:foreach s in=[/system scheduler find name="db-login"] do={ /system scheduler remove \$s }`);
+    loginBatch.push(`:foreach s in=[/system script find name="db-login"] do={ /system script remove \$s }`);
   }
 
-  if (tx.routerId) await enqueueCommand(tx.routerId, cmds.join('\n'));
+  if (tx.routerId && cmds.length) await enqueueCommand(tx.routerId, cmds.join('\n'));
 
   await prisma.mpesaTransaction.update({
     where: { id: txId },
@@ -360,6 +369,22 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
     }
   } catch (e) {
     console.error('subscriber create (hotspot) error:', e instanceof Error ? e.message : e);
+  }
+
+  // RADIUS-managed router: now that the subscriber row exists, write its radcheck identities (MAC +
+  // D-name, with Expiration + rate-limit), THEN fire the instant active-login go-ahead — in that
+  // order so the login authorizes against fresh RADIUS rows. Best-effort; the legacy path already
+  // ran for non-RADIUS routers above.
+  if (radiusManaged && subscriberId) {
+    try {
+      const { radiusConfigured, syncSubscriberToRadius } = await import('../utils/radius');
+      if (radiusConfigured()) await syncSubscriberToRadius(subscriberId);
+    } catch (e) {
+      console.error('radius hotspot sync error:', e instanceof Error ? e.message : e);
+    }
+    if (tx.routerId && radiusLoginCmds.length) {
+      await enqueueCommand(tx.routerId, radiusLoginCmds.join('\n')).catch(() => {});
+    }
   }
 
   // Record a Payment row so the purchase shows on the Payments tab (which reads the

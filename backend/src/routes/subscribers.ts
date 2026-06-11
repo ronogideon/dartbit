@@ -91,11 +91,12 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       include: { package: true },
     });
 
-    // PPPoE-over-RADIUS pilot: if this is a PPPoE subscriber on a RADIUS-enabled router, write it
-    // into FreeRADIUS too. Best-effort + parallel to the legacy flow; never blocks the response.
+    // RADIUS pilot: if this subscriber is on a RADIUS-enabled router, write it into FreeRADIUS too
+    // (PPPoE and HOTSPOT). syncSubscriberToRadius internally no-ops for non-RADIUS routers, so this
+    // is safe to call unconditionally. Best-effort + parallel to the legacy flow.
     try {
       const { radiusConfigured, syncSubscriberToRadius } = await import('../utils/radius');
-      if (radiusConfigured() && subscriber.service === 'PPPOE') {
+      if (radiusConfigured() && (subscriber.service === 'PPPOE' || subscriber.service === 'HOTSPOT')) {
         await syncSubscriberToRadius(subscriber.id);
       }
     } catch (e) {
@@ -140,14 +141,14 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
     // edit takes effect at once: if the subscriber is now expired/inactive/without a package, the
     // helper emits removal + session-kick commands (the device is thrown out); if still entitled, it
     // (re)creates the users. Covers the case of an admin setting expiry to the past to disconnect.
-    if (subscriber.routerId && subscriber.service === 'HOTSPOT') {
+    if (subscriber.routerId && subscriber.service === 'HOTSPOT' && !(subscriber.router as any)?.radiusEnabled) {
       try {
         const { pushSubscriberToRouter } = await import('../utils/pushSubscriber');
         await pushSubscriberToRouter(subscriber.id);
       } catch (e) {
         console.error('update: router push failed (continuing):', e instanceof Error ? e.message : e);
       }
-    } else if (subscriber.routerId) {
+    } else if (subscriber.routerId && subscriber.service !== 'HOTSPOT') {
       // PPPoE/static: toggle the secret enable/disable + kick active session to match new state.
       try {
         const { enqueueCommand } = await import('../utils/commandQueue');
@@ -166,10 +167,10 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
       }
     }
 
-    // PPPoE-over-RADIUS: reflect edits into FreeRADIUS + CoA-kick if now unentitled.
+    // RADIUS: reflect edits into FreeRADIUS + CoA-kick if now unentitled (PPPoE and HOTSPOT).
     try {
       const { radiusConfigured, syncSubscriberToRadius } = await import('../utils/radius');
-      if (radiusConfigured() && subscriber.service === 'PPPOE') {
+      if (radiusConfigured() && (subscriber.service === 'PPPOE' || subscriber.service === 'HOTSPOT')) {
         await syncSubscriberToRadius(subscriber.id);
       }
     } catch (e) {
@@ -186,7 +187,7 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
 
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
-    const sub = await prisma.subscriber.findUnique({ where: { id: req.params.id } });
+    const sub = await prisma.subscriber.findUnique({ where: { id: req.params.id }, include: { router: { select: { radiusEnabled: true } } } });
     if (!sub) return sendError(res, 'Subscriber not found', 404);
     // Tenant scoping: a tenant admin can only delete their own subscribers.
     if (req.user?.tenantId && sub.tenantId !== req.user.tenantId) {
@@ -198,8 +199,12 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
     if (sub.routerId) {
       try {
         if (sub.service === 'HOTSPOT') {
-          const { pushSubscriberRemoval } = await import('../utils/pushSubscriber');
-          await pushSubscriberRemoval(sub.routerId, sub.username, sub.macAddress);
+          // RADIUS hotspot router: removeSubscriberFromRadius (below) clears radcheck + CoA-kicks,
+          // so no local hotspot removal is needed. Non-RADIUS: do the local removal as before.
+          if (!(sub.router as any)?.radiusEnabled) {
+            const { pushSubscriberRemoval } = await import('../utils/pushSubscriber');
+            await pushSubscriberRemoval(sub.routerId, sub.username, sub.macAddress);
+          }
         } else {
           const { enqueueCommand } = await import('../utils/commandQueue');
           await enqueueCommand(sub.routerId,
@@ -211,10 +216,10 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
       }
     }
 
-    // PPPoE-over-RADIUS: remove the user from FreeRADIUS + CoA-kick the live session.
+    // RADIUS: remove the user from FreeRADIUS + CoA-kick the live session (PPPoE and HOTSPOT).
     try {
       const { radiusConfigured, removeSubscriberFromRadius } = await import('../utils/radius');
-      if (radiusConfigured() && sub.service === 'PPPOE') {
+      if (radiusConfigured() && (sub.service === 'PPPOE' || sub.service === 'HOTSPOT')) {
         await removeSubscriberFromRadius(sub as never);
       }
     } catch (e) {

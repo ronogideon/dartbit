@@ -447,6 +447,37 @@ router.post('/radius/bulk-sync', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// POST /mikrotiks/radius/bulk-sync-hotspot — migrate existing HOTSPOT subscribers (D-name + MAC)
+// on RADIUS-enabled routers into FreeRADIUS. Run once when cutting a router over to RADIUS.
+router.post('/radius/bulk-sync-hotspot', async (req: AuthRequest, res: Response) => {
+  try {
+    const { radiusConfigured, bulkSyncHotspotToRadius } = await import('../utils/radius');
+    if (!radiusConfigured()) return sendError(res, 'RADIUS not configured/enabled', 400);
+    const tenantId = req.user?.tenantId;
+    const routerId = typeof req.body?.routerId === 'string' ? req.body.routerId : undefined;
+    const result = await bulkSyncHotspotToRadius({ ...(tenantId ? { tenantId } : {}), ...(routerId ? { routerId } : {}) });
+    sendSuccess(res, result);
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Bulk hotspot sync failed', 500);
+  }
+});
+
+// POST /mikrotiks/radius/bulk-sync-vouchers — migrate existing (unredeemed + active) vouchers on
+// RADIUS-enabled routers into FreeRADIUS. MPESA receipt vouchers are skipped (handled via the
+// subscriber's MAC/D-name rows).
+router.post('/radius/bulk-sync-vouchers', async (req: AuthRequest, res: Response) => {
+  try {
+    const { radiusConfigured, bulkSyncVouchersToRadius } = await import('../utils/radius');
+    if (!radiusConfigured()) return sendError(res, 'RADIUS not configured/enabled', 400);
+    const tenantId = req.user?.tenantId;
+    const routerId = typeof req.body?.routerId === 'string' ? req.body.routerId : undefined;
+    const result = await bulkSyncVouchersToRadius({ ...(tenantId ? { tenantId } : {}), ...(routerId ? { routerId } : {}) });
+    sendSuccess(res, result);
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Bulk voucher sync failed', 500);
+  }
+});
+
 // GET /mikrotiks/radius/diagnose — confirms the backend can reach RADIUS Postgres over SSH.
 router.get('/radius/diagnose', async (_req: AuthRequest, res: Response) => {
   try {
