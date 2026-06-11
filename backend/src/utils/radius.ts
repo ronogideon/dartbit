@@ -160,6 +160,19 @@ export async function bulkSyncPppoeToRadius(opts: { tenantId?: string; routerId?
   return { synced, skipped };
 }
 
+// Register (or remove) a router as a FreeRADIUS client on the droplet, via the dartbit-radius-client
+// helper, which writes a clients.d/ drop-in and reloads FreeRADIUS GRACEFULLY (no manual restart,
+// no dropped sessions). Call this when a router's RADIUS is enabled/disabled or its secret changes.
+export async function registerRadiusClient(wgIp: string, secret: string, name: string): Promise<void> {
+  if (!radiusConfigured()) return;
+  const cmd = `sudo dartbit-radius-client add ${shq(wgIp)} ${shq(secret)} ${shq(name.replace(/[^A-Za-z0-9_]/g, '_'))}`;
+  await dropletExec(cmd);
+}
+export async function unregisterRadiusClient(wgIp: string): Promise<void> {
+  if (!radiusConfigured()) return;
+  await dropletExec(`sudo dartbit-radius-client remove ${shq(wgIp)}`).catch(() => {});
+}
+
 // Diagnostic: confirm the backend can reach RADIUS Postgres over SSH and count users.
 export async function diagnoseRadius(): Promise<Record<string, unknown>> {
   const out: Record<string, unknown> = {

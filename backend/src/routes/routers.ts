@@ -399,6 +399,18 @@ router.post('/:id/radius', async (req: AuthRequest, res: Response) => {
       where: { id: router_.id },
       data: { radiusEnabled: enabled, ...(secret ? { radiusSecret: secret } : {}) } as never,
     });
+    // Auto-register the router as a FreeRADIUS client (graceful reload, no manual restart needed).
+    try {
+      const r = await prisma.mikrotikRouter.findUnique({ where: { id: router_.id }, select: { wgIp: true, radiusSecret: true, name: true } as never }) as never as { wgIp?: string; radiusSecret?: string; name?: string };
+      const { registerRadiusClient, unregisterRadiusClient } = await import('../utils/radius');
+      if (enabled && r?.wgIp && r?.radiusSecret) {
+        await registerRadiusClient(r.wgIp, r.radiusSecret, r.name || 'router');
+      } else if (!enabled && r?.wgIp) {
+        await unregisterRadiusClient(r.wgIp);
+      }
+    } catch (e) {
+      console.error('radius client registration failed:', e instanceof Error ? e.message : e);
+    }
     sendSuccess(res, { radiusEnabled: enabled, hasSecret: !!(secret || (router_ as never as { radiusSecret?: string }).radiusSecret) });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);

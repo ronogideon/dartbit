@@ -367,6 +367,33 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
       add('');
     }
 
+    // === 8e. RADIUS (PPPoE auth + accounting) ===
+    // When this router has RADIUS enabled, point its PPP auth at the Dartbit RADIUS server over the
+    // VPN, scoped by called-id="dartbit" so it COEXISTS with any other RADIUS (e.g. a second billing
+    // system on a different PPPoE service) without conflict. src-address is the router's own VPN IP
+    // so packets traverse the tunnel. Enables incoming CoA so the backend can disconnect on expiry,
+    // and turns on accounting for live session/usage data. Idempotent.
+    try {
+      const fresh = await prisma.mikrotikRouter.findUnique({ where: { id: r.id }, select: { radiusEnabled: true, radiusSecret: true, wgIp: true } as never }) as never as { radiusEnabled?: boolean; radiusSecret?: string; wgIp?: string };
+      const radiusServerIp = (process.env.DARTBIT_WG_SUBNET || '10.8.0.0/24').split('.').slice(0, 3).join('.') + '.1'; // e.g. 10.8.0.1
+      if (fresh?.radiusEnabled && fresh.radiusSecret && fresh.wgIp) {
+        const sec = fresh.radiusSecret.replace(/[\\"]/g, '');
+        add('# 8e. Dartbit RADIUS (PPPoE auth + accounting) — called-id scoped for coexistence');
+        // Remove any prior Dartbit RADIUS entry so re-provisioning is clean (match by comment).
+        add(`:foreach rr in=[/radius find comment="Dartbit RADIUS"] do={ /radius remove $rr }`);
+        // Add the Dartbit RADIUS server, scoped to the "dartbit" PPPoE service via called-id.
+        add(`/radius add service=ppp address=${radiusServerIp} secret="${sec}" src-address=${fresh.wgIp} called-id=dartbit timeout=3s comment="Dartbit RADIUS"`);
+        // Accept incoming CoA/Disconnect (so the backend can kick expired sessions instantly).
+        add(`/radius incoming set accept=yes port=3799`);
+        // Enable RADIUS auth + accounting for PPP.
+        add(`/ppp aaa set use-radius=yes accounting=yes interim-update=5m`);
+        add('');
+      }
+    } catch (e) {
+      add(`# (Dartbit RADIUS auto-config skipped: ${e instanceof Error ? e.message.replace(/[\r\n]/g, ' ') : 'error'})`);
+      add('');
+    }
+
     add('# 9. Heartbeat');
     add(`:foreach s in=[/system scheduler find comment="Dartbit heartbeat"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-heartbeat"] do={ /system script remove $s }`);
