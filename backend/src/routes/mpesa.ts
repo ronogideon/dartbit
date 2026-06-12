@@ -249,7 +249,8 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   // D-name), so we DON'T create local hotspot users or push limit-uptime here — RADIUS owns auth,
   // rate-limit and expiry. We still issue the instant active-login go-ahead, but only AFTER the
   // radcheck rows are written (further down), so the login actually authorizes.
-  const radiusManaged = !!(tx.routerId && (await prisma.mikrotikRouter.findUnique({ where: { id: tx.routerId }, select: { radiusEnabled: true } as any }) as any)?.radiusEnabled);
+  const { radiusConfigured } = await import('../utils/radius');
+  const radiusManaged = radiusConfigured() && !!tx.routerId;
   const radiusLoginCmds: string[] = [];
   const cmds: string[] = [];
   if (!radiusManaged) {

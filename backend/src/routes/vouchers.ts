@@ -84,10 +84,13 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
     // vouchers can sit unused indefinitely). RADIUS-enabled routers are handled by the bulk RADIUS
     // sync below instead, where the same cumulative-uptime semantics come from the dartbit_uptime
     // sqlcounter.
+    // Local push happens only in legacy (non-RADIUS) mode; under RADIUS the bulk sync below is
+    // authoritative (cumulative-uptime via the dartbit_uptime sqlcounter).
     try {
-      const targetRouters = routerId
-        ? await prisma.mikrotikRouter.findMany({ where: { id: routerId, tenantId, radiusEnabled: false } as any })
-        : await prisma.mikrotikRouter.findMany({ where: { tenantId, radiusEnabled: false } as any });
+      const { radiusConfigured } = await import('../utils/radius');
+      const targetRouters = radiusConfigured() ? [] : (routerId
+        ? await prisma.mikrotikRouter.findMany({ where: { id: routerId, tenantId } as any })
+        : await prisma.mikrotikRouter.findMany({ where: { tenantId } as any }));
 
       for (const r of targetRouters) {
         // Determine profile and speed for the package

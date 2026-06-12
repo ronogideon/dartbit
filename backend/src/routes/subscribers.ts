@@ -3,6 +3,7 @@ import { z } from 'zod';
 import prisma from '../utils/prisma';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { sendSuccess, sendError } from '../utils/response';
+import { radiusConfigured } from '../utils/radius';
 
 const router = Router();
 router.use(authenticate);
@@ -141,14 +142,16 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
     // edit takes effect at once: if the subscriber is now expired/inactive/without a package, the
     // helper emits removal + session-kick commands (the device is thrown out); if still entitled, it
     // (re)creates the users. Covers the case of an admin setting expiry to the past to disconnect.
-    if (subscriber.routerId && subscriber.service === 'HOTSPOT' && !(subscriber.router as any)?.radiusEnabled) {
+    // When RADIUS is the active auth system we do NOT push local users to the router at all — the
+    // radcheck sync above is authoritative. Local pushes only happen in legacy (non-RADIUS) mode.
+    if (subscriber.routerId && subscriber.service === 'HOTSPOT' && !radiusConfigured()) {
       try {
         const { pushSubscriberToRouter } = await import('../utils/pushSubscriber');
         await pushSubscriberToRouter(subscriber.id);
       } catch (e) {
         console.error('update: router push failed (continuing):', e instanceof Error ? e.message : e);
       }
-    } else if (subscriber.routerId && subscriber.service !== 'HOTSPOT') {
+    } else if (subscriber.routerId && subscriber.service !== 'HOTSPOT' && !radiusConfigured()) {
       // PPPoE/static: toggle the secret enable/disable + kick active session to match new state.
       try {
         const { enqueueCommand } = await import('../utils/commandQueue');
@@ -199,13 +202,12 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
     if (sub.routerId) {
       try {
         if (sub.service === 'HOTSPOT') {
-          // RADIUS hotspot router: removeSubscriberFromRadius (below) clears radcheck + CoA-kicks,
-          // so no local hotspot removal is needed. Non-RADIUS: do the local removal as before.
-          if (!(sub.router as any)?.radiusEnabled) {
+          // RADIUS clears radcheck + CoA-kicks below. Local removal only in legacy mode.
+          if (!radiusConfigured()) {
             const { pushSubscriberRemoval } = await import('../utils/pushSubscriber');
             await pushSubscriberRemoval(sub.routerId, sub.username, sub.macAddress);
           }
-        } else {
+        } else if (!radiusConfigured()) {
           const { enqueueCommand } = await import('../utils/commandQueue');
           await enqueueCommand(sub.routerId,
             `:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove $a }\n` +
@@ -293,7 +295,8 @@ router.post('/:id/extend', async (req: AuthRequest, res: Response) => {
     }
 
     // Push the change to the router (re-enable + update) via a sync so the user isn't kicked.
-    if (sub.routerId) {
+    // Legacy mode only — under RADIUS the radcheck Expiration written above is authoritative.
+    if (sub.routerId && !radiusConfigured()) {
       try {
         const { enqueueCommand } = await import('../utils/commandQueue');
         if (sub.service === 'HOTSPOT') {

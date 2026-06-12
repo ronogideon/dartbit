@@ -96,8 +96,12 @@ export async function syncSubscriberToRadius(subscriberId: string): Promise<void
   if (!sub) { console.log(`[radius] skip ${subscriberId}: subscriber not found`); return; }
   if (sub.service !== 'PPPOE' && sub.service !== 'HOTSPOT') { console.log(`[radius] skip ${sub.username}: service=${sub.service} not synced`); return; }
 
-  const { enabled } = await routerRadius(sub.routerId);
-  if (!enabled) { console.log(`[radius] skip ${sub.username}: router ${sub.routerId || '(none)'} not radiusEnabled`); return; }
+  // NOTE: We intentionally do NOT gate on the per-router `radiusEnabled` flag here. That flag
+  // defaults to false and silently suppressed every per-subscriber write while the flag-agnostic
+  // bulk sync worked — the exact mismatch we hit. The env master switch `radiusConfigured()`
+  // (checked above) is now the single source of truth, so per-subscriber writes behave identically
+  // to bulk-sync. A routerId is still needed only for the CoA-Disconnect kick (handled gracefully
+  // below if its VPN IP / secret aren't known).
 
   const now = new Date();
   const expired = sub.expiresAt ? sub.expiresAt <= now : false;
@@ -146,8 +150,6 @@ export async function syncSubscriberToRadius(subscriberId: string): Promise<void
 export async function removeSubscriberFromRadius(sub: RadiusSub): Promise<void> {
   if (!radiusConfigured()) return;
   if (sub.service !== 'PPPOE' && sub.service !== 'HOTSPOT') return;
-  const { enabled } = await routerRadius(sub.routerId);
-  if (!enabled) return;
   const names = [sub.username];
   const mac = sub.service === 'HOTSPOT' ? normMac(sub.macAddress) : null;
   if (mac) names.push(mac);
@@ -246,8 +248,6 @@ export async function syncVoucherToRadius(voucherId: string): Promise<void> {
   if (!radiusConfigured()) return;
   const v = await prisma.voucher.findUnique({ where: { id: voucherId }, include: { package: true } });
   if (!v || v.batchId === 'MPESA') return;
-  const { enabled } = await routerRadius(v.routerId);
-  if (!enabled) return;
   const seconds = Math.max(60, v.durationMinutes * 60);
   await radiusPsql(voucherRows(v.code, seconds, v.package?.speedUpKbps, v.package?.speedDownKbps).join(' '));
 }
@@ -273,18 +273,12 @@ export async function bulkSyncVouchersToRadius(opts: { tenantId?: string; router
   });
 
   // Resolve which routers are RADIUS-managed once, to avoid a DB hit per voucher.
-  const routerIds = Array.from(new Set(vouchers.map((v: { routerId: string | null }) => v.routerId).filter(Boolean))) as string[];
-  const radiusRouters = new Set(
-    (await prisma.mikrotikRouter.findMany({
-      where: { id: { in: routerIds }, radiusEnabled: true } as any,
-      select: { id: true },
-    })).map((r: { id: string }) => r.id)
-  );
-
+  // RADIUS is governed by the env master switch (radiusConfigured), so all routed vouchers sync —
+  // matching the PPPoE bulk behaviour. MPESA receipts are still skipped (handled via subscriber MAC).
   const stmts: string[] = [];
   let synced = 0, skipped = 0;
   for (const v of vouchers) {
-    if (v.batchId === 'MPESA' || !v.routerId || !radiusRouters.has(v.routerId)) { skipped++; continue; }
+    if (v.batchId === 'MPESA') { skipped++; continue; }
     const seconds = Math.max(60, v.durationMinutes * 60);
     stmts.push(...voucherRows(v.code, seconds, v.package?.speedUpKbps, v.package?.speedDownKbps));
     synced++;
@@ -311,19 +305,11 @@ export async function bulkSyncHotspotToRadius(opts: { tenantId?: string; routerI
     },
     include: { package: true },
   });
-  const routerIds = Array.from(new Set(subs.map((s: { routerId: string | null }) => s.routerId).filter(Boolean))) as string[];
-  const radiusRouters = new Set(
-    (await prisma.mikrotikRouter.findMany({
-      where: { id: { in: routerIds }, radiusEnabled: true } as any,
-      select: { id: true },
-    })).map((r: { id: string }) => r.id)
-  );
-
   const now = new Date();
   const stmts: string[] = [];
   let synced = 0, skipped = 0;
   for (const sub of subs) {
-    if (!sub.routerId || !radiusRouters.has(sub.routerId)) { skipped++; continue; }
+    if (!sub.routerId) { skipped++; continue; }
     const expired = sub.expiresAt ? sub.expiresAt <= now : false;
     const entitled = sub.isActive && !!sub.packageId && !expired;
     const identities: RadiusIdentity[] = [{ name: sub.username, password: sub.secret }];

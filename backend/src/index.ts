@@ -11,6 +11,7 @@ import paymentRoutes from './routes/payments';
 import messageRoutes from './routes/messages';
 import notificationsRoutes from './routes/notifications';
 import { startReminderScheduler } from './utils/reminderScheduler';
+import { radiusConfigured } from './utils/radius';
 import { startSystemAlerts } from './utils/systemAlerts';
 import routerRoutes from './routes/routers';
 import onlineSessionRoutes from './routes/onlineSessions';
@@ -93,8 +94,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.25', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.25', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.26', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.26', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -125,7 +126,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.25 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.26 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -236,7 +237,7 @@ function startExpiryWatcher() {
       for (const sub of candidates) {
         // RADIUS-managed routers enforce expiry centrally (Expiration check item + CoA-Disconnect),
         // so the local MAC-kick push is redundant there — skip them.
-        if ((sub as any).router?.radiusEnabled) continue;
+        if ((sub as any).router?.radiusEnabled || radiusConfigured()) continue;
         const expired = sub.expiresAt ? sub.expiresAt <= now : false;
         const entitled = sub.isActive && !!sub.packageId && !expired;
         if (!entitled) toKick.push({ id: sub.id, exp: sub.expiresAt ? sub.expiresAt.getTime() : 0 });
