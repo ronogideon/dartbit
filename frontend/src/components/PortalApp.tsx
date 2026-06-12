@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/lib/api';
+import { login as adminLogin } from '@/lib/api';
 import toast from 'react-hot-toast';
 import { fontStack } from '@/lib/fonts';
 import { googleFontsHref } from '@/lib/fonts';
@@ -96,6 +97,30 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
     e.preventDefault();
     setLoading(true);
     try {
+      // Unified login: this themed page is the single entry point for BOTH tenant admins/staff
+      // (who sign in with their email) and subscribers (username). Try the admin login first; if
+      // these aren't admin credentials, fall back to the subscriber portal login.
+      let adminData: { user: { id: string; email: string; name: string; role: string; tenantId?: string }; token: string; subdomain?: string } | null = null;
+      try { adminData = await adminLogin(username, password); } catch { adminData = null; }
+
+      if (adminData) {
+        // Persist admin auth the same way the admin app does, then hand off to the dashboard.
+        try {
+          localStorage.setItem('dartbit_token', adminData.token);
+          localStorage.setItem('dartbit_user', JSON.stringify(adminData.user));
+          if (adminData.subdomain) localStorage.setItem('dartbit_subdomain', adminData.subdomain);
+        } catch {}
+        toast.success(`Welcome back, ${adminData.user.name}!`);
+        const base = process.env.NEXT_PUBLIC_PORTAL_BASE_DOMAIN;
+        if (base && adminData.subdomain && typeof window !== 'undefined') {
+          const expected = `${adminData.subdomain}.${base}`;
+          if (window.location.hostname !== expected) { window.location.href = `https://${expected}/dashboard`; return; }
+        }
+        window.location.href = '/dashboard';
+        return;
+      }
+
+      // Not an admin — subscriber portal login (username/secret or hotspot creds).
       const res = await api.post(`/portal/login${qs}`, { username, password });
       const tok = res.data.token;
       setToken(tok);
@@ -157,8 +182,8 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
           </div>
           <form onSubmit={login} className="bg-gray-800 rounded-2xl p-6 space-y-4 border border-gray-700">
             <div>
-              <label className="text-xs text-gray-400 mb-1 block">Username</label>
-              <input className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-white" value={username} onChange={e => setUsername(e.target.value)} placeholder="Your username" autoCapitalize="none" />
+              <label className="text-xs text-gray-400 mb-1 block">Email or Username</label>
+              <input className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-white" value={username} onChange={e => setUsername(e.target.value)} placeholder="Email (staff) or username (customer)" autoCapitalize="none" />
             </div>
             <div>
               <label className="text-xs text-gray-400 mb-1 block">Password</label>
@@ -167,7 +192,7 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
             <button type="submit" disabled={loading} className="w-full text-white rounded-lg py-2.5 font-medium disabled:opacity-50" style={{ background: accent }}>
               {loading ? 'Signing in…' : 'Sign In'}
             </button>
-            <p className="text-xs text-gray-500 text-center">PPPoE customers use your account login. Hotspot customers use the credentials sent to you on purchase.</p>
+            <p className="text-xs text-gray-500 text-center">Staff sign in with your email. PPPoE customers use your account login; hotspot customers use the credentials sent on purchase.</p>
           </form>
           {SupportFooter}
         </div>

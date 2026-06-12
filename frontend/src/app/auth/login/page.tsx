@@ -16,6 +16,17 @@ export default function LoginPage() {
   const { setAuth } = useAuth();
   const router = useRouter();
 
+  // The themed /portal is now the single login entry for both staff and customers. On a tenant
+  // subdomain, send /auth/login there. (Apex/superadmin keeps this page.)
+  const [redirecting, setRedirecting] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (tenantSubdomainFromHost()) {
+      setRedirecting(true);
+      window.location.replace('/portal');
+    }
+  }, []);
+
   // On a tenant subdomain, brand the page with the ISP's name (wifi icon placeholder).
   useEffect(() => {
     const sub = tenantSubdomainFromHost();
@@ -71,6 +82,8 @@ export default function LoginPage() {
       setLoading(false);
     }
   };
+
+  if (redirecting) return <div className="min-h-screen bg-gray-950" />;
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-950 p-4">
