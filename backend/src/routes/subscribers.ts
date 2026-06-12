@@ -265,6 +265,19 @@ router.post('/:id/extend', async (req: AuthRequest, res: Response) => {
       data: { expiresAt: newExpiry, isActive: true },
     });
 
+    // RADIUS-managed routers enforce expiry from the radcheck `Expiration` item, so the new expiry
+    // MUST be written there — otherwise RADIUS keeps enforcing the old window. syncSubscriberToRadius
+    // no-ops for non-RADIUS routers, so this is safe to call unconditionally. (This was the gap that
+    // made frontend expiry changes not take effect on RADIUS.)
+    try {
+      const { radiusConfigured, syncSubscriberToRadius } = await import('../utils/radius');
+      if (radiusConfigured() && (sub.service === 'PPPOE' || sub.service === 'HOTSPOT')) {
+        await syncSubscriberToRadius(sub.id);
+      }
+    } catch (e) {
+      console.error('extend: radius sync failed (continuing):', e instanceof Error ? e.message : e);
+    }
+
     // Keep the unified identity in lockstep: if this hotspot device has a linked M-Pesa voucher
     // (the receipt code), update its expiry to the SAME session end so the code, username/password
     // and MAC all expire together. Matched by the device MAC within this tenant.

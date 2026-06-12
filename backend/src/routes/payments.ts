@@ -63,6 +63,16 @@ router.post('/', async (req: AuthRequest, res: Response) => {
         where: { id: subscriber.id },
         data: { expiresAt: newExpiry, isActive: true },
       });
+
+      // Mirror the new expiry into RADIUS so gateway-managed routers enforce the extended window.
+      try {
+        const { radiusConfigured, syncSubscriberToRadius } = await import('../utils/radius');
+        if (radiusConfigured() && (subscriber.service === 'PPPOE' || subscriber.service === 'HOTSPOT')) {
+          await syncSubscriberToRadius(subscriber.id);
+        }
+      } catch (e) {
+        console.error('payment: radius sync failed (continuing):', e instanceof Error ? e.message : e);
+      }
     }
 
     sendSuccess(res, payment, 201);

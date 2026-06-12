@@ -1,5 +1,5 @@
 'use client';
-import { useState, Fragment } from 'react';
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getPackages, createPackage, updatePackage, deletePackage } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
@@ -23,6 +23,7 @@ export default function PackagesPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [editing, setEditing] = useState<Package | null>(null);
   const [form, setForm] = useState(emptyForm);
+  const [tab, setTab] = useState<'ALL' | 'PPPOE' | 'HOTSPOT' | 'STATIC'>('ALL');
   // Speed entered as value + unit (Kbps/Mbps/Gbps), converted to Kbps on submit. Start EMPTY so the
   // tenant must consciously choose — nothing is prefilled, preventing unintended speed/price/validity.
   const [upSpeed, setUpSpeed] = useState<{ value: number | ''; unit: SpeedUnit }>({ value: '', unit: 'Mbps' });
@@ -81,14 +82,45 @@ export default function PackagesPage() {
     else createMut.mutate(payload);
   };
 
+  const allPkgs = packages as Package[];
+  const counts = {
+    ALL: allPkgs.length,
+    PPPOE: allPkgs.filter(p => p.service === 'PPPOE').length,
+    HOTSPOT: allPkgs.filter(p => p.service === 'HOTSPOT').length,
+    STATIC: allPkgs.filter(p => p.service === 'STATIC').length,
+  };
+  const visible = tab === 'ALL' ? allPkgs : allPkgs.filter(p => p.service === tab);
+  const PKG_TABS = [
+    { key: 'ALL' as const, label: 'All' },
+    { key: 'PPPOE' as const, label: 'PPPoE' },
+    { key: 'HOTSPOT' as const, label: 'Hotspot' },
+    { key: 'STATIC' as const, label: 'Static' },
+  ];
+
   return (
     <AppLayout>
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold">Packages</h1>
-          <p className="text-sm text-gray-500 mt-1">{(packages as Package[]).length} packages</p>
+          <p className="text-sm text-gray-500 mt-1">{allPkgs.length} packages</p>
         </div>
         <button onClick={openCreate} className="btn-primary flex items-center gap-2"><Plus size={16} /> Add Package</button>
+      </div>
+
+      {/* Service tabs with count bubbles (mirrors the Subscribers page) */}
+      <div className="flex gap-1 mb-4 border-b border-gray-200 dark:border-gray-800 overflow-x-auto">
+        {PKG_TABS.map(t => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px flex items-center gap-2 whitespace-nowrap transition ${tab === t.key ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+          >
+            {t.label}
+            <span className={`text-xs px-1.5 py-0.5 rounded-full ${tab === t.key ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300' : 'bg-gray-100 dark:bg-gray-800 text-gray-500'}`}>
+              {counts[t.key]}
+            </span>
+          </button>
+        ))}
       </div>
 
       <div className="card overflow-hidden">
@@ -107,41 +139,24 @@ export default function PackagesPage() {
           <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
             {isPending ? (
               <tr><td colSpan={7} className="table-td text-center py-8 text-gray-400">Loading...</td></tr>
-            ) : (packages as Package[]).length === 0 ? (
-              <tr><td colSpan={7} className="table-td text-center py-8 text-gray-400">No packages yet</td></tr>
-            ) : ([
-              { key: 'PPPOE', label: 'PPPoE' },
-              { key: 'HOTSPOT', label: 'Hotspot' },
-              { key: 'STATIC', label: 'Static' },
-            ] as const).map(group => {
-              const items = (packages as Package[]).filter(p => p.service === group.key);
-              if (items.length === 0) return null;
-              return (
-                <Fragment key={group.key}>
-                  <tr className="bg-gray-50 dark:bg-gray-800/50">
-                    <td colSpan={7} className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
-                      {group.label} <span className="text-gray-400 font-normal normal-case">· {items.length}</span>
-                    </td>
-                  </tr>
-                  {items.map(p => (
-                    <tr key={p.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/30">
-                      <td className="table-td font-medium">{p.name}{p.isTrial && <span className="ml-2 badge-green text-xs">Trial</span>}</td>
-                      <td className="table-td"><span className="badge-blue">{p.service}</span></td>
-                      <td className="table-td">{formatSpeed(p.speedUpKbps)}</td>
-                      <td className="table-td">{formatSpeed(p.speedDownKbps)}</td>
-                      <td className="table-td">{formatValidity(p.validityMinutes)}</td>
-                      <td className="table-td font-medium">{p.price.toLocaleString()}</td>
-                      <td className="table-td">
-                        <div className="flex items-center gap-2">
-                          <button onClick={() => openEdit(p)} className="p-1.5 text-gray-400 hover:text-blue-600"><Edit2 size={15} /></button>
-                          <button onClick={() => setDeleteId(p.id)} className="p-1.5 text-gray-400 hover:text-red-600"><Trash2 size={15} /></button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </Fragment>
-              );
-            })}
+            ) : visible.length === 0 ? (
+              <tr><td colSpan={7} className="table-td text-center py-8 text-gray-400">No packages in this category</td></tr>
+            ) : visible.map(p => (
+              <tr key={p.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/30">
+                <td className="table-td font-medium">{p.name}{p.isTrial && <span className="ml-2 badge-green text-xs">Trial</span>}</td>
+                <td className="table-td"><span className="badge-blue">{p.service}</span></td>
+                <td className="table-td">{formatSpeed(p.speedUpKbps)}</td>
+                <td className="table-td">{formatSpeed(p.speedDownKbps)}</td>
+                <td className="table-td">{formatValidity(p.validityMinutes)}</td>
+                <td className="table-td font-medium">{p.price.toLocaleString()}</td>
+                <td className="table-td">
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => openEdit(p)} className="p-1.5 text-gray-400 hover:text-blue-600"><Edit2 size={15} /></button>
+                    <button onClick={() => setDeleteId(p.id)} className="p-1.5 text-gray-400 hover:text-red-600"><Trash2 size={15} /></button>
+                  </div>
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
