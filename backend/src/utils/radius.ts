@@ -230,17 +230,34 @@ export async function bulkSyncPppoeToRadius(opts: { tenantId?: string; routerId?
 // it's actually online. MPESA-tagged vouchers (receipt codes) are skipped here — those devices are
 // already authenticated via the subscriber's MAC/D-name radcheck rows.
 
-function voucherRows(code: string, seconds: number, upKbps?: number | null, downKbps?: number | null): string[] {
+function voucherRows(code: string, seconds: number, upKbps?: number | null, downKbps?: number | null, expiresAt?: Date | null): string[] {
   const u = sqlq(code);
   const rl = sqlq(rateLimit(upKbps, downKbps));
-  return [
+  // IMPORTANT: only use attributes that work with a stock FreeRADIUS install. The earlier
+  // `Max-All-Session` (needs the dartbit_uptime sqlcounter) and `Simultaneous-Use` (needs the
+  // session module) check items caused Access-Reject ("invalid username or password") when those
+  // modules weren't installed. We enforce the voucher's time limit with `Session-Timeout` (a reply
+  // attribute every NAS honours) plus, once redeemed, an `Expiration` check (same mechanism PPPoE
+  // uses successfully) so the code can't be re-used after its window.
+  const rows = [
     `DELETE FROM radcheck WHERE username='${u}';`,
     `DELETE FROM radreply WHERE username='${u}';`,
     `INSERT INTO radcheck (username, attribute, op, value) VALUES ('${u}','Cleartext-Password',':=','${u}');`,
-    `INSERT INTO radcheck (username, attribute, op, value) VALUES ('${u}','Max-All-Session',':=','${seconds}');`,
-    `INSERT INTO radcheck (username, attribute, op, value) VALUES ('${u}','Simultaneous-Use',':=','1');`,
     `INSERT INTO radreply (username, attribute, op, value) VALUES ('${u}','Mikrotik-Rate-Limit',':=','${rl}');`,
+    `INSERT INTO radreply (username, attribute, op, value) VALUES ('${u}','Session-Timeout',':=','${Math.max(60, Math.floor(seconds))}');`,
   ];
+  if (expiresAt) {
+    rows.splice(3, 0, `INSERT INTO radcheck (username, attribute, op, value) VALUES ('${u}','Expiration',':=','${sqlq(radiusExpiry(expiresAt))}');`);
+  }
+  return rows;
+}
+
+// Write a voucher into RADIUS at REDEMPTION time — guarantees the radcheck row exists (even if the
+// generation-time sync never ran) and is clean, right before the captive portal logs the device in.
+// `remainingSeconds` caps the session; `expiresAt` blocks re-use after the validity window.
+export async function redeemVoucherInRadius(code: string, remainingSeconds: number, expiresAt: Date | null, upKbps?: number | null, downKbps?: number | null): Promise<void> {
+  if (!radiusConfigured()) return;
+  await radiusPsql(voucherRows(code, remainingSeconds, upKbps, downKbps, expiresAt).join(' '));
 }
 
 // Write one voucher into RADIUS (on generate/edit). Gated on the router being RADIUS-managed.

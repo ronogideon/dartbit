@@ -1,6 +1,6 @@
 {
   "name": "dartbit-backend",
-  "version": "1.10.30",
+  "version": "1.10.31",
   "description": "Dartbit ISP Billing & MikroTik Management - Backend",
   "main": "dist/index.js",
   "scripts": {

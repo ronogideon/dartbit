@@ -66,6 +66,15 @@ router.post('/redeem', async (req: Request, res: Response) => {
         if (voucher.usedByMac && reqMac && voucher.usedByMac.toUpperCase() !== reqMac) {
           return res.status(403).json({ success: false, error: 'This code is locked to the device that purchased it.' });
         }
+        // Make sure the voucher is in RADIUS with its REMAINING time so a reconnecting device can
+        // resume (the row may have aged out or never been written).
+        try {
+          const { radiusConfigured, redeemVoucherInRadius } = await import('../utils/radius');
+          if (radiusConfigured()) {
+            const remaining = Math.max(60, Math.floor((voucher.expiresAt.getTime() - now.getTime()) / 1000));
+            await redeemVoucherInRadius(voucher.code, remaining, voucher.expiresAt, voucher.package?.speedUpKbps, voucher.package?.speedDownKbps);
+          }
+        } catch (e) { console.error('voucher resume: radius write failed:', e instanceof Error ? e.message : e); }
         return res.json({
           success: true,
           username: voucher.code,
@@ -97,10 +106,18 @@ router.post('/redeem', async (req: Request, res: Response) => {
       },
     });
 
-    // The voucher was already pushed to the router at generation time as a hotspot user
-    // with limit-uptime equal to the voucher duration. MikroTik starts counting uptime
-    // only after the first login, then auto-disconnects when limit is reached.
-    // No command queue push needed here — the user is ready to login immediately.
+    // Write the voucher into RADIUS NOW (idempotent), so the hotspot's Access-Request authenticates
+    // when the captive portal submits these credentials a moment later. This guarantees the radcheck
+    // row exists and is clean even if the generation-time sync never ran. No-ops if RADIUS is off
+    // (legacy routers already have the voucher as a local hotspot user from generation time).
+    try {
+      const { radiusConfigured, redeemVoucherInRadius } = await import('../utils/radius');
+      if (radiusConfigured()) {
+        await redeemVoucherInRadius(cleanCode, voucher.durationMinutes * 60, sessionExpiresAt, voucher.package?.speedUpKbps, voucher.package?.speedDownKbps);
+      }
+    } catch (e) {
+      console.error('voucher redeem: radius write failed:', e instanceof Error ? e.message : e);
+    }
 
     const username = cleanCode;
     const password = cleanCode;
