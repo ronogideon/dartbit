@@ -10,7 +10,7 @@ import { Settings as SettingsIcon, CreditCard, Users, Plus, Trash2, KeyRound, Co
 type Tab = 'general' | 'notifications' | 'billing' | 'payments' | 'users';
 
 interface Settings {
-  currency?: string; timezone?: string; backendUrl?: string;
+  currency?: string; timezone?: string; backendUrl?: string; autoDeleteOfflineDays?: number;
   smsSenderId?: string; smsApiKey?: string; emailFromAddress?: string;
 }
 
@@ -82,7 +82,7 @@ function GeneralTab() {
   const { data: tenant } = useQuery({ queryKey: ['tenant-info'], queryFn: getTenantInfo, staleTime: 60000 });
   const { data: branding } = useQuery({ queryKey: ['branding-general'], queryFn: getBranding });
   const [form, setForm] = useState<Settings>({
-    currency: 'KES', timezone: 'Africa/Nairobi', backendUrl: '', smsSenderId: '', smsApiKey: '', emailFromAddress: '',
+    currency: 'KES', timezone: 'Africa/Nairobi', backendUrl: '', smsSenderId: '', smsApiKey: '', emailFromAddress: '', autoDeleteOfflineDays: 90,
   });
   const [support, setSupport] = useState('');
   const [copied, setCopied] = useState(false);
@@ -140,7 +140,34 @@ function GeneralTab() {
         </div>
       </div>
 
-      {/* Support number — shown on the customer & hotspot portals as a tap-to-call link */}
+      {/* Data retention — auto-remove long-offline customers */}
+      <div className="card p-6">
+        <h2 className="font-semibold mb-1">Data retention</h2>
+        <p className="text-sm text-gray-500 mb-4">Automatically delete PPPoE, Hotspot, and Static customers from the database once they&apos;ve been offline this long. Set to 0 to never auto-delete.</p>
+        <div className="flex items-end gap-3">
+          <div className="w-48">
+            <label className="label">Delete after (days offline)</label>
+            <input
+              type="number" min={0} max={3650} className="input"
+              value={form.autoDeleteOfflineDays ?? 90}
+              onChange={e => setForm(f => ({ ...f, autoDeleteOfflineDays: e.target.value === '' ? 0 : Math.max(0, parseInt(e.target.value, 10) || 0) }))}
+            />
+          </div>
+          <button
+            onClick={() => updateMut.mutate({ autoDeleteOfflineDays: form.autoDeleteOfflineDays ?? 90 })}
+            disabled={updateMut.isPending}
+            className="btn-primary mb-0.5"
+          >
+            Save
+          </button>
+        </div>
+        <p className="text-xs text-gray-400 mt-2">
+          {(form.autoDeleteOfflineDays ?? 90) === 0
+            ? 'Auto-deletion is off — no customers will be removed automatically.'
+            : `Customers offline for more than ${form.autoDeleteOfflineDays ?? 90} days (~${Math.round((form.autoDeleteOfflineDays ?? 90) / 30)} months) will be removed.`}
+        </p>
+      </div>
+
       <div className="card p-6">
         <h2 className="font-semibold mb-1">Support number</h2>
         <p className="text-sm text-gray-500 mb-4">

@@ -14,6 +14,7 @@ const settingsSchema = z.object({
   currency: z.string().optional(),
   timezone: z.string().optional(),
   backendUrl: z.string().optional(),
+  autoDeleteOfflineDays: z.number().int().min(0).max(3650).optional(),
 });
 
 router.get('/', async (req: AuthRequest, res: Response) => {

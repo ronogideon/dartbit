@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback } from 'react';
 import api from '@/lib/api';
 import toast from 'react-hot-toast';
 import { fontStack } from '@/lib/fonts';
+import { googleFontsHref } from '@/lib/fonts';
 import { Wifi, Calendar, Download, Upload, LogOut, Clock, RefreshCw, Zap } from 'lucide-react';
 
 interface Account {
@@ -39,6 +40,15 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
   const [renewing, setRenewing] = useState(false);
 
   useEffect(() => {
+    // Load the tenant fonts so the chosen fontFamily actually renders on the subdomain portal
+    // (without this the font-family was set but the webfont never downloaded → system fallback).
+    if (typeof document !== 'undefined' && !document.getElementById('portal-fonts')) {
+      const link = document.createElement('link');
+      link.id = 'portal-fonts';
+      link.rel = 'stylesheet';
+      link.href = googleFontsHref();
+      document.head.appendChild(link);
+    }
     api.get(`/portal/tenant${qs}`).then(r => {
       if (r.data.success) {
         const t = r.data.tenant;
@@ -136,7 +146,7 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
   // ===== Login screen =====
   if (!token || !account) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-950 flex items-center justify-center p-4" style={fontStyle}>
+      <div className="min-h-screen flex items-center justify-center p-4" style={{ ...fontStyle, background: `radial-gradient(circle at 50% -10%, ${accent}33, transparent 55%), linear-gradient(to bottom right, #0f1117, #090b10)` }}>
         <div className="w-full max-w-sm">
           <div className="text-center mb-6">
             <div className="inline-flex w-14 h-14 rounded-2xl items-center justify-center mb-3 overflow-hidden" style={{ background: accent }}>

@@ -94,8 +94,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.26', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.26', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.27', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.27', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -126,12 +126,13 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.26 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.27 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
   startExpiryWatcher();
   startWgStatusRefresher();
+  startAutoDeleteScheduler();
   startReminderScheduler();
   startSystemAlerts();
 });
@@ -274,6 +275,48 @@ function startWgStatusRefresher() {
   };
   run();
   setInterval(run, 60 * 1000); // every 60s
+}
+
+// Auto-remove subscribers that have been offline longer than each tenant's configured threshold
+// (default 90 days; 0 = never). Applies to PPPoE, Hotspot, and Static. "Offline since" = lastOnlineAt
+// if known, otherwise createdAt (a subscriber that never came online). Cleans RADIUS first.
+function startAutoDeleteScheduler() {
+  const prisma = new PrismaClient();
+  const run = async () => {
+    try {
+      const settings = await prisma.tenantSetting.findMany({ select: { tenantId: true, autoDeleteOfflineDays: true } as never }) as never as { tenantId: string; autoDeleteOfflineDays: number }[];
+      const { radiusConfigured, removeSubscriberFromRadius } = await import('./utils/radius');
+      for (const st of settings) {
+        const days = st.autoDeleteOfflineDays ?? 90;
+        if (!days || days <= 0) continue; // 0 / unset → never auto-delete
+        const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+        // Offline-since is lastOnlineAt when present, else createdAt. Both must be before the cutoff.
+        const stale = await prisma.subscriber.findMany({
+          where: {
+            tenantId: st.tenantId,
+            OR: [
+              { lastOnlineAt: { not: null, lt: cutoff } },
+              { lastOnlineAt: null, createdAt: { lt: cutoff } },
+            ],
+          },
+        });
+        for (const sub of stale) {
+          try {
+            if (radiusConfigured()) await removeSubscriberFromRadius(sub as never).catch(() => {});
+            await prisma.subscriber.delete({ where: { id: sub.id } });
+            console.log(`[auto-delete] removed ${sub.username} (offline > ${days}d, tenant ${st.tenantId})`);
+          } catch (e) {
+            console.error('[auto-delete] failed for', sub.username, e instanceof Error ? e.message : e);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('auto-delete scheduler error:', err instanceof Error ? err.message : err);
+    }
+  };
+  // First pass shortly after boot, then once every 12 hours.
+  setTimeout(run, 5 * 60 * 1000);
+  setInterval(run, 12 * 60 * 60 * 1000);
 }
 
 server.on('error', (err) => {
@@ -584,6 +627,10 @@ async function patchDatabase() {
     // Backfill: any existing payment that carries an M-Pesa receipt was gateway-created.
     await safeExec(prisma, 'Payment.source', `ALTER TABLE "Payment" ADD COLUMN IF NOT EXISTS "source" TEXT NOT NULL DEFAULT 'MANUAL'`);
     await safeExec(prisma, 'Payment.source backfill', `UPDATE "Payment" SET "source"='AUTOMATIC' WHERE "source"='MANUAL' AND "mpesaCode" IS NOT NULL`);
+
+    // v1.10.27 — PPPoE/Static renewals carry the exact subscriber, and tenant-configurable auto-delete.
+    await safeExec(prisma, 'MpesaTx.subscriberId', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "subscriberId" TEXT`);
+    await safeExec(prisma, 'TenantSetting.autoDeleteOfflineDays', `ALTER TABLE "TenantSetting" ADD COLUMN IF NOT EXISTS "autoDeleteOfflineDays" INTEGER NOT NULL DEFAULT 90`);
 
     // Persistent router command queue (replaces in-memory queue that lost commands on restart)
     await safeExec(prisma, 'RouterCommand table',

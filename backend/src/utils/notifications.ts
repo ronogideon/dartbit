@@ -54,17 +54,20 @@ export async function sendNotification(args: SendNotifyArgs): Promise<NotifyResu
     return { ok: false, skipped: true, reason: 'category disabled' };
   }
 
-  // Sender label: on the shared Dartbit gateway the BlessedTexts sender ID is generic, so we
-  // prefix "From {tenant}:" to every message so recipients know who it's from. Tenants on
-  // their OWN gateway use their own sender ID and don't need the prefix.
+  // Sender label: on the shared Dartbit gateway the BlessedTexts sender ID is generic, so we append
+  // "From {tenant}" at the END of every message so recipients know who it's from. Tenants on their
+  // OWN gateway use their own sender ID and don't need the label.
   try {
     const cfg = await prisma.notificationConfig.findUnique({ where: { tenantId }, select: { gateway: true } });
     const usesDartbit = !cfg || cfg.gateway === 'DARTBIT';
     if (usesDartbit) {
       const t = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true } });
-      const label = t?.name ? `From ${t.name}: ` : '';
-      // Avoid double-prefixing if the caller already included it.
-      if (label && !body.startsWith(label)) body = label + body;
+      if (t?.name) {
+        // Strip any legacy leading "From {tenant}: " prefix, then append as a suffix (once).
+        const legacyPrefix = `From ${t.name}: `;
+        if (body.startsWith(legacyPrefix)) body = body.slice(legacyPrefix.length);
+        if (!body.trimEnd().endsWith(`From ${t.name}`)) body = body.trimEnd() + `\n\nFrom ${t.name}`;
+      }
     }
   } catch { /* non-fatal */ }
 

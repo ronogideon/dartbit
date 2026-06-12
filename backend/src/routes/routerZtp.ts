@@ -425,6 +425,15 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`/system scheduler add name=dartbit-sync interval=60s on-event="/system script run dartbit-sync" comment="Dartbit sub sync"`);
     add('');
 
+    // === Captive-portal refresh — re-download login.html every 3 min so tenant theme/branding
+    // changes propagate automatically without a reprovision (independent of the subscriber sync). ===
+    add('# 10b. Captive-portal refresh');
+    add(`:foreach s in=[/system scheduler find comment="Dartbit portal"] do={ /system scheduler remove $s }`);
+    add(`:foreach s in=[/system script find name="dartbit-portal"] do={ /system script remove $s }`);
+    add(`/system script add name=dartbit-portal policy=read,write,test source={:do { /ip hotspot profile set [find name="hsprof-dartbit"] html-directory=hotspot } on-error={}; /tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=hotspot/login.html${fetchFlags}; /tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=hotspot/alogin.html${fetchFlags}}`);
+    add(`/system scheduler add name=dartbit-portal interval=3m on-event="/system script run dartbit-portal" comment="Dartbit portal"`);
+    add('');
+
     // === Remote commands ===
     add('# 11. Remote commands');
     // dartbit-cmd: the command-queue poller. When this ZTP is itself delivered THROUGH

@@ -431,6 +431,44 @@ router.get('/portal', async (req: Request, res: Response) => {
 
   const backendUrl = process.env.BACKEND_URL || 'https://api.dartbittech.com';
 
+  // Tenant theme: brand name/logo, primary colour, font — so the captive portal matches the
+  // tenant's branding instead of the generic Dartbit look.
+  let brand = 'DARTBIT';
+  let primary = '#667eea';
+  let fontFamily: string | null = null;
+  let logoUrl: string | null = null;
+  try {
+    const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey: routerApiKey }, include: { tenant: true } });
+    if (r?.tenant) {
+      brand = (r.tenant.name || brand).toUpperCase();
+      primary = r.tenant.themeColor || primary;
+      fontFamily = r.tenant.fontFamily || null;
+      logoUrl = r.tenant.logoUrl || null;
+    }
+  } catch { /* fall back to defaults */ }
+  // Darken the primary ~18% for the gradient's second stop.
+  const shade = (hex: string, f: number) => {
+    const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim()); if (!m) return hex;
+    const n = parseInt(m[1], 16);
+    const r2 = Math.max(0, Math.round(((n >> 16) & 255) * (1 - f)));
+    const g2 = Math.max(0, Math.round(((n >> 8) & 255) * (1 - f)));
+    const b2 = Math.max(0, Math.round((n & 255) * (1 - f)));
+    return `#${((1 << 24) + (r2 << 16) + (g2 << 8) + b2).toString(16).slice(1)}`;
+  };
+  const primary2 = shade(primary, 0.18);
+  const fontStack = fontFamily ? `'${fontFamily}', -apple-system, BlinkMacSystemFont, sans-serif` : `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+  const fontLink = fontFamily ? `<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=${encodeURIComponent(fontFamily)}:wght@400;600;700;900&display=swap" rel="stylesheet">` : '';
+  const themeOverride = `
+  :root{--brand:${primary};--brand2:${primary2}}
+  body{background:linear-gradient(135deg,var(--brand) 0%,var(--brand2) 100%)!important;font-family:${fontStack}!important}
+  .logo{color:var(--brand)!important}
+  .logo img{max-height:54px;max-width:200px;object-fit:contain}
+  .tab.active{color:var(--brand)!important}
+  input:focus{border-color:var(--brand)!important}
+  button{background:linear-gradient(135deg,var(--brand) 0%,var(--brand2) 100%)!important}
+  `;
+  const logoHtml = logoUrl ? `<img src="${logoUrl}" alt="${brand}">` : brand;
+
   // Build a clean portal page
   const html = `<!doctype html>
 <html lang="en">
@@ -438,6 +476,7 @@ router.get('/portal', async (req: Request, res: Response) => {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>WiFi Login</title>
+${fontLink}
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; }
@@ -464,11 +503,12 @@ router.get('/portal', async (req: Request, res: Response) => {
   .status.success { background: #f0fdf4; color: #166534; border: 1px solid #dcfce7; display: block; }
   .status.info { background: #eff6ff; color: #1e40af; border: 1px solid #dbeafe; display: block; }
   .small { font-size: 11px; color: #aaa; text-align: center; margin-top: 18px; }
+  ${themeOverride}
 </style>
 </head>
 <body>
 <div class="card">
-  <div class="logo">DARTBIT</div>
+  <div class="logo">${logoHtml}</div>
   <div class="tagline">WiFi Login Portal</div>
 
   <div class="tabs">

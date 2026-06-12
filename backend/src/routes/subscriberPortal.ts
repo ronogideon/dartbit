@@ -203,10 +203,12 @@ router.post('/renew', authSubscriber, async (req: SubReq, res: Response) => {
 
     // Find the subscriber's router (for provisioning) — use their assigned one, else first tenant router
     let routerId: string | null = null;
+    let subUsername: string | null = null;
     const { sid, kind } = req.sub!;
-    if (kind === 'PPPOE') {
-      const s = await prisma.subscriber.findUnique({ where: { id: sid }, select: { routerId: true } });
-      routerId = s?.routerId || null;
+    {
+      const s = await prisma.subscriber.findUnique({ where: { id: sid }, select: { routerId: true, username: true } });
+      subUsername = s?.username || null;
+      if (kind === 'PPPOE') routerId = s?.routerId || null;
     }
     if (!routerId) {
       const firstRouter = await prisma.mikrotikRouter.findFirst({ where: { tenantId: tid }, select: { id: true } });
@@ -216,9 +218,11 @@ router.post('/renew', authSubscriber, async (req: SubReq, res: Response) => {
     const tx = await prisma.mpesaTransaction.create({
       data: {
         tenantId: tid, routerId, packageId: pkg.id,
+        // payer phone may be ANY number — the renewal is bound to the subscriber, not the phone.
         phone: normalizePhone(phone), amount: pkg.price, status: 'PENDING',
         durationMinutes, collectedVia, platformFee, netToTenant,
-      },
+        subscriberId: sid, username: subUsername,
+      } as never,
     });
 
     try {

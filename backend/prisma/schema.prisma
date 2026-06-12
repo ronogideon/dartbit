@@ -375,6 +375,7 @@ model TenantSetting {
   emailFromAddress String?
   currency         String   @default("KES")
   timezone         String   @default("Africa/Nairobi")
+  autoDeleteOfflineDays Int  @default(90) // auto-remove subscribers offline this many days (0 = never)
   backendUrl       String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -423,6 +424,7 @@ model MpesaTransaction {
   mpesaReceipt      String?                    // M-Pesa confirmation code (on success)
   // Provisioning result
   username          String?
+  subscriberId      String?                    // for PPPoE/Static renewals: the exact subscriber being paid for (payer phone may differ)
   password          String?
   clientMac         String?                    // captured from hotspot session at buy time
   clientIp          String?

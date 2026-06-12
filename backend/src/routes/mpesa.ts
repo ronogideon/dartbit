@@ -191,6 +191,62 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   const pkg = tx.packageId ? await prisma.package.findUnique({ where: { id: tx.packageId } }) : null;
   const tenant = await prisma.tenant.findUnique({ where: { id: tx.tenantId } });
 
+  // PPPoE/Static renewal: the transaction is bound to a specific subscriber (set at /renew), so the
+  // payment is credited to THAT subscriber's username, not matched by phone. The payer phone may be
+  // anyone's — we record it for reference but never use it to identify the account. This lets one
+  // phone pay for any account (hotspot, PPPoE, or static).
+  const boundSubId = (tx as { subscriberId?: string | null }).subscriberId || null;
+  if (boundSubId) {
+    const sub = await prisma.subscriber.findUnique({ where: { id: boundSubId } });
+    if (sub) {
+      const mins = tx.durationMinutes || pkg?.validityMinutes || 60;
+      const base = sub.expiresAt && sub.expiresAt > new Date() ? sub.expiresAt : new Date();
+      const newExpiry = new Date(base.getTime() + mins * 60_000);
+      await prisma.subscriber.update({
+        where: { id: sub.id },
+        data: { expiresAt: newExpiry, isActive: true, ...(tx.packageId ? { packageId: tx.packageId } : {}) },
+      });
+      // Record the payment against the USERNAME (subscriber), listing the payer phone for reference.
+      await prisma.payment.create({
+        data: {
+          amount: tx.amount, method: 'MPESA', source: 'AUTOMATIC',
+          reference: receipt || tx.checkoutRequestId || tx.id,
+          mpesaCode: receipt || null,
+          notes: tx.phone ? `Paid by ${tx.phone}` : null,
+          packageId: tx.packageId || null,
+          subscriberId: sub.id, tenantId: tx.tenantId,
+        } as never,
+      });
+      // Mirror the new expiry into RADIUS (no-ops if RADIUS isn't enabled).
+      try {
+        const { radiusConfigured, syncSubscriberToRadius } = await import('../utils/radius');
+        if (radiusConfigured()) await syncSubscriberToRadius(sub.id);
+      } catch (e) { console.error('renew: radius sync failed:', e instanceof Error ? e.message : e); }
+      // Legacy router push only when not on RADIUS.
+      try {
+        const { radiusConfigured } = await import('../utils/radius');
+        if (sub.routerId && !radiusConfigured()) {
+          const { enqueueCommand } = await import('../utils/commandQueue');
+          if (sub.service === 'HOTSPOT') {
+            await enqueueCommand(sub.routerId, `:foreach u in=[/ip hotspot user find name="${sub.username}"] do={ /ip hotspot user set $u disabled=no }`);
+          } else {
+            await enqueueCommand(sub.routerId, `:foreach s in=[/ppp secret find name="${sub.username}"] do={ /ppp secret set $s disabled=no }`);
+          }
+        }
+      } catch { /* best-effort */ }
+      await prisma.mpesaTransaction.update({ where: { id: tx.id }, data: { status: 'PAID', mpesaReceipt: receipt } });
+      // Notify the subscriber's registered phone (not the payer) that the account was renewed.
+      try {
+        await sendNotification({
+          tenantId: tx.tenantId, phone: sub.phone || tx.phone, category: 'RECEIPT',
+          subscriberId: sub.id, username: sub.username,
+          body: `Payment received. ${sub.username} is renewed until ${newExpiry.toLocaleDateString()}.`,
+        });
+      } catch { /* non-fatal */ }
+      return;
+    }
+  }
+
   // A hotspot client is identified by phone + device MAC together. The same phone number can
   // own multiple accounts — one per device — each with its own username. So we only reuse an
   // existing subscriber when BOTH the phone and the device MAC match; a payment from a new MAC

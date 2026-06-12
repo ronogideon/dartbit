@@ -37,7 +37,11 @@ export default function DashboardPage() {
   const { data: smsBalance } = useQuery({ queryKey: ['sms-balance'], queryFn: getSmsBalance, retry: false, refetchInterval: 60000 });
   const { data: expenseSummary } = useQuery({ queryKey: ['expense-summary'], queryFn: getExpenseSummary, retry: false });
 
-  const activeSubscribers = (subscribers as { isActive: boolean }[]).filter((s) => s.isActive).length;
+  const now = Date.now();
+  // Active = subscription not expired (no expiry set counts as active). Total = everyone, including
+  // those who haven't renewed.
+  const activeSubscribers = (subscribers as { expiresAt?: string | null }[])
+    .filter((s) => !s.expiresAt || new Date(s.expiresAt).getTime() > now).length;
   const onlineRouters = (routers as { status: string }[]).filter((r) => r.status === 'ONLINE').length;
   const totalRevenue = (payments as { amount: number }[]).reduce((sum, p) => sum + p.amount, 0);
 
