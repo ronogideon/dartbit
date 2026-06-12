@@ -11,7 +11,6 @@ import paymentRoutes from './routes/payments';
 import messageRoutes from './routes/messages';
 import notificationsRoutes from './routes/notifications';
 import { startReminderScheduler } from './utils/reminderScheduler';
-import { radiusConfigured } from './utils/radius';
 import { startSystemAlerts } from './utils/systemAlerts';
 import routerRoutes from './routes/routers';
 import onlineSessionRoutes from './routes/onlineSessions';
@@ -94,8 +93,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.28', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.28', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.29', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.29', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -126,7 +125,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.28 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.29 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -212,53 +211,81 @@ function startBillingStatusUpdater() {
 // minutes so a re-created session is caught again. The 60s sync remains the safety-net reconciler.
 function startExpiryWatcher() {
   const prisma = new PrismaClient();
-  const pushed = new Map<string, number>(); // subscriberId -> expiry epoch already pushed
+  const kicked = new Map<string, number>(); // subscriberId -> last-kick epoch (ms), to avoid hammering
   const run = async () => {
     try {
       const now = new Date();
-      // Find HOTSPOT subscribers who are NOT entitled but recently became so — query the subscriber
-      // table DIRECTLY (not via OnlineSession), because a MAC auto-login / trial device may not have
-      // an OnlineSession row yet still be passing traffic on the router. We push a removal for each,
-      // which kills the live session by MAC. Bounded to expiries in the last 6 hours + any inactive
-      // account, so the query stays small; older expiries are handled by the 60s reconciliation sweep.
-      const cutoff = new Date(now.getTime() - 6 * 60 * 60 * 1000);
+      // Subscribers who are NO LONGER entitled but STILL have a live session — these are the ones to
+      // disconnect. Covers PPPoE AND Hotspot, and runs regardless of RADIUS mode: we kick via the
+      // RELIABLE command queue (/ppp active remove, /ip hotspot active remove) rather than CoA, which
+      // proved unreliable (a router needs `/radius incoming accept=yes` for CoA, and even then PPPoE
+      // matching is finicky). The radcheck rows are also cleared so they can't immediately re-auth.
       const candidates = await prisma.subscriber.findMany({
         where: {
-          service: 'HOTSPOT',
+          service: { in: ['PPPOE', 'HOTSPOT'] },
           routerId: { not: null },
+          sessions: { some: { active: true } }, // only act on subscribers who are actually online now
           OR: [
             { isActive: false },
-            { expiresAt: { lte: now, gte: cutoff } },
-            { AND: [{ isActive: true }, { packageId: null }] },
+            { expiresAt: { lte: now } },
+            { AND: [{ service: 'HOTSPOT' }, { packageId: null }] },
           ],
         },
-        select: { id: true, isActive: true, expiresAt: true, packageId: true, router: { select: { radiusEnabled: true } } },
+        select: { id: true, username: true, service: true, macAddress: true, routerId: true, expiresAt: true, isActive: true, packageId: true },
       });
-      const toKick: { id: string; exp: number }[] = [];
+      if (candidates.length === 0) return;
+
+      const { enqueueCommand } = await import('./utils/commandQueue');
+      let radius: typeof import('./utils/radius') | null = null;
+      try { radius = await import('./utils/radius'); } catch { radius = null; }
+
       for (const sub of candidates) {
-        // RADIUS-managed routers enforce expiry centrally (Expiration check item + CoA-Disconnect),
-        // so the local MAC-kick push is redundant there — skip them.
-        if ((sub as any).router?.radiusEnabled || radiusConfigured()) continue;
         const expired = sub.expiresAt ? sub.expiresAt <= now : false;
-        const entitled = sub.isActive && !!sub.packageId && !expired;
-        if (!entitled) toKick.push({ id: sub.id, exp: sub.expiresAt ? sub.expiresAt.getTime() : 0 });
+        const entitled = sub.service === 'HOTSPOT'
+          ? (sub.isActive && !!sub.packageId && !expired)
+          : (sub.isActive && !expired);
+        if (entitled) continue;
+
+        // Don't re-kick the same subscriber more than once per 20s — gives the router and the 5s
+        // session reporter time to drop them out of the candidate set.
+        if (Date.now() - (kicked.get(sub.id) || 0) < 20_000) continue;
+        kicked.set(sub.id, Date.now());
+
+        // (a) Stop them re-authenticating. Under RADIUS, clear radcheck (guarantees rejection even if
+        // the Expiration attribute is evaluated in a different timezone on the FreeRADIUS host). In
+        // legacy mode, disable the local credential.
+        try {
+          if (radius?.radiusConfigured()) {
+            await radius.syncSubscriberToRadius(sub.id);
+          } else if (sub.service === 'PPPOE') {
+            await enqueueCommand(sub.routerId!, `:foreach s in=[/ppp secret find name="${sub.username}"] do={ /ppp secret set $s disabled=yes }`);
+          } else {
+            const { pushSubscriberToRouter } = await import('./utils/pushSubscriber');
+            await pushSubscriberToRouter(sub.id);
+          }
+        } catch (e) { console.error('expiry: deauth failed for', sub.username, e instanceof Error ? e.message : e); }
+
+        // (b) Drop the LIVE session reliably via the command queue (executes on the ~2s poll).
+        try {
+          if (sub.service === 'PPPOE') {
+            await enqueueCommand(sub.routerId!, `:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove $a }`);
+          } else {
+            const mac = (sub.macAddress || '').toUpperCase();
+            const macClause = mac ? ` or mac-address="${mac}"` : '';
+            await enqueueCommand(sub.routerId!, `:foreach a in=[/ip hotspot active find where user="${sub.username}"${macClause}] do={ /ip hotspot active remove $a }`);
+          }
+          console.log(`[expiry] kicked ${sub.username} (${sub.service})`);
+        } catch (e) { console.error('expiry: kick failed for', sub.username, e instanceof Error ? e.message : e); }
       }
-      const { pushSubscriberToRouter } = await import('./utils/pushSubscriber');
-      for (const s of toKick) {
-        // Re-push if we haven't pushed this exact expiry yet (handles expiry being changed/renewed).
-        if (pushed.get(s.id) === s.exp) continue;
-        await pushSubscriberToRouter(s.id); // builds removal cmds for an unentitled sub
-        pushed.set(s.id, s.exp);
-      }
-      // Age out the dedup map so a device that reconnects after a stale session is re-kicked, and
-      // so the map doesn't grow unbounded.
-      if (pushed.size > 5000) pushed.clear();
+
+      // Age out the dedup map so it doesn't grow unbounded.
+      if (kicked.size > 5000) { const c = Date.now(); for (const [k, v] of kicked) if (c - v > 120_000) kicked.delete(k); }
     } catch (err) {
       console.error('Expiry watcher error:', err instanceof Error ? err.message : err);
     }
   };
   run();
-  setInterval(run, 3 * 1000); // every 3 seconds — aggressive enforcement (≈5s incl. 2s router poll)
+  setInterval(run, 10 * 1000); // every 10s — disconnects an expired user within ~10–12s
 }
 
 // Periodically pull WireGuard peer handshakes from the droplet so the router cards show live VPN
