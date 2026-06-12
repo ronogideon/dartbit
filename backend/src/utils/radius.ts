@@ -88,16 +88,16 @@ function normMac(mac?: string | null): string | null {
 // rate-limit. Idempotent — clears prior rows for every identity first, then inserts current state.
 // Gated on the router being RADIUS-managed, so legacy-script routers are never touched here.
 export async function syncSubscriberToRadius(subscriberId: string): Promise<void> {
-  if (!radiusConfigured()) return;
+  if (!radiusConfigured()) { console.log(`[radius] skip ${subscriberId}: not configured (DARTBIT_RADIUS_ENABLED / SSH)`); return; }
   const sub = await prisma.subscriber.findUnique({
     where: { id: subscriberId },
     include: { package: true },
   }) as RadiusSub | null;
-  if (!sub) return;
-  if (sub.service !== 'PPPOE' && sub.service !== 'HOTSPOT') return;
+  if (!sub) { console.log(`[radius] skip ${subscriberId}: subscriber not found`); return; }
+  if (sub.service !== 'PPPOE' && sub.service !== 'HOTSPOT') { console.log(`[radius] skip ${sub.username}: service=${sub.service} not synced`); return; }
 
   const { enabled } = await routerRadius(sub.routerId);
-  if (!enabled) return; // router still on the legacy script system — leave it alone
+  if (!enabled) { console.log(`[radius] skip ${sub.username}: router ${sub.routerId || '(none)'} not radiusEnabled`); return; }
 
   const now = new Date();
   const expired = sub.expiresAt ? sub.expiresAt <= now : false;
@@ -127,7 +127,13 @@ export async function syncSubscriberToRadius(subscriberId: string): Promise<void
     stmts.push(`INSERT INTO radreply (username, attribute, op, value) VALUES ('${u}','Mikrotik-Rate-Limit',':=','${rl}');`);
   }
 
-  await radiusPsql(stmts.join(' '));
+  try {
+    await radiusPsql(stmts.join(' '));
+    console.log(`[radius] ${entitled ? 'wrote' : 'cleared'} ${sub.username} (${identities.map(i => i.name).join(', ')})${sub.expiresAt && entitled ? ` exp=${radiusExpiry(sub.expiresAt)}` : ''}`);
+  } catch (e) {
+    console.error(`[radius] psql FAILED for ${sub.username}:`, e instanceof Error ? e.message : e);
+    throw e;
+  }
 
   // If no longer entitled, kick any live session immediately via CoA-Disconnect (every identity).
   if (!entitled && sub.routerId) {
