@@ -256,8 +256,16 @@ function voucherRows(code: string, seconds: number, upKbps?: number | null, down
 // generation-time sync never ran) and is clean, right before the captive portal logs the device in.
 // `remainingSeconds` caps the session; `expiresAt` blocks re-use after the validity window.
 export async function redeemVoucherInRadius(code: string, remainingSeconds: number, expiresAt: Date | null, upKbps?: number | null, downKbps?: number | null): Promise<void> {
-  if (!radiusConfigured()) return;
-  await radiusPsql(voucherRows(code, remainingSeconds, upKbps, downKbps, expiresAt).join(' '));
+  if (!radiusConfigured()) { console.log(`[voucher-radius] skip ${code}: RADIUS not configured (DARTBIT_RADIUS_ENABLED / SSH)`); return; }
+  try {
+    await radiusPsql(voucherRows(code, remainingSeconds, upKbps, downKbps, expiresAt).join(' '));
+    // Read back the row count so the log proves the write actually landed in radcheck.
+    const n = (await radiusPsql(`SELECT count(*) FROM radcheck WHERE username='${sqlq(code)}';`)).trim();
+    console.log(`[voucher-radius] wrote ${code} (radcheck rows now: ${n}, timeout=${Math.max(60, Math.floor(remainingSeconds))}s${expiresAt ? `, exp=${radiusExpiry(expiresAt)}` : ''})`);
+  } catch (e) {
+    console.error(`[voucher-radius] FAILED for ${code}:`, e instanceof Error ? e.message : e);
+    throw e;
+  }
 }
 
 // Write one voucher into RADIUS (on generate/edit). Gated on the router being RADIUS-managed.

@@ -69,11 +69,9 @@ router.post('/redeem', async (req: Request, res: Response) => {
         // Make sure the voucher is in RADIUS with its REMAINING time so a reconnecting device can
         // resume (the row may have aged out or never been written).
         try {
-          const { radiusConfigured, redeemVoucherInRadius } = await import('../utils/radius');
-          if (radiusConfigured()) {
-            const remaining = Math.max(60, Math.floor((voucher.expiresAt.getTime() - now.getTime()) / 1000));
-            await redeemVoucherInRadius(voucher.code, remaining, voucher.expiresAt, voucher.package?.speedUpKbps, voucher.package?.speedDownKbps);
-          }
+          const { redeemVoucherInRadius } = await import('../utils/radius');
+          const remaining = Math.max(60, Math.floor((voucher.expiresAt.getTime() - now.getTime()) / 1000));
+          await redeemVoucherInRadius(voucher.code, remaining, voucher.expiresAt, voucher.package?.speedUpKbps, voucher.package?.speedDownKbps);
         } catch (e) { console.error('voucher resume: radius write failed:', e instanceof Error ? e.message : e); }
         return res.json({
           success: true,
@@ -111,10 +109,8 @@ router.post('/redeem', async (req: Request, res: Response) => {
     // row exists and is clean even if the generation-time sync never ran. No-ops if RADIUS is off
     // (legacy routers already have the voucher as a local hotspot user from generation time).
     try {
-      const { radiusConfigured, redeemVoucherInRadius } = await import('../utils/radius');
-      if (radiusConfigured()) {
-        await redeemVoucherInRadius(cleanCode, voucher.durationMinutes * 60, sessionExpiresAt, voucher.package?.speedUpKbps, voucher.package?.speedDownKbps);
-      }
+      const { redeemVoucherInRadius } = await import('../utils/radius');
+      await redeemVoucherInRadius(cleanCode, voucher.durationMinutes * 60, sessionExpiresAt, voucher.package?.speedUpKbps, voucher.package?.speedDownKbps);
     } catch (e) {
       console.error('voucher redeem: radius write failed:', e instanceof Error ? e.message : e);
     }
