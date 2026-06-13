@@ -93,8 +93,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.36', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.36', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.37', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.37', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -125,14 +125,17 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.36 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.37 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
   startExpiryWatcher();
   startWgStatusRefresher();
   startAutoDeleteScheduler();
-  startRadiusSessionSync();
+  // NOTE: the live "who's online + speed" view is owned by the router-side 3s dartbit-sessions
+  // reporter (single writer of OnlineSession). RADIUS still does accounting (radacct) in the
+  // background for billing/usage; we intentionally do NOT mirror radacct into OnlineSession here,
+  // to avoid two writers racing on the same rows.
   startReminderScheduler();
   startSystemAlerts();
 });
