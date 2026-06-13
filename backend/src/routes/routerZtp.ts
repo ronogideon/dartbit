@@ -390,11 +390,27 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // system on a different PPPoE service) without conflict. src-address is the router's own VPN IP
     // so packets traverse the tunnel. Enables incoming CoA so the backend can disconnect on expiry,
     // and turns on accounting for live session/usage data. Idempotent.
+    //
+    // Gate on the ENV MASTER switch (radiusConfigured()), NOT the per-router radiusEnabled flag.
+    // RADIUS is all-or-nothing system-wide; a router hand-configured before the flag existed would
+    // otherwise be skipped here, so a reprovision would strip its RADIUS entries (section 0 cleanup)
+    // and never restore them — exactly the "no radius server found" regression. With the env gate,
+    // every (re)provision re-writes the full Dartbit RADIUS setup.
+    let radiusActive = false;
+    try { radiusActive = (await import('../utils/radius')).radiusConfigured(); } catch { radiusActive = false; }
     try {
-      const fresh = await prisma.mikrotikRouter.findUnique({ where: { id: r.id }, select: { radiusEnabled: true, radiusSecret: true, wgIp: true } as never }) as never as { radiusEnabled?: boolean; radiusSecret?: string; wgIp?: string };
+      const fresh = await prisma.mikrotikRouter.findUnique({ where: { id: r.id }, select: { id: true, radiusSecret: true, wgIp: true } as never }) as never as { id: string; radiusSecret?: string | null; wgIp?: string | null };
       const radiusServerIp = (process.env.DARTBIT_WG_SUBNET || '10.8.0.0/24').split('.').slice(0, 3).join('.') + '.1'; // e.g. 10.8.0.1
-      if (fresh?.radiusEnabled && fresh.radiusSecret && fresh.wgIp) {
-        const sec = fresh.radiusSecret.replace(/[\\"]/g, '');
+      if (radiusActive && fresh?.wgIp) {
+        // Ensure a RADIUS secret exists. If the router never had one (hand-configured, or freshly
+        // provisioned), generate and persist it now so the router /radius entries and the droplet
+        // clients.conf are written from the SAME value and can't drift.
+        let secret = fresh.radiusSecret || '';
+        if (!secret) {
+          secret = (await import('crypto')).randomBytes(16).toString('hex');
+          await prisma.mikrotikRouter.update({ where: { id: fresh.id }, data: { radiusSecret: secret, radiusEnabled: true } as never });
+        }
+        const sec = secret.replace(/[\\"]/g, '');
         add('# 8e. Dartbit RADIUS (PPPoE + Hotspot auth + accounting) — called-id scoped for coexistence');
         // Remove any prior Dartbit RADIUS entries so re-provisioning is clean (match by comment).
         add(`:foreach rr in=[/radius find where comment~"Dartbit RADIUS"] do={ /radius remove $rr }`);
@@ -415,7 +431,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
         // secret — so the client, both /radius entries, and clients.conf can never drift apart.
         try {
           const { registerRadiusClient } = await import('../utils/radius');
-          await registerRadiusClient(fresh.wgIp, fresh.radiusSecret, r.name || 'router');
+          await registerRadiusClient(fresh.wgIp, secret, r.name || 'router');
         } catch (e3) {
           add(`# (FreeRADIUS client registration skipped: ${e3 instanceof Error ? e3.message.replace(/[\r\n]/g, ' ') : 'error'})`);
         }
@@ -427,10 +443,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
 
     // Under RADIUS, accounting + session data come from FreeRADIUS (radacct), so the per-router
     // polling reporters that duplicate that are pure overhead on a small router. We skip installing
-    // dartbit-sync (a no-op under RADIUS anyway) and dartbit-sessions (replaced by the backend's
-    // radacct poller), which removes ~24 fetches/min and frees the command channel.
-    let radiusActive = false;
-    try { radiusActive = (await import('../utils/radius')).radiusConfigured(); } catch { radiusActive = false; }
+    // dartbit-sync (a no-op under RADIUS anyway). radiusActive is computed above (RADIUS section).
 
     add('# 9. Heartbeat');
     add(`:foreach s in=[/system scheduler find comment="Dartbit heartbeat"] do={ /system scheduler remove $s }`);
