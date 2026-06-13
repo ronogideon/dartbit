@@ -83,6 +83,17 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(':log info "Dartbit: Starting provisioning"');
     add('');
 
+    // 0. Cleanup — remove Dartbit artifacts from any PRIOR provisioning so a (re)provision starts
+    // clean and can't leave stale half-state. Scoped strictly to Dartbit's own names/comments, so a
+    // coexisting system on the same router (e.g. centipid) is never touched. The sections below
+    // re-create everything Dartbit needs.
+    add('# 0. Cleanup prior Dartbit artifacts (idempotent reprovision)');
+    add(`:foreach s in=[/system scheduler find where name~"dartbit"] do={ /system scheduler remove $s }`);
+    add(`:foreach s in=[/system scheduler find where comment~"Dartbit"] do={ /system scheduler remove $s }`);
+    add(`:foreach s in=[/system script find where name~"dartbit"] do={ /system script remove $s }`);
+    add(`:foreach rr in=[/radius find where comment~"Dartbit RADIUS"] do={ /radius remove $rr }`);
+    add('');
+
     // 1. Bridge
     add('# 1. Bridge');
     add(`:if ([:len [/interface bridge find name="${bridge}"]] = 0) do={ /interface bridge add name=${bridge} comment="Dartbit LAN" }`);
@@ -378,16 +389,30 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
       const radiusServerIp = (process.env.DARTBIT_WG_SUBNET || '10.8.0.0/24').split('.').slice(0, 3).join('.') + '.1'; // e.g. 10.8.0.1
       if (fresh?.radiusEnabled && fresh.radiusSecret && fresh.wgIp) {
         const sec = fresh.radiusSecret.replace(/[\\"]/g, '');
-        add('# 8e. Dartbit RADIUS (PPPoE auth + accounting) — called-id scoped for coexistence');
-        // Remove any prior Dartbit RADIUS entry so re-provisioning is clean (match by comment).
-        add(`:foreach rr in=[/radius find comment="Dartbit RADIUS"] do={ /radius remove $rr }`);
-        // Add the Dartbit RADIUS server, scoped to the "dartbit" PPPoE service via called-id.
+        add('# 8e. Dartbit RADIUS (PPPoE + Hotspot auth + accounting) — called-id scoped for coexistence');
+        // Remove any prior Dartbit RADIUS entries so re-provisioning is clean (match by comment).
+        add(`:foreach rr in=[/radius find where comment~"Dartbit RADIUS"] do={ /radius remove $rr }`);
+        // PPPoE entry: the router sends called-id=dartbit for PPP logins.
         add(`/radius add service=ppp address=${radiusServerIp} secret="${sec}" src-address=${fresh.wgIp} called-id=dartbit timeout=3s comment="Dartbit RADIUS"`);
+        // Hotspot entry: MikroTik sends the hotspot SERVER NAME (dartbit-hotspot) as called-id, so a
+        // SEPARATE entry is required or hotspot logins get "no radius server found". Same secret/IP.
+        add(`/radius add service=hotspot address=${radiusServerIp} secret="${sec}" src-address=${fresh.wgIp} called-id=dartbit-hotspot timeout=3s comment="Dartbit RADIUS Hotspot"`);
         // Accept incoming CoA/Disconnect (so the backend can kick expired sessions instantly).
         add(`/radius incoming set accept=yes port=3799`);
         // Enable RADIUS auth + accounting for PPP.
         add(`/ppp aaa set use-radius=yes accounting=yes interim-update=5m`);
+        // Switch the Dartbit hotspot profile (only) to RADIUS auth with the login methods the portal
+        // needs. Never touches other profiles (e.g. a coexisting centipid hotspot).
+        add(`:foreach hp in=[/ip hotspot profile find where name="hsprof-dartbit"] do={ /ip hotspot profile set $hp use-radius=yes radius-accounting=yes radius-interim-update=5m login-by=mac,cookie,http-chap,http-pap }`);
         add('');
+        // Register/refresh this router as a FreeRADIUS client on the droplet, from the SAME wgIp +
+        // secret — so the client, both /radius entries, and clients.conf can never drift apart.
+        try {
+          const { registerRadiusClient } = await import('../utils/radius');
+          await registerRadiusClient(fresh.wgIp, fresh.radiusSecret, r.name || 'router');
+        } catch (e3) {
+          add(`# (FreeRADIUS client registration skipped: ${e3 instanceof Error ? e3.message.replace(/[\r\n]/g, ' ') : 'error'})`);
+        }
       }
     } catch (e) {
       add(`# (Dartbit RADIUS auto-config skipped: ${e instanceof Error ? e.message.replace(/[\r\n]/g, ' ') : 'error'})`);

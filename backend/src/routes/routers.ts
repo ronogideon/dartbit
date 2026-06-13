@@ -406,22 +406,26 @@ router.post('/:id/radius', async (req: AuthRequest, res: Response) => {
       if (enabled && r?.wgIp && r?.radiusSecret) {
         await registerRadiusClient(r.wgIp, r.radiusSecret, r.name || 'router');
 
-        // Also push the ROUTER-SIDE RADIUS config so the full path is automatic (no manual .rsc):
-        // add the /radius server entry pointing at the droplet over the VPN, enable incoming CoA,
-        // and switch PPP + hotspot auth to RADIUS. Scoped by called-id=dartbit so it coexists with
-        // any other RADIUS server already on the router. src-address = the router's own VPN IP so
-        // packets egress the WireGuard interface.
+        // Also push the ROUTER-SIDE RADIUS config so the full path is automatic (no manual .rsc).
+        // TWO entries are required because MikroTik sets the request's called-id to the SERVICE name:
+        // PPPoE sends called-id=dartbit, but the hotspot sends its server name (dartbit-hotspot). A
+        // single entry can only carry one called-id, so hotspot logins would find "no radius server".
+        // Both entries share the SAME secret (= the one we register in clients.conf) and src-address
+        // = the router's real VPN IP, so packets egress WireGuard and FreeRADIUS recognises the client.
         try {
           const { wgEnv } = await import('../utils/wireguard');
           const serverIp = `${(wgEnv.subnet || '10.8.0.0/24').split('/')[0].split('.').slice(0, 3).join('.')}.1`;
           const sec = r.radiusSecret.replace(/"/g, '');
           const cmds = [
-            `:foreach x in=[/radius find where comment="Dartbit RADIUS"] do={ /radius remove $x }`,
-            `/radius add service=ppp,hotspot address=${serverIp} secret="${sec}" called-id=dartbit src-address=${r.wgIp} timeout=3s comment="Dartbit RADIUS"`,
+            // Clean any prior Dartbit entries first so re-running can't duplicate or leave stale ones.
+            `:foreach x in=[/radius find where comment~"Dartbit RADIUS"] do={ /radius remove $x }`,
+            `/radius add service=ppp address=${serverIp} secret="${sec}" called-id=dartbit src-address=${r.wgIp} timeout=3s comment="Dartbit RADIUS"`,
+            `/radius add service=hotspot address=${serverIp} secret="${sec}" called-id=dartbit-hotspot src-address=${r.wgIp} timeout=3s comment="Dartbit RADIUS Hotspot"`,
             `/radius incoming set accept=yes port=3799`,
             `/ppp aaa set use-radius=yes`,
-            `:foreach p in=[/ip hotspot profile find] do={ /ip hotspot profile set $p use-radius=yes login-by=mac,cookie,http-chap,http-pap radius-accounting=yes radius-interim-update=5m }`,
-            `:log info "Dartbit: RADIUS configured (server ${serverIp}, src ${r.wgIp})"`,
+            // Scope to the Dartbit hotspot profile ONLY — never touch centipid/default profiles.
+            `:foreach p in=[/ip hotspot profile find where name="hsprof-dartbit"] do={ /ip hotspot profile set $p use-radius=yes login-by=mac,cookie,http-chap,http-pap radius-accounting=yes radius-interim-update=5m }`,
+            `:log info "Dartbit: RADIUS configured (server ${serverIp}, src ${r.wgIp}, ppp+hotspot)"`,
           ].join('\n');
           const { enqueueCommand } = await import('../utils/commandQueue');
           await enqueueCommand(router_.id, cmds);
@@ -435,8 +439,8 @@ router.post('/:id/radius', async (req: AuthRequest, res: Response) => {
           const { enqueueCommand } = await import('../utils/commandQueue');
           await enqueueCommand(router_.id, [
             `/ppp aaa set use-radius=no`,
-            `:foreach p in=[/ip hotspot profile find] do={ /ip hotspot profile set $p use-radius=no }`,
-            `:foreach x in=[/radius find where comment="Dartbit RADIUS"] do={ /radius remove $x }`,
+            `:foreach p in=[/ip hotspot profile find where name="hsprof-dartbit"] do={ /ip hotspot profile set $p use-radius=no }`,
+            `:foreach x in=[/radius find where comment~"Dartbit RADIUS"] do={ /radius remove $x }`,
             `:log info "Dartbit: RADIUS disabled, reverted to local auth"`,
           ].join('\n'));
         } catch { /* best-effort */ }

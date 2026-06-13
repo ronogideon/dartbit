@@ -230,8 +230,9 @@ export async function bulkSyncPppoeToRadius(opts: { tenantId?: string; routerId?
 // it's actually online. MPESA-tagged vouchers (receipt codes) are skipped here — those devices are
 // already authenticated via the subscriber's MAC/D-name radcheck rows.
 
-function voucherRows(code: string, seconds: number, upKbps?: number | null, downKbps?: number | null, expiresAt?: Date | null): string[] {
-  const u = sqlq(code);
+function voucherRows(name: string, password: string, seconds: number, upKbps?: number | null, downKbps?: number | null, expiresAt?: Date | null): string[] {
+  const u = sqlq(name);
+  const pw = sqlq(password);
   const rl = sqlq(rateLimit(upKbps, downKbps));
   // IMPORTANT: only use attributes that work with a stock FreeRADIUS install. The earlier
   // `Max-All-Session` (needs the dartbit_uptime sqlcounter) and `Simultaneous-Use` (needs the
@@ -242,7 +243,7 @@ function voucherRows(code: string, seconds: number, upKbps?: number | null, down
   const rows = [
     `DELETE FROM radcheck WHERE username='${u}';`,
     `DELETE FROM radreply WHERE username='${u}';`,
-    `INSERT INTO radcheck (username, attribute, op, value) VALUES ('${u}','Cleartext-Password',':=','${u}');`,
+    `INSERT INTO radcheck (username, attribute, op, value) VALUES ('${u}','Cleartext-Password',':=','${pw}');`,
     `INSERT INTO radreply (username, attribute, op, value) VALUES ('${u}','Mikrotik-Rate-Limit',':=','${rl}');`,
     `INSERT INTO radreply (username, attribute, op, value) VALUES ('${u}','Session-Timeout',':=','${Math.max(60, Math.floor(seconds))}');`,
   ];
@@ -255,13 +256,18 @@ function voucherRows(code: string, seconds: number, upKbps?: number | null, down
 // Write a voucher into RADIUS at REDEMPTION time — guarantees the radcheck row exists (even if the
 // generation-time sync never ran) and is clean, right before the captive portal logs the device in.
 // `remainingSeconds` caps the session; `expiresAt` blocks re-use after the validity window.
-export async function redeemVoucherInRadius(code: string, remainingSeconds: number, expiresAt: Date | null, upKbps?: number | null, downKbps?: number | null): Promise<void> {
+export async function redeemVoucherInRadius(code: string, remainingSeconds: number, expiresAt: Date | null, upKbps?: number | null, downKbps?: number | null, mac?: string | null): Promise<void> {
   if (!radiusConfigured()) { console.log(`[voucher-radius] skip ${code}: RADIUS not configured (DARTBIT_RADIUS_ENABLED / SSH)`); return; }
+  const stmts = voucherRows(code, code, remainingSeconds, upKbps, downKbps, expiresAt);
+  // Also key the voucher to the redeeming device's MAC, so when the device drops and reconnects the
+  // hotspot's MAC auto-login (mac-as-username) authenticates it automatically — no need to re-enter
+  // the code. This mirrors how subscriber/package logins get a MAC identity row.
+  const m = normMac(mac);
+  if (m) stmts.push(...voucherRows(m, m, remainingSeconds, upKbps, downKbps, expiresAt));
   try {
-    await radiusPsql(voucherRows(code, remainingSeconds, upKbps, downKbps, expiresAt).join(' '));
-    // Read back the row count so the log proves the write actually landed in radcheck.
-    const n = (await radiusPsql(`SELECT count(*) FROM radcheck WHERE username='${sqlq(code)}';`)).trim();
-    console.log(`[voucher-radius] wrote ${code} (radcheck rows now: ${n}, timeout=${Math.max(60, Math.floor(remainingSeconds))}s${expiresAt ? `, exp=${radiusExpiry(expiresAt)}` : ''})`);
+    await radiusPsql(stmts.join(' '));
+    const n = (await radiusPsql(`SELECT count(*) FROM radcheck WHERE username IN ('${sqlq(code)}'${m ? `,'${sqlq(m)}'` : ''});`)).trim();
+    console.log(`[voucher-radius] wrote ${code}${m ? ` + mac ${m}` : ''} (radcheck rows: ${n}, timeout=${Math.max(60, Math.floor(remainingSeconds))}s${expiresAt ? `, exp=${radiusExpiry(expiresAt)}` : ''})`);
   } catch (e) {
     console.error(`[voucher-radius] FAILED for ${code}:`, e instanceof Error ? e.message : e);
     throw e;
@@ -274,7 +280,7 @@ export async function syncVoucherToRadius(voucherId: string): Promise<void> {
   const v = await prisma.voucher.findUnique({ where: { id: voucherId }, include: { package: true } });
   if (!v || v.batchId === 'MPESA') return;
   const seconds = Math.max(60, v.durationMinutes * 60);
-  await radiusPsql(voucherRows(v.code, seconds, v.package?.speedUpKbps, v.package?.speedDownKbps).join(' '));
+  await radiusPsql(voucherRows(v.code, v.code, seconds, v.package?.speedUpKbps, v.package?.speedDownKbps).join(' '));
 }
 
 // Remove a voucher from RADIUS (on delete).
@@ -305,7 +311,7 @@ export async function bulkSyncVouchersToRadius(opts: { tenantId?: string; router
   for (const v of vouchers) {
     if (v.batchId === 'MPESA') { skipped++; continue; }
     const seconds = Math.max(60, v.durationMinutes * 60);
-    stmts.push(...voucherRows(v.code, seconds, v.package?.speedUpKbps, v.package?.speedDownKbps));
+    stmts.push(...voucherRows(v.code, v.code, seconds, v.package?.speedUpKbps, v.package?.speedDownKbps));
     synced++;
   }
 

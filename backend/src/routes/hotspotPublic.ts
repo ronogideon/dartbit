@@ -71,7 +71,7 @@ router.post('/redeem', async (req: Request, res: Response) => {
         try {
           const { redeemVoucherInRadius } = await import('../utils/radius');
           const remaining = Math.max(60, Math.floor((voucher.expiresAt.getTime() - now.getTime()) / 1000));
-          await redeemVoucherInRadius(voucher.code, remaining, voucher.expiresAt, voucher.package?.speedUpKbps, voucher.package?.speedDownKbps);
+          await redeemVoucherInRadius(voucher.code, remaining, voucher.expiresAt, voucher.package?.speedUpKbps, voucher.package?.speedDownKbps, reqMac || voucher.usedByMac);
         } catch (e) { console.error('voucher resume: radius write failed:', e instanceof Error ? e.message : e); }
         return res.json({
           success: true,
@@ -110,7 +110,7 @@ router.post('/redeem', async (req: Request, res: Response) => {
     // (legacy routers already have the voucher as a local hotspot user from generation time).
     try {
       const { redeemVoucherInRadius } = await import('../utils/radius');
-      await redeemVoucherInRadius(cleanCode, voucher.durationMinutes * 60, sessionExpiresAt, voucher.package?.speedUpKbps, voucher.package?.speedDownKbps);
+      await redeemVoucherInRadius(cleanCode, voucher.durationMinutes * 60, sessionExpiresAt, voucher.package?.speedUpKbps, voucher.package?.speedDownKbps, usedMac);
     } catch (e) {
       console.error('voucher redeem: radius write failed:', e instanceof Error ? e.message : e);
     }
