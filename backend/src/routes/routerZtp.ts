@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { promises as dns } from 'dns';
 import prisma from '../utils/prisma';
 import { sendError } from '../utils/response';
-import { enqueueCommand, dequeueAll } from '../utils/commandQueue';
+import { enqueueCommand, dequeueAll, clearQueue } from '../utils/commandQueue';
 
 const router = Router();
 
@@ -1298,6 +1298,20 @@ router.get('/queue-status', async (req: Request, res: Response) => {
     });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'failed', hint: 'If this errors, the RouterCommand table may not exist — check DB patch.' });
+  }
+});
+
+// GET /router/clear-queue?apiKey=xxx — drain all pending commands for this router. Use to recover
+// from a poisoned queue (e.g. several stacked reprovisions). Safe: only clears UNCONSUMED rows.
+router.get('/clear-queue', async (req: Request, res: Response) => {
+  try {
+    const apiKey = String(req.query.apiKey || '');
+    const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey } });
+    if (!r) return res.status(404).json({ error: 'Router not found' });
+    const cleared = await clearQueue(r.id);
+    res.json({ router: r.name, cleared });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'failed' });
   }
 });
 

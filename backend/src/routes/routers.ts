@@ -202,8 +202,14 @@ router.post('/:id/reprovision', async (req: AuthRequest, res: Response) => {
     const ztpScript = await generateZtpScript(r.apiKey, { skipCmdScript: true });
 
     const { enqueueCommand } = await import('../utils/commandQueue');
+    // Replace any previously-queued-but-unconsumed ZTP for this router so tapping reprovision
+    // multiple times can't stack 19KB scripts into one oversized, un-importable blob. We match the
+    // ZTP by its unique start marker, leaving small one-off commands (e.g. subscriber enables) intact.
+    const purged = await prisma.routerCommand.deleteMany({
+      where: { routerId: r.id, consumed: false, command: { contains: 'Dartbit: Starting provisioning' } },
+    });
     const cmdId = await enqueueCommand(r.id, ztpScript);
-    console.log(`[reprovision] queued ZTP (${ztpScript.length} chars) for router ${r.id} (${r.name}), command id=${cmdId}`);
+    console.log(`[reprovision] queued ZTP (${ztpScript.length} chars) for router ${r.id} (${r.name}), command id=${cmdId}, purged ${purged.count} stale`);
 
     sendSuccess(res, { queued: true, commandId: cmdId, message: 'Reprovision queued — the router will apply it within ~10 seconds.' });
   } catch (err) {
