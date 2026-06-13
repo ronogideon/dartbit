@@ -471,8 +471,8 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     if (!skipCmdScript) {
       add(`:foreach s in=[/system scheduler find comment="Dartbit cmd"] do={ /system scheduler remove $s }`);
       add(`:foreach s in=[/system script find name="dartbit-cmd"] do={ /system script remove $s }`);
-      add(`/system script add name=dartbit-cmd policy=read,write,test,reboot source={/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ /import file-name=dartbit-cmd.rsc; :delay 1s; /file remove [find name="dartbit-cmd.rsc"] }}`);
-      add(`/system scheduler add name=dartbit-cmd interval=2s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`);
+      add(`/system script add name=dartbit-cmd policy=read,write,test,reboot source={:do {/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ /import file-name=dartbit-cmd.rsc; :delay 1s; :foreach f in=[/file find name="dartbit-cmd.rsc"] do={ /file remove $f } }} on-error={}}`);
+      add(`/system scheduler add name=dartbit-cmd interval=5s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`);
     } else {
       // Reprovision path: we can't recreate dartbit-cmd inline (it's the script running this
       // import — that interrupts it). But the poller must be updated when the backend URL
@@ -516,8 +516,8 @@ router.get('/cmd-script', async (req: Request, res: Response) => {
       ':log info "Dartbit: updating cmd poller"',
       `:foreach s in=[/system scheduler find comment="Dartbit cmd"] do={ /system scheduler remove $s }`,
       `:foreach s in=[/system script find name="dartbit-cmd"] do={ /system script remove $s }`,
-      `/system script add name=dartbit-cmd policy=read,write,test,reboot source={/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ /import file-name=dartbit-cmd.rsc; :delay 1s; /file remove [find name="dartbit-cmd.rsc"] }}`,
-      `/system scheduler add name=dartbit-cmd interval=2s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`,
+      `/system script add name=dartbit-cmd policy=read,write,test,reboot source={:do {/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ /import file-name=dartbit-cmd.rsc; :delay 1s; :foreach f in=[/file find name="dartbit-cmd.rsc"] do={ /file remove $f } }} on-error={}}`,
+      `/system scheduler add name=dartbit-cmd interval=5s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`,
       ':log info "Dartbit: cmd poller now on current backend"',
     ];
     res.type('text/plain').send(lines.join('\n'));
