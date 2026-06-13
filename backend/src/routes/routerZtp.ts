@@ -806,7 +806,7 @@ router.all('/sessions', async (req: Request, res: Response) => {
       for (const s of subs) {
         subByUsername[s.username] = { id: s.id, service: s.service };
         if (s.macAddress) subByMac[s.macAddress.toUpperCase()] = { id: s.id, service: s.service, username: s.username };
-        if (s.service === 'PPPOE' && s.isActive && s.expiresAt && s.expiresAt <= now) hiddenSubIds.add(s.id);
+        if (s.service === 'PPPOE' && s.isActive && s.expiresAt && s.expiresAt.getTime() <= now) hiddenSubIds.add(s.id);
       }
 
       // Recognise a username that is actually a MAC address (from the MAC auto-login user). We
