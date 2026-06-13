@@ -435,7 +435,7 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   if (radiusManaged && subscriberId) {
     try {
       const { radiusConfigured, syncSubscriberToRadius } = await import('../utils/radius');
-      if (radiusConfigured()) await syncSubscriberToRadius(subscriberId);
+      if (radiusConfigured()) await syncSubscriberToRadius(subscriberId, { kickToApply: true });
     } catch (e) {
       console.error('radius hotspot sync error:', e instanceof Error ? e.message : e);
     }

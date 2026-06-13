@@ -795,13 +795,18 @@ router.all('/sessions', async (req: Request, res: Response) => {
             macVariants.length ? { macAddress: { in: macVariants } } : undefined,
           ].filter(Boolean) as object[],
         },
-        select: { id: true, username: true, service: true, macAddress: true },
+        select: { id: true, username: true, service: true, macAddress: true, expiresAt: true, isActive: true },
       });
       const subByUsername: Record<string, { id: string; service: string }> = {};
       const subByMac: Record<string, { id: string; service: string; username: string }> = {};
+      // Subscribers that are connected but should NOT show as online: expired PPPoE sitting in the
+      // walled garden (still connected, but they've effectively "run out"). The dashboard treats them
+      // as offline.
+      const hiddenSubIds = new Set<string>();
       for (const s of subs) {
         subByUsername[s.username] = { id: s.id, service: s.service };
         if (s.macAddress) subByMac[s.macAddress.toUpperCase()] = { id: s.id, service: s.service, username: s.username };
+        if (s.service === 'PPPOE' && s.isActive && s.expiresAt && s.expiresAt <= now) hiddenSubIds.add(s.id);
       }
 
       // Recognise a username that is actually a MAC address (from the MAC auto-login user). We
@@ -835,7 +840,10 @@ router.all('/sessions', async (req: Request, res: Response) => {
       // and is NOT an OnlineSession column. Leaving it in made Prisma throw "Unknown argument
       // service" → 500 on every sessions report (the dartbit-sessions scheduler errors in the
       // router log). macAddress IS a valid column, so we keep it.
-      const onlineRows = sessionsWithIds.map(({ service: _svc, ...rest }) => rest);
+      // Hide walled-garden (expired PPPoE) sessions from the active list — connected but not "online".
+      const onlineRows = sessionsWithIds
+        .filter(s => { const sid = (s as { subscriberId?: string }).subscriberId; return !(sid && hiddenSubIds.has(sid)); })
+        .map(({ service: _svc, ...rest }) => rest);
 
       if (onlineRows.length > 0) {
         await prisma.onlineSession.createMany({ data: onlineRows });

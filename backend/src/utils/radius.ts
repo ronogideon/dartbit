@@ -87,7 +87,7 @@ function normMac(mac?: string | null): string | null {
 // (username=password=MAC, for silent mac-auth auto-login). Each identity carries the same expiry +
 // rate-limit. Idempotent — clears prior rows for every identity first, then inserts current state.
 // Gated on the router being RADIUS-managed, so legacy-script routers are never touched here.
-export async function syncSubscriberToRadius(subscriberId: string): Promise<void> {
+export async function syncSubscriberToRadius(subscriberId: string, opts?: { kickToApply?: boolean }): Promise<void> {
   if (!radiusConfigured()) { console.log(`[radius] skip ${subscriberId}: not configured (DARTBIT_RADIUS_ENABLED / SSH)`); return; }
   const sub = await prisma.subscriber.findUnique({
     where: { id: subscriberId },
@@ -115,32 +115,49 @@ export async function syncSubscriberToRadius(subscriberId: string): Promise<void
   const mac = sub.service === 'HOTSPOT' ? normMac(sub.macAddress) : null;
   if (mac) identities.push({ name: mac, password: mac });
 
+  // Expired PPPoE that's still admin-enabled goes to the WALLED GARDEN instead of being rejected:
+  // we Access-Accept it (so the CPE connects ONCE and stays up — no reject→redial loop that burns
+  // CPU), but with no Expiration, a throttled rate, and Mikrotik-Address-List=dartbit-expired so the
+  // router's existing firewall only lets it reach the portal + M-Pesa. Admin-disabled or expired
+  // HOTSPOT still gets fully cleared (rejected).
+  const walledGarden = sub.service === 'PPPOE' && sub.isActive && expired;
+
   const stmts: string[] = [];
   for (const id of identities) {
     const u = sqlq(id.name);
     stmts.push(`DELETE FROM radcheck WHERE username='${u}';`);
     stmts.push(`DELETE FROM radreply WHERE username='${u}';`);
-    if (!entitled) continue;
     const pwd = sqlq(id.password);
-    stmts.push(`INSERT INTO radcheck (username, attribute, op, value) VALUES ('${u}','Cleartext-Password',':=','${pwd}');`);
-    if (sub.expiresAt) {
-      const exp = sqlq(radiusExpiry(sub.expiresAt));
-      stmts.push(`INSERT INTO radcheck (username, attribute, op, value) VALUES ('${u}','Expiration',':=','${exp}');`);
+    if (entitled) {
+      stmts.push(`INSERT INTO radcheck (username, attribute, op, value) VALUES ('${u}','Cleartext-Password',':=','${pwd}');`);
+      if (sub.expiresAt) {
+        const exp = sqlq(radiusExpiry(sub.expiresAt));
+        stmts.push(`INSERT INTO radcheck (username, attribute, op, value) VALUES ('${u}','Expiration',':=','${exp}');`);
+      }
+      const rl = sqlq(rateLimit(sub.package?.speedUpKbps, sub.package?.speedDownKbps));
+      stmts.push(`INSERT INTO radreply (username, attribute, op, value) VALUES ('${u}','Mikrotik-Rate-Limit',':=','${rl}');`);
+    } else if (walledGarden) {
+      // Accept (no Expiration) but restrict: low rate + dartbit-expired address-list.
+      stmts.push(`INSERT INTO radcheck (username, attribute, op, value) VALUES ('${u}','Cleartext-Password',':=','${pwd}');`);
+      stmts.push(`INSERT INTO radreply (username, attribute, op, value) VALUES ('${u}','Mikrotik-Rate-Limit',':=','512k/512k');`);
+      stmts.push(`INSERT INTO radreply (username, attribute, op, value) VALUES ('${u}','Mikrotik-Address-List',':=','dartbit-expired');`);
     }
-    const rl = sqlq(rateLimit(sub.package?.speedUpKbps, sub.package?.speedDownKbps));
-    stmts.push(`INSERT INTO radreply (username, attribute, op, value) VALUES ('${u}','Mikrotik-Rate-Limit',':=','${rl}');`);
+    // else: cleared (rejected) — admin-disabled, or expired hotspot.
   }
 
   try {
     await radiusPsql(stmts.join(' '));
-    console.log(`[radius] ${entitled ? 'wrote' : 'cleared'} ${sub.username} (${identities.map(i => i.name).join(', ')})${sub.expiresAt && entitled ? ` exp=${radiusExpiry(sub.expiresAt)}` : ''}`);
+    const state = entitled ? 'wrote' : (walledGarden ? 'walled-garden' : 'cleared');
+    console.log(`[radius] ${state} ${sub.username} (${identities.map(i => i.name).join(', ')})${sub.expiresAt && entitled ? ` exp=${radiusExpiry(sub.expiresAt)}` : ''}`);
   } catch (e) {
     console.error(`[radius] psql FAILED for ${sub.username}:`, e instanceof Error ? e.message : e);
     throw e;
   }
 
-  // If no longer entitled, kick any live session immediately via CoA-Disconnect (every identity).
-  if (!entitled && sub.routerId) {
+  // Kick any live session via CoA-Disconnect so the NEW reply applies on the immediate reconnect:
+  // - not entitled  → reconnect lands in the walled garden (or fully off, if cleared)
+  // - entitled + kickToApply (payment just cleared the walled garden) → reconnect with full service
+  if (sub.routerId && (!entitled || opts?.kickToApply)) {
     await disconnectSession(sub, identities.map(i => i.name)).catch(() => { /* best-effort */ });
   }
 }
