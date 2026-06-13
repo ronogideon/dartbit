@@ -397,23 +397,50 @@ export async function bulkSyncHotspotToRadius(opts: { tenantId?: string; routerI
   return { synced, skipped };
 }
 
-// Register (or remove) a router as a FreeRADIUS client on the droplet, via the dartbit-radius-client
-// helper, which writes a clients.d/ drop-in and reloads FreeRADIUS GRACEFULLY (no manual restart,
-// no dropped sessions). Call this when a router's RADIUS is enabled/disabled or its secret changes.
-export async function registerRadiusClient(wgIp: string, secret: string, name: string): Promise<void> {
-  if (!radiusConfigured()) return;
-  const safeName = name.replace(/[^A-Za-z0-9_]/g, '_');
-  // Remove any existing client for this IP FIRST, then add. An "add" that skips when the client
-  // already exists would leave a stale secret in clients.conf — and a clients.conf secret that
-  // doesn't match the router's /radius entry makes FreeRADIUS drop the packet WITHOUT a reply
-  // ("invalid Message-Authenticator"), which the router sees as a RADIUS server timeout and the
-  // paid device never authorizes. Remove-then-add guarantees the secret is always rewritten fresh.
-  await dropletExec(`sudo dartbit-radius-client remove ${shq(wgIp)}`).catch(() => { /* fine if absent */ });
-  await dropletExec(`sudo dartbit-radius-client add ${shq(wgIp)} ${shq(secret)} ${shq(safeName)}`);
+// A FreeRADIUS client is identified on the droplet by a file keyed to the router's STABLE id —
+// clients.d/dartbit_<id>.conf — never by IP and never by the mutable display name. The IP lives
+// INSIDE the file, so changing a router's VPN IP just rewrites that one file (no orphaned per-IP
+// files, which is what produced the fatal "duplicate client" crash). Renaming the router doesn't
+// touch RADIUS at all. One router => exactly one client file, forever.
+export function radiusClientName(routerId: string): string {
+  return 'dartbit_' + routerId.replace(/[^A-Za-z0-9]/g, '').slice(-16);
 }
-export async function unregisterRadiusClient(wgIp: string): Promise<void> {
+
+export async function registerRadiusClient(routerId: string, wgIp: string, secret: string): Promise<void> {
   if (!radiusConfigured()) return;
-  await dropletExec(`sudo dartbit-radius-client remove ${shq(wgIp)}`).catch(() => {});
+  if (!wgIp || !secret) { console.warn(`[radius-client] skip ${routerId}: missing ${!wgIp ? 'wgIp' : 'secret'}`); return; }
+  const name = radiusClientName(routerId);
+  const file = `/etc/freeradius/3.0/clients.d/${name}.conf`;
+  const legacyIpFile = `/etc/freeradius/3.0/clients.d/${wgIp.replace(/\./g, '_')}.conf`;
+  const block = [
+    `client ${name} {`,
+    `    ipaddr = ${wgIp}`,
+    `    secret = ${secret}`,
+    `    nas_type = other`,
+    `    require_message_authenticator = no`,
+    `}`,
+    ``,
+  ].join('\n');
+  // base64 the body so newlines/quotes survive the SSH command wrapping intact.
+  const b64 = Buffer.from(block).toString('base64');
+  // Remove any legacy IP-named drop-in for this IP (from the old helper) so it can't clash with this
+  // ID-keyed file on the same ipaddr. Write the file, then restart — FreeRADIUS only picks up client
+  // changes on restart (SIGHUP/reload does NOT reload clients). Restart is ~0.4s.
+  const cmd = `sudo rm -f ${shq(legacyIpFile)}; echo ${shq(b64)} | base64 -d | sudo tee ${shq(file)} > /dev/null && sudo systemctl restart freeradius`;
+  await dropletExec(cmd);
+}
+
+export async function unregisterRadiusClient(routerId: string): Promise<void> {
+  if (!radiusConfigured()) return;
+  const name = radiusClientName(routerId);
+  await dropletExec(`sudo rm -f /etc/freeradius/3.0/clients.d/${name}.conf && sudo systemctl restart freeradius`).catch(() => {});
+}
+
+// Restart FreeRADIUS if it isn't running. A duplicate client file or an OOM on the small droplet can
+// leave it dead — and then every router's RADIUS times out. This makes recovery automatic.
+export async function ensureFreeradiusUp(): Promise<void> {
+  if (!radiusConfigured()) return;
+  await dropletExec('sudo systemctl is-active --quiet freeradius || sudo systemctl restart freeradius').catch(() => {});
 }
 
 // Diagnostic: confirm the backend can reach RADIUS Postgres over SSH and count users.

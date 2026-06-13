@@ -74,10 +74,29 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const parsed = routerSchema.partial().safeParse(req.body);
     if (!parsed.success) return sendError(res, parsed.error.message, 400);
+    const before = await prisma.mikrotikRouter.findUnique({ where: { id: req.params.id }, select: { name: true } });
     const r = await prisma.mikrotikRouter.update({
       where: { id: req.params.id },
       data: parsed.data,
     });
+    // If the name changed, immediately reflect it on the router: set the MikroTik identity to match
+    // (one unified name) and refresh the RADIUS client (keyed by stable id, so this just rewrites the
+    // drop-in with the current IP/secret — no orphaned client). Best-effort, non-blocking.
+    if (parsed.data.name && before && parsed.data.name !== before.name) {
+      (async () => {
+        try {
+          const identity = parsed.data.name!.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32) || 'dartbit';
+          const { enqueueCommand } = await import('../utils/commandQueue');
+          await enqueueCommand(r.id, `/system identity set name="${identity}"`);
+          const { radiusConfigured, registerRadiusClient } = await import('../utils/radius');
+          if (radiusConfigured() && r.wgIp && (r as { radiusSecret?: string }).radiusSecret) {
+            await registerRadiusClient(r.id, r.wgIp, (r as { radiusSecret?: string }).radiusSecret!);
+          }
+        } catch (e) {
+          console.error('rename hook failed:', e instanceof Error ? e.message : e);
+        }
+      })();
+    }
     sendSuccess(res, r);
   } catch {
     sendError(res, 'Failed to update router', 500);
@@ -89,12 +108,18 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
     const routerId = req.params.id;
 
     // Remove the VPN peer from the droplet first (best-effort) so a deleted router can't keep a
-    // tunnel. Frees its 10.8.0.x for reuse.
+    // tunnel. Frees its 10.8.0.x for reuse. Also drop its FreeRADIUS client drop-in.
     try {
       const { deprovisionRouterWg } = await import('../utils/wireguard');
       await deprovisionRouterWg(routerId);
     } catch (e) {
       console.error('Router delete: VPN deprovision failed (continuing):', e instanceof Error ? e.message : e);
+    }
+    try {
+      const { unregisterRadiusClient } = await import('../utils/radius');
+      await unregisterRadiusClient(routerId);
+    } catch (e) {
+      console.error('Router delete: RADIUS client removal failed (continuing):', e instanceof Error ? e.message : e);
     }
 
     // Remove ALL data tied to this router to keep server storage low. Session history and
@@ -410,7 +435,7 @@ router.post('/:id/radius', async (req: AuthRequest, res: Response) => {
       const r = await prisma.mikrotikRouter.findUnique({ where: { id: router_.id }, select: { wgIp: true, radiusSecret: true, name: true } as never }) as never as { wgIp?: string; radiusSecret?: string; name?: string };
       const { registerRadiusClient, unregisterRadiusClient } = await import('../utils/radius');
       if (enabled && r?.wgIp && r?.radiusSecret) {
-        await registerRadiusClient(r.wgIp, r.radiusSecret, r.name || 'router');
+        await registerRadiusClient(router_.id, r.wgIp, r.radiusSecret);
 
         // Also push the ROUTER-SIDE RADIUS config so the full path is automatic (no manual .rsc).
         // TWO entries are required because MikroTik sets the request's called-id to the SERVICE name:
@@ -439,7 +464,7 @@ router.post('/:id/radius', async (req: AuthRequest, res: Response) => {
           console.error('router-side RADIUS config push failed:', e2 instanceof Error ? e2.message : e2);
         }
       } else if (!enabled && r?.wgIp) {
-        await unregisterRadiusClient(r.wgIp);
+        await unregisterRadiusClient(router_.id);
         // Revert the router to local auth so it keeps working off RADIUS.
         try {
           const { enqueueCommand } = await import('../utils/commandQueue');

@@ -93,8 +93,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.40', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.40', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.42', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.42', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -125,13 +125,14 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.40 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.42 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
   startExpiryWatcher();
   startWgStatusRefresher();
   startAutoDeleteScheduler();
+  startFreeradiusHealthCheck();
   // NOTE: the live "who's online + speed" view is owned by the router-side 3s dartbit-sessions
   // reporter (single writer of OnlineSession). RADIUS still does accounting (radacct) in the
   // background for billing/usage; we intentionally do NOT mirror radacct into OnlineSession here,
@@ -348,6 +349,20 @@ function startAutoDeleteScheduler() {
   // First pass shortly after boot, then once every 12 hours.
   setTimeout(run, 5 * 60 * 1000);
   setInterval(run, 12 * 60 * 60 * 1000);
+}
+
+// Every 5 minutes, make sure FreeRADIUS is alive on the droplet; restart it if it died (duplicate
+// client file, OOM on the small droplet, etc.). Without this, a dead FreeRADIUS silently times out
+// every router's RADIUS until someone SSHes in.
+function startFreeradiusHealthCheck() {
+  const run = async () => {
+    try {
+      const { ensureFreeradiusUp } = await import('./utils/radius');
+      await ensureFreeradiusUp();
+    } catch { /* best-effort */ }
+  };
+  setTimeout(run, 30 * 1000); // first check shortly after boot
+  setInterval(run, 5 * 60 * 1000);
 }
 
 // Populate the active-sessions view from FreeRADIUS accounting (radacct) instead of every router

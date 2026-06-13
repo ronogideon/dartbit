@@ -100,6 +100,12 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach rr in=[/radius find where comment~"Dartbit RADIUS"] do={ /radius remove $rr }`);
     add('');
 
+    // 0b. Identity — make the MikroTik system identity match the dashboard name, so there's ONE name
+    // across the whole system. Renaming the router in the dashboard updates the identity on next push.
+    const identity = (r.name || 'dartbit').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32) || 'dartbit';
+    add(`/system identity set name="${identity}"`);
+    add('');
+
     // 1. Bridge
     add('# 1. Bridge');
     add(`:if ([:len [/interface bridge find name="${bridge}"]] = 0) do={ /interface bridge add name=${bridge} comment="Dartbit LAN" }`);
@@ -431,7 +437,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
         // secret — so the client, both /radius entries, and clients.conf can never drift apart.
         try {
           const { registerRadiusClient } = await import('../utils/radius');
-          await registerRadiusClient(fresh.wgIp, secret, r.name || 'router');
+          await registerRadiusClient(r.id, fresh.wgIp, secret);
         } catch (e3) {
           add(`# (FreeRADIUS client registration skipped: ${e3 instanceof Error ? e3.message.replace(/[\r\n]/g, ' ') : 'error'})`);
         }
