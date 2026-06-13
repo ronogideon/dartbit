@@ -274,6 +274,32 @@ export async function redeemVoucherInRadius(code: string, remainingSeconds: numb
   }
 }
 
+export interface RadiusActiveSession {
+  username: string; nasIp: string; framedIp: string; mac: string;
+  sessionSecs: number; inOctets: number; outOctets: number;
+}
+
+// Read currently-open sessions straight from FreeRADIUS accounting (radacct). This is the RADIUS-
+// native replacement for the per-router 5s HTTP session reporter: one psql read on the backend,
+// instead of every router polling the API. Open sessions = AcctStopTime IS NULL.
+export async function getRadiusActiveSessions(): Promise<RadiusActiveSession[]> {
+  if (!radiusConfigured()) return [];
+  const sql = `SELECT username, COALESCE(nasipaddress::text,''), COALESCE(framedipaddress::text,''), COALESCE(callingstationid,''), GREATEST(0, EXTRACT(EPOCH FROM (now() - acctstarttime))::int), COALESCE(acctinputoctets,0), COALESCE(acctoutputoctets,0) FROM radacct WHERE acctstoptime IS NULL;`;
+  const out = await radiusPsql(sql);
+  const rows: RadiusActiveSession[] = [];
+  for (const line of out.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    const p = t.split('|');
+    if (p.length < 7) continue;
+    rows.push({
+      username: p[0], nasIp: p[1], framedIp: (p[2] || '').replace(/\/32$/, ''), mac: (p[3] || '').toUpperCase(),
+      sessionSecs: parseInt(p[4] || '0', 10) || 0, inOctets: parseInt(p[5] || '0', 10) || 0, outOctets: parseInt(p[6] || '0', 10) || 0,
+    });
+  }
+  return rows;
+}
+
 // Write one voucher into RADIUS (on generate/edit). Gated on the router being RADIUS-managed.
 export async function syncVoucherToRadius(voucherId: string): Promise<void> {
   if (!radiusConfigured()) return;

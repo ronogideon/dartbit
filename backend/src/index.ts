@@ -93,8 +93,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.34', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.34', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.35', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.35', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -125,13 +125,14 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.34 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.35 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
   startExpiryWatcher();
   startWgStatusRefresher();
   startAutoDeleteScheduler();
+  startRadiusSessionSync();
   startReminderScheduler();
   startSystemAlerts();
 });
@@ -344,6 +345,75 @@ function startAutoDeleteScheduler() {
   // First pass shortly after boot, then once every 12 hours.
   setTimeout(run, 5 * 60 * 1000);
   setInterval(run, 12 * 60 * 60 * 1000);
+}
+
+// Populate the active-sessions view from FreeRADIUS accounting (radacct) instead of every router
+// polling /router/sessions every 5s. One backend read replaces N routers × 12 fetches/min, which is
+// the biggest CPU/traffic saving on the router side. Mirrors radacct open sessions into OnlineSession,
+// resolving each to its subscriber by username or device MAC.
+function startRadiusSessionSync() {
+  const prisma = new PrismaClient();
+  const lastBytes = new Map<string, { in: number; out: number; at: number }>();
+  const run = async () => {
+    try {
+      const { radiusConfigured, getRadiusActiveSessions } = await import('./utils/radius');
+      if (!radiusConfigured()) return;
+      const rows = await getRadiusActiveSessions();
+
+      const routers = await prisma.mikrotikRouter.findMany({ where: { wgIp: { not: null } }, select: { id: true, tenantId: true, wgIp: true } });
+      const byWgIp = new Map<string, { id: string; tenantId: string }>();
+      for (const r of routers) if (r.wgIp) byWgIp.set(r.wgIp, { id: r.id, tenantId: r.tenantId });
+
+      const usernames = Array.from(new Set(rows.map(r => r.username).filter(Boolean)));
+      const macs = Array.from(new Set(rows.map(r => r.mac).filter(Boolean)));
+      const macVariants = macs.flatMap(m => [m, m.toLowerCase()]);
+      const subs = usernames.length || macVariants.length ? await prisma.subscriber.findMany({
+        where: { OR: [usernames.length ? { username: { in: usernames } } : undefined, macVariants.length ? { macAddress: { in: macVariants } } : undefined].filter(Boolean) as object[] },
+        select: { id: true, username: true, macAddress: true, tenantId: true },
+      }) : [];
+      const subByUser = new Map<string, { id: string; username: string }>();
+      const subByMac = new Map<string, { id: string; username: string }>();
+      for (const s of subs) {
+        subByUser.set(`${s.tenantId}:${s.username}`, { id: s.id, username: s.username });
+        if (s.macAddress) subByMac.set(`${s.tenantId}:${s.macAddress.toUpperCase()}`, { id: s.id, username: s.username });
+      }
+
+      const now = Date.now();
+      const perRouter = new Map<string, Array<Record<string, unknown>>>();
+      const matchedSubs = new Set<string>();
+      for (const row of rows) {
+        const r = byWgIp.get(row.nasIp);
+        if (!r) continue;
+        const sub = subByUser.get(`${r.tenantId}:${row.username}`) || (row.mac ? subByMac.get(`${r.tenantId}:${row.mac}`) : undefined);
+        const key = `${r.id}:${row.username}`;
+        const prev = lastBytes.get(key);
+        let up = 0, down = 0;
+        if (prev) { const dt = (now - prev.at) / 1000; if (dt > 0 && dt < 300) { up = Math.max(0, Math.round(((row.inOctets - prev.in) * 8) / 1024 / dt)); down = Math.max(0, Math.round(((row.outOctets - prev.out) * 8) / 1024 / dt)); } }
+        lastBytes.set(key, { in: row.inOctets, out: row.outOctets, at: now });
+        if (sub) matchedSubs.add(sub.id);
+        const arr = perRouter.get(r.id) || [];
+        arr.push({
+          username: sub?.username || row.username,
+          ipAddress: row.framedIp || null, macAddress: row.mac || null,
+          uploadSpeed: up, downloadSpeed: down, uptime: String(row.sessionSecs),
+          routerId: r.id, subscriberId: sub?.id || null, tenantId: r.tenantId,
+        });
+        perRouter.set(r.id, arr);
+      }
+
+      // Replace the snapshot for every RADIUS router (clears routers that now have no sessions).
+      for (const r of routers) {
+        await prisma.onlineSession.deleteMany({ where: { routerId: r.id } });
+        const list = perRouter.get(r.id);
+        if (list && list.length) { for (const d of list) await prisma.onlineSession.create({ data: d as never }); }
+      }
+      if (matchedSubs.size) await prisma.subscriber.updateMany({ where: { id: { in: Array.from(matchedSubs) } }, data: { lastOnlineAt: new Date() } });
+    } catch (err) {
+      console.error('radius session sync error:', err instanceof Error ? err.message : err);
+    }
+  };
+  run();
+  setInterval(run, 15 * 1000); // every 15s — RADIUS-native, replaces the per-router 5s reporter
 }
 
 server.on('error', (err) => {

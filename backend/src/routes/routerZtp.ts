@@ -400,10 +400,10 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
         // Accept incoming CoA/Disconnect (so the backend can kick expired sessions instantly).
         add(`/radius incoming set accept=yes port=3799`);
         // Enable RADIUS auth + accounting for PPP.
-        add(`/ppp aaa set use-radius=yes accounting=yes interim-update=5m`);
+        add(`/ppp aaa set use-radius=yes accounting=yes interim-update=1m`);
         // Switch the Dartbit hotspot profile (only) to RADIUS auth with the login methods the portal
         // needs. Never touches other profiles (e.g. a coexisting centipid hotspot).
-        add(`:foreach hp in=[/ip hotspot profile find where name="hsprof-dartbit"] do={ /ip hotspot profile set $hp use-radius=yes radius-accounting=yes radius-interim-update=5m login-by=mac,cookie,http-chap,http-pap }`);
+        add(`:foreach hp in=[/ip hotspot profile find where name="hsprof-dartbit"] do={ /ip hotspot profile set $hp use-radius=yes radius-accounting=yes radius-interim-update=1m login-by=mac,cookie,http-chap,http-pap }`);
         add('');
         // Register/refresh this router as a FreeRADIUS client on the droplet, from the SAME wgIp +
         // secret — so the client, both /radius entries, and clients.conf can never drift apart.
@@ -419,11 +419,18 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
       add('');
     }
 
+    // Under RADIUS, accounting + session data come from FreeRADIUS (radacct), so the per-router
+    // polling reporters that duplicate that are pure overhead on a small router. We skip installing
+    // dartbit-sync (a no-op under RADIUS anyway) and dartbit-sessions (replaced by the backend's
+    // radacct poller), which removes ~24 fetches/min and frees the command channel.
+    let radiusActive = false;
+    try { radiusActive = (await import('../utils/radius')).radiusConfigured(); } catch { radiusActive = false; }
+
     add('# 9. Heartbeat');
     add(`:foreach s in=[/system scheduler find comment="Dartbit heartbeat"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-heartbeat"] do={ /system script remove $s }`);
     add(`/system script add name=dartbit-heartbeat policy=read,write,test source={/tool fetch url="${backendUrl}/router/heartbeat?apiKey=${apiKey}"${fetchFlags} keep-result=no}`);
-    add(`/system scheduler add name=dartbit-heartbeat interval=15s on-event="/system script run dartbit-heartbeat" comment="Dartbit heartbeat"`);
+    add(`/system scheduler add name=dartbit-heartbeat interval=30s on-event="/system script run dartbit-heartbeat" comment="Dartbit heartbeat"`);
     add('');
 
     // === Stats reporter ===
@@ -431,7 +438,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach s in=[/system scheduler find comment="Dartbit stats"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-stats"] do={ /system script remove $s }`);
     add(`/system script add name=dartbit-stats policy=read,write,test source={:local cpu [/system resource get cpu-load]; :local upt [/system resource get uptime]; :local mem [/system resource get free-memory]; :local id [/system identity get name]; :local url ("${backendUrl}/router/stats?apiKey=${apiKey}&cpu=" . \$cpu . "&uptime=" . \$upt . "&memFree=" . \$mem . "&identity=" . \$id); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
-    add(`/system scheduler add name=dartbit-stats interval=5s on-event="/system script run dartbit-stats" comment="Dartbit stats"`);
+    add(`/system scheduler add name=dartbit-stats interval=30s on-event="/system script run dartbit-stats" comment="Dartbit stats"`);
     add('');
 
     // === Interfaces reporter — reports interface list to backend so UI can list ports ===
@@ -442,13 +449,17 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`/system scheduler add name=dartbit-interfaces interval=60s on-event="/system script run dartbit-interfaces" comment="Dartbit interfaces"`);
     add('');
 
-    // === Subscriber sync ===
-    add('# 10. Subscriber sync');
-    add(`:foreach s in=[/system scheduler find comment="Dartbit sub sync"] do={ /system scheduler remove $s }`);
-    add(`:foreach s in=[/system script find name="dartbit-sync"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-sync policy=read,write,test source={/tool fetch url="${backendUrl}/router/sync-script?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-sync.rsc; :delay 1s; /import file-name=dartbit-sync.rsc}`);
-    add(`/system scheduler add name=dartbit-sync interval=60s on-event="/system script run dartbit-sync" comment="Dartbit sub sync"`);
-    add('');
+    // === Subscriber sync (legacy only) ===
+    // Under RADIUS this script early-returns (FreeRADIUS is authoritative), so installing it just
+    // burns a fetch + import every 60s for nothing. Only install on non-RADIUS routers.
+    if (!radiusActive) {
+      add('# 10. Subscriber sync');
+      add(`:foreach s in=[/system scheduler find comment="Dartbit sub sync"] do={ /system scheduler remove $s }`);
+      add(`:foreach s in=[/system script find name="dartbit-sync"] do={ /system script remove $s }`);
+      add(`/system script add name=dartbit-sync policy=read,write,test source={/tool fetch url="${backendUrl}/router/sync-script?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-sync.rsc; :delay 1s; /import file-name=dartbit-sync.rsc}`);
+      add(`/system scheduler add name=dartbit-sync interval=60s on-event="/system script run dartbit-sync" comment="Dartbit sub sync"`);
+      add('');
+    }
 
     // === Captive-portal refresh — re-download login.html every 3 min so tenant theme/branding
     // changes propagate automatically without a reprovision (independent of the subscriber sync). ===
@@ -487,13 +498,18 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     }
     add('');
 
-    // === Active session reporter ===
-    add('# 12. Active session reporter');
-    add(`:foreach s in=[/system scheduler find comment="Dartbit session sync"] do={ /system scheduler remove $s }`);
-    add(`:foreach s in=[/system script find name="dartbit-sessions"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . "|P,"); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :local mac [/ip hotspot active get \$a mac-address]; :local bi 0; :local bo 0; :do { :set bi [/ip hotspot active get \$a bytes-in]; :set bo [/ip hotspot active get \$a bytes-out]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$bi . "|" . \$bo . "|H|" . \$mac . ","); }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
-    add(`/system scheduler add name=dartbit-sessions interval=5s on-event="/system script run dartbit-sessions" comment="Dartbit session sync"`);
-    add('');
+    // === Active session reporter (legacy only) ===
+    // Under RADIUS, live sessions come from FreeRADIUS accounting (radacct) via the backend's
+    // radacct poller — so we don't install this 5s reporter, which is the single biggest source of
+    // fetch traffic. Only non-RADIUS routers need it.
+    if (!radiusActive) {
+      add('# 12. Active session reporter');
+      add(`:foreach s in=[/system scheduler find comment="Dartbit session sync"] do={ /system scheduler remove $s }`);
+      add(`:foreach s in=[/system script find name="dartbit-sessions"] do={ /system script remove $s }`);
+      add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . "|P,"); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :local mac [/ip hotspot active get \$a mac-address]; :local bi 0; :local bo 0; :do { :set bi [/ip hotspot active get \$a bytes-in]; :set bo [/ip hotspot active get \$a bytes-out]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$bi . "|" . \$bo . "|H|" . \$mac . ","); }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
+      add(`/system scheduler add name=dartbit-sessions interval=5s on-event="/system script run dartbit-sessions" comment="Dartbit session sync"`);
+      add('');
+    }
 
     add(':log info "Dartbit: Provisioning complete"');
 
