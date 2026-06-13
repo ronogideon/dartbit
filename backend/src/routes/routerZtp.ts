@@ -87,10 +87,16 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // clean and can't leave stale half-state. Scoped strictly to Dartbit's own names/comments, so a
     // coexisting system on the same router (e.g. centipid) is never touched. The sections below
     // re-create everything Dartbit needs.
-    add('# 0. Cleanup prior Dartbit artifacts (idempotent reprovision)');
-    add(`:foreach s in=[/system scheduler find where name~"dartbit"] do={ /system scheduler remove $s }`);
-    add(`:foreach s in=[/system scheduler find where comment~"Dartbit"] do={ /system scheduler remove $s }`);
-    add(`:foreach s in=[/system script find where name~"dartbit"] do={ /system script remove $s }`);
+    //
+    // CRITICAL: never remove dartbit-cmd / dartbit-cmd-upd here. When a reprovision is delivered
+    // THROUGH the command queue, this very script is being imported by the dartbit-cmd poller —
+    // removing it mid-import kills the import (so "Provisioning complete" never logs) AND destroys
+    // the command channel (skipCmdScript means it isn't recreated). Excluding the poller keeps the
+    // reprovision alive end-to-end. The poller is managed separately in section 11.
+    add('# 0. Cleanup prior Dartbit artifacts (idempotent reprovision; preserves the cmd poller)');
+    add(`:foreach s in=[/system scheduler find where name~"dartbit"] do={ :local n [/system scheduler get $s name]; :if ($n != "dartbit-cmd" && $n != "dartbit-cmd-upd") do={ /system scheduler remove $s } }`);
+    add(`:foreach s in=[/system scheduler find where comment~"Dartbit"] do={ :local n [/system scheduler get $s name]; :if ($n != "dartbit-cmd" && $n != "dartbit-cmd-upd") do={ /system scheduler remove $s } }`);
+    add(`:foreach s in=[/system script find where name~"dartbit"] do={ :local n [/system script get $s name]; :if ($n != "dartbit-cmd" && $n != "dartbit-cmd-upd") do={ /system script remove $s } }`);
     add(`:foreach rr in=[/radius find where comment~"Dartbit RADIUS"] do={ /radius remove $rr }`);
     add('');
 
