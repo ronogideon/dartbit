@@ -402,8 +402,14 @@ export async function bulkSyncHotspotToRadius(opts: { tenantId?: string; routerI
 // no dropped sessions). Call this when a router's RADIUS is enabled/disabled or its secret changes.
 export async function registerRadiusClient(wgIp: string, secret: string, name: string): Promise<void> {
   if (!radiusConfigured()) return;
-  const cmd = `sudo dartbit-radius-client add ${shq(wgIp)} ${shq(secret)} ${shq(name.replace(/[^A-Za-z0-9_]/g, '_'))}`;
-  await dropletExec(cmd);
+  const safeName = name.replace(/[^A-Za-z0-9_]/g, '_');
+  // Remove any existing client for this IP FIRST, then add. An "add" that skips when the client
+  // already exists would leave a stale secret in clients.conf — and a clients.conf secret that
+  // doesn't match the router's /radius entry makes FreeRADIUS drop the packet WITHOUT a reply
+  // ("invalid Message-Authenticator"), which the router sees as a RADIUS server timeout and the
+  // paid device never authorizes. Remove-then-add guarantees the secret is always rewritten fresh.
+  await dropletExec(`sudo dartbit-radius-client remove ${shq(wgIp)}`).catch(() => { /* fine if absent */ });
+  await dropletExec(`sudo dartbit-radius-client add ${shq(wgIp)} ${shq(secret)} ${shq(safeName)}`);
 }
 export async function unregisterRadiusClient(wgIp: string): Promise<void> {
   if (!radiusConfigured()) return;
