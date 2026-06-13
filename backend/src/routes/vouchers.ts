@@ -20,7 +20,9 @@ function generateCode(length = 8): string {
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user?.tenantId;
-    const where = tenantId ? { tenantId } : {};
+    // M-Pesa receipts are registered as vouchers (batchId='MPESA') purely so the receipt works as an
+    // alternative login/reconnect code — they are NOT real vouchers, so they're hidden from the tab.
+    const where = { ...(tenantId ? { tenantId } : {}), NOT: { batchId: 'MPESA' } };
     const vouchers = await prisma.voucher.findMany({
       where,
       include: { package: true, router: true },

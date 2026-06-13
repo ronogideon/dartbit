@@ -233,6 +233,30 @@ button.primary svg{width:14px;height:14px}
     document.getElementById('mikrotik-login').submit();
   }
 
+  // Reconnect an already-paid device by its MAC. Asks the backend whether this MAC has an ACTIVE
+  // subscriber/voucher/payment; if so, submits its credentials to the hotspot (auto sign-in). If not,
+  // falls through to the package list. Guarded so it can NEVER loop: it only runs on a clean page
+  // load (no MikroTik error) or an explicit tap, and /auto-login only returns ACTIVE plans, so an
+  // expired device just gets the buy options instead of retrying forever.
+  var autoTried=false;
+  function tryAutoLogin(manual){
+    if(autoTried&&!manual)return; autoTried=true;
+    var xhr=new XMLHttpRequest();
+    xhr.open('POST',BACKEND+'/hotspot/auto-login',true);
+    xhr.setRequestHeader('Content-Type','application/json');
+    xhr.timeout=12000;
+    xhr.onload=function(){
+      try{
+        var data=JSON.parse(xhr.responseText);
+        if(data&&data.success){show('success','Welcome back! Reconnecting...');setTimeout(function(){submitMikrotik(data.username,data.password)},400);}
+        else{if(manual)show('error','No active plan for this device. Buy a package or enter a voucher.');loadPackages();}
+      }catch(e){loadPackages();}
+    };
+    xhr.onerror=function(){loadPackages();};
+    xhr.ontimeout=function(){loadPackages();};
+    xhr.send(JSON.stringify({routerApiKey:API_KEY,mac:MAC}));
+  }
+
   function fmtDur(m){
     if(m<60)return m+' min';
     if(m<1440)return Math.round(m/60*10)/10+' hr';
@@ -424,7 +448,7 @@ button.primary svg{width:14px;height:14px}
     var btn=document.getElementById('account-btn');
     var u=document.getElementById('account-username').value.trim();
     var p=document.getElementById('account-password').value;
-    if(!u||!p){show('error','Username and password required');return}
+    if(!u||!p){tryAutoLogin(true);return}
     btn.disabled=true;btn.innerHTML=spinner()+' Signing in...';
     clr();
     var xhr=new XMLHttpRequest();
@@ -446,15 +470,15 @@ button.primary svg{width:14px;height:14px}
 
   // Show errors passed by MikroTik
   var err='$(error)';
-  if(err&&err!=='$(error)'&&err!==''){show('error','Login failed: '+err);}
-
-  // Load packages on startup
-  // NOTE: We deliberately do NOT attempt auto-login from this captive portal page.
-  // Auto-login for an active device is handled by the router itself (login-by=mac + MAC cookie)
-  // BEFORE the portal is ever shown. So if this page is loading, the device has NO active package
-  // and must buy one — we go straight to the package list. (A previous JS auto-login here caused an
-  // endless "reconnecting…" loop on expired devices and blocked the purchase flow.)
-  loadPackages();
+  if(err&&err!=='$(error)'&&err!==''){
+    // A login attempt just failed — do NOT auto-retry (that's what caused the old endless loop).
+    // Show the error and the package list so the user can choose what to do.
+    show('error','Login failed: '+err);loadPackages();
+  } else {
+    // Clean load: try to reconnect this device by MAC if it has an active plan. If not, tryAutoLogin
+    // falls through to the package list. Safe — /auto-login only returns ACTIVE plans.
+    tryAutoLogin(false);
+  }
 })();
 </script>
 </body>
