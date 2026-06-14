@@ -1213,9 +1213,16 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       // match how MikroTik stores MACs. Unredeemed vouchers (no usedByMac) stay open until first
       // use, then get bound on next sync after redemption captures the MAC.
       const macBind = v.usedByMac ? ` mac-address=${v.usedByMac.toUpperCase()}` : '';
-      add(`:if ([:len [/ip hotspot user find name="${v.code}"]] = 0) do={ /ip hotspot user add name=${v.code} password=${v.code} profile=${profileName} limit-uptime=${sessionSec}s${macBind} comment="Dbv:${shortId}" }`);
+      // No limit-uptime: that limits CUMULATIVE connected time across reconnects, so once a voucher's
+      // total uptime is used the device gets logged out seconds after each reconnect (the flap). The
+      // voucher's life is governed purely by wall-clock expiry — RADIUS Expiration on the code+MAC
+      // identities rejects re-auth after expiry, and the expired branch below disables the user.
+      add(`:if ([:len [/ip hotspot user find name="${v.code}"]] = 0) do={ /ip hotspot user add name=${v.code} password=${v.code} profile=${profileName}${macBind} comment="Dbv:${shortId}" }`);
       // Keep profile + binding current on existing users (MAC may have been captured after creation).
-      add(`:if ([:len [/ip hotspot user find name="${v.code}"]] > 0) do={ /ip hotspot user set [find name="${v.code}"] profile=${profileName} }`);
+      // Also CLEAR any limit-uptime carried by users created before this fix and reset their used
+      // counter — otherwise the cumulative-uptime limit keeps logging the device out seconds after
+      // each reconnect (the flap), and reprovision alone wouldn't fix already-created users.
+      add(`:if ([:len [/ip hotspot user find name="${v.code}"]] > 0) do={ /ip hotspot user set [find name="${v.code}"] profile=${profileName} limit-uptime=0s; :do { /ip hotspot user reset-counters [find name="${v.code}"] } on-error={} }`);
       if (v.usedByMac) {
         add(`:if ([:len [/ip hotspot user find name="${v.code}"]] > 0) do={ /ip hotspot user set [find name="${v.code}"] mac-address=${v.usedByMac.toUpperCase()} }`);
       }

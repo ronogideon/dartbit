@@ -93,8 +93,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.47', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.47', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.48', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.48', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -125,7 +125,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.47 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.48 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -217,9 +217,34 @@ function startBillingStatusUpdater() {
 function startExpiryWatcher() {
   const prisma = new PrismaClient();
   const kicked = new Map<string, number>(); // subscriberId -> last-kick epoch (ms), to avoid hammering
+  const walledSynced = new Map<string, number>(); // subscriberId -> expiresAt(ms) already pushed to walled-garden
   const run = async () => {
     try {
       const now = new Date();
+
+      // (0) Ensure expired-but-enabled PPPoE subscribers are in the WALLED GARDEN at the RADIUS layer
+      // even when OFFLINE. An expired user is otherwise rejected at auth (stale Expiration), so they
+      // never get online, never become a kick candidate, and never have their walled-garden reply
+      // written — an endless redial. We write it once per expiry (deduped) so the very next auth is
+      // ACCEPTED into the dartbit-expired list. Payment later re-syncs them to full service + CoA.
+      try {
+        const radiusMod = await import('./utils/radius').catch(() => null);
+        if (radiusMod?.radiusConfigured()) {
+          const expiredPppoe = await prisma.subscriber.findMany({
+            where: { service: 'PPPOE', isActive: true, routerId: { not: null }, expiresAt: { lte: now } },
+            select: { id: true, expiresAt: true },
+          });
+          for (const s of expiredPppoe) {
+            const exp = s.expiresAt ? s.expiresAt.getTime() : 0;
+            if (walledSynced.get(s.id) === exp) continue; // already walled-gardened for this expiry window
+            walledSynced.set(s.id, exp);
+            await radiusMod.syncSubscriberToRadius(s.id)
+              .catch(e => console.error('[walled-garden] sync failed', s.id, e instanceof Error ? e.message : e));
+          }
+          if (walledSynced.size > 5000) { let n = 0; for (const k of walledSynced.keys()) { walledSynced.delete(k); if (++n > 1000) break; } }
+        }
+      } catch (e) { console.error('[walled-garden] pass error:', e instanceof Error ? e.message : e); }
+
       // Subscribers who are NO LONGER entitled but STILL have a live session — these are the ones to
       // disconnect. Covers PPPoE AND Hotspot, and runs regardless of RADIUS mode: we kick via the
       // RELIABLE command queue (/ppp active remove, /ip hotspot active remove) rather than CoA, which
