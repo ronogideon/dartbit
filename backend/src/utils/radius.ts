@@ -154,11 +154,23 @@ export async function syncSubscriberToRadius(subscriberId: string, opts?: { kick
     throw e;
   }
 
-  // Kick any live session via CoA-Disconnect so the NEW reply applies on the immediate reconnect:
-  // - not entitled  → reconnect lands in the walled garden (or fully off, if cleared)
-  // - entitled + kickToApply (payment just cleared the walled garden) → reconnect with full service
+  // Kick any live session so the NEW reply applies on the immediate reconnect:
+  // - not entitled  → reconnect lands in the walled garden (PPPoE) or is rejected (hotspot)
+  // - entitled + kickToApply (payment/edit cleared the walled garden) → reconnect with full service
+  // CoA first (instant where the router honours it), then the RELIABLE command-queue kick as the
+  // real workhorse — CoA on PPPoE is finicky, so we don't depend on it. For HOTSPOT we kick ONLY by
+  // username, never by MAC: a co-located voucher session shares the device MAC and must not be torn
+  // down by this subscriber's expiry.
   if (sub.routerId && (!entitled || opts?.kickToApply)) {
     await disconnectSession(sub, identities.map(i => i.name)).catch(() => { /* best-effort */ });
+    try {
+      const { enqueueCommand } = await import('./commandQueue');
+      if (sub.service === 'PPPOE') {
+        await enqueueCommand(sub.routerId, `:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove $a }`);
+      } else {
+        await enqueueCommand(sub.routerId, `:foreach a in=[/ip hotspot active find where user="${sub.username}"] do={ /ip hotspot active remove $a }`);
+      }
+    } catch { /* best-effort */ }
   }
 }
 
@@ -288,6 +300,28 @@ export async function redeemVoucherInRadius(code: string, remainingSeconds: numb
   } catch (e) {
     console.error(`[voucher-radius] FAILED for ${code}:`, e instanceof Error ? e.message : e);
     throw e;
+  }
+
+  // Fix the MAC clash: a same-MAC HOTSPOT subscriber (the "D-number") shares this device's MAC row in
+  // radcheck. If that subscriber expires before the voucher, its expiry-sync DELETEs the shared MAC
+  // row (killing this voucher's auto-login) and the watcher kicks the MAC — tearing down a valid
+  // session. So when a MAC activates a voucher, push that subscriber's expiry out to match the
+  // voucher: it stays entitled, keeps the shared MAC row alive, and is never kicked while the voucher
+  // is valid. (The MAC is only needed for auto-login, so aligning the two is safe.)
+  if (m && expiresAt) {
+    try {
+      const subs = await prisma.subscriber.findMany({
+        where: { service: 'HOTSPOT', macAddress: m, expiresAt: { lt: expiresAt } },
+        select: { id: true },
+      });
+      for (const s of subs) {
+        await prisma.subscriber.update({ where: { id: s.id }, data: { expiresAt, isActive: true } });
+        await syncSubscriberToRadius(s.id).catch(() => { /* best-effort */ });
+      }
+      if (subs.length) console.log(`[voucher-radius] aligned ${subs.length} same-MAC subscriber(s) to voucher expiry for ${m}`);
+    } catch (e) {
+      console.error(`[voucher-radius] mac-subscriber align failed for ${m}:`, e instanceof Error ? e.message : e);
+    }
   }
 }
 

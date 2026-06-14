@@ -174,7 +174,9 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
     try {
       const { radiusConfigured, syncSubscriberToRadius } = await import('../utils/radius');
       if (radiusConfigured() && (subscriber.service === 'PPPOE' || subscriber.service === 'HOTSPOT')) {
-        await syncSubscriberToRadius(subscriber.id);
+        // kickToApply: drop the live session so the new state takes effect immediately — into the
+        // walled garden if it just expired, or back to full service if the expiry was pushed out.
+        await syncSubscriberToRadius(subscriber.id, { kickToApply: true });
       }
     } catch (e) {
       console.error('radius sync (update) failed:', e instanceof Error ? e.message : e);
