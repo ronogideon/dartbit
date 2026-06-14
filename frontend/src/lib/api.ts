@@ -96,6 +96,9 @@ export const updateRouter = (id: string, data: unknown) => api.put(`/mikrotiks/$
 export const deleteRouter = (id: string) => api.delete(`/mikrotiks/${id}`).then((r) => r.data.data);
 export const getProvisionConfig = (routerId: string) => api.get(`/router/provision/${routerId}`).then((r) => r.data.data);
 export const saveProvisionConfig = (routerId: string, data: unknown) => api.post(`/router/provision/${routerId}`, data).then((r) => r.data.data);
+export const getRouterOverview = (id: string) => api.get(`/mikrotiks/${id}/overview`).then((r) => r.data.data);
+export const openWinbox = (id: string) => api.post(`/mikrotiks/${id}/winbox/open`, {}).then((r) => r.data.data);
+export const closeWinbox = (id: string) => api.post(`/mikrotiks/${id}/winbox/close`, {}).then((r) => r.data.data);
 
 export const getOnlineSessions = () => api.get('/online-sessions').then((r) => r.data.data);
 
@@ -183,7 +186,7 @@ export const provisionRouterVpn = (id: string) => api.post(`/mikrotiks/${id}/vpn
 // Vouchers
 export const getVouchers = () => api.get('/vouchers').then(r => r.data.data);
 export const getVoucherBatches = () => api.get('/vouchers/batches').then(r => r.data.data);
-export const generateVouchers = (data: { count: number; packageId?: string; routerId?: string; durationMinutes: number; codeLength?: number; notes?: string }) =>
+export const generateVouchers = (data: { count: number; packageId?: string; routerId?: string; durationMinutes?: number; codeLength?: number; notes?: string }) =>
   api.post('/vouchers/generate', data).then(r => r.data.data);
 export const deleteVoucher = (id: string) => api.delete(`/vouchers/${id}`).then(r => r.data.data);
 export const deleteVoucherBatch = (batchId: string) => api.delete(`/vouchers/batch/${batchId}`).then(r => r.data.data);

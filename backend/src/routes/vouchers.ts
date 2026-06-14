@@ -52,8 +52,18 @@ router.post('/generate', async (req: AuthRequest, res: Response) => {
     const parsed = generateSchema.safeParse(req.body);
     if (!parsed.success) return sendError(res, parsed.error.errors[0].message, 400);
 
-    const { count, packageId, routerId, durationMinutes, codeLength, notes } = parsed.data;
+    const { count, packageId, routerId, durationMinutes: durationArg, codeLength, notes } = parsed.data;
     const batchId = 'batch_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
+
+    // Hotspot vouchers are now package-driven: the chosen package supplies the duration AND the
+    // up/down speeds. The tenant only picks package + router + count + code length + notes. We derive
+    // the duration from the package (validityMinutes) and ignore any client-sent duration.
+    let durationMinutes = durationArg;
+    if (packageId) {
+      const pkg = await prisma.package.findFirst({ where: { id: packageId, tenantId }, select: { validityMinutes: true } });
+      if (!pkg) return sendError(res, 'Package not found', 404);
+      if (pkg.validityMinutes && pkg.validityMinutes > 0) durationMinutes = pkg.validityMinutes;
+    }
 
     // Generate unique codes — collision-resistant
     const codes = new Set<string>();

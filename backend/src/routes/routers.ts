@@ -213,14 +213,32 @@ router.post('/:id/winbox/open', async (req: AuthRequest, res: Response) => {
 
     await openWinboxPort(port, r.wgIp);
     const openUntil = new Date(Date.now() + WINBOX_TTL_MS);
-    await prisma.mikrotikRouter.update({ where: { id: r.id }, data: { winboxPort: port, winboxOpenUntil: openUntil } });
+
+    // Ensure a dedicated RouterOS login exists for tenant Winbox access (full group), so we can show
+    // the tenant a username/password rather than relying on unknown/default admin creds. Generated
+    // once, then pushed to the router via the command queue (idempotent add-or-set-password).
+    let winboxUser = r.winboxUser;
+    let winboxPass = r.winboxPass;
+    if (!winboxUser || !winboxPass) {
+      winboxUser = 'dartbit-mgr';
+      winboxPass = Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 6).toUpperCase();
+    }
+    try {
+      const { enqueueCommand } = await import('../utils/commandQueue');
+      await enqueueCommand(r.id,
+        `:if ([:len [/user find name="${winboxUser}"]] = 0) do={ /user add name="${winboxUser}" password="${winboxPass}" group=full comment="Dartbit remote mgmt" } else={ /user set [find name="${winboxUser}"] password="${winboxPass}" group=full }`);
+    } catch { /* best-effort; creds still stored for retry on next open */ }
+
+    await prisma.mikrotikRouter.update({ where: { id: r.id }, data: { winboxPort: port, winboxOpenUntil: openUntil, winboxUser, winboxPass } });
 
     sendSuccess(res, {
       host: winboxHost,
       port,
       address: `${winboxHost}:${port}`,
+      username: winboxUser,
+      password: winboxPass,
       expiresAt: openUntil,
-      message: `Open Winbox and connect to ${winboxHost}:${port} (closes ${openUntil.toLocaleTimeString()}).`,
+      message: `Open Winbox → connect to ${winboxHost}:${port} as ${winboxUser} (access closes ${openUntil.toLocaleTimeString()}).`,
     });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed to open Winbox access', 500);
@@ -243,6 +261,61 @@ router.post('/:id/winbox/close', async (req: AuthRequest, res: Response) => {
     sendSuccess(res, { closed: true });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed to close Winbox access', 500);
+  }
+});
+
+// GET /mikrotiks/:id/overview — aggregated data for the router detail page (info / users / payments).
+router.get('/:id/overview', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const r = await prisma.mikrotikRouter.findUnique({ where: { id: req.params.id } });
+    if (!r) return sendError(res, 'Router not found', 404);
+    if (tenantId && r.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
+
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const VPN_ONLINE_MS = 3 * 60 * 1000; // a handshake within 3 min = VPN up
+    const { winboxHost } = await import('../utils/wireguard');
+
+    const [onlineCount, totalSubs, activeThisMonth, monthPayments] = await Promise.all([
+      prisma.onlineSession.count({ where: { routerId: r.id } }),
+      prisma.subscriber.count({ where: { routerId: r.id } }),
+      prisma.subscriber.count({ where: { routerId: r.id, lastOnlineAt: { gte: monthStart } } }),
+      prisma.payment.findMany({
+        where: { tenantId: r.tenantId, createdAt: { gte: monthStart }, subscriber: { routerId: r.id } },
+        select: { amount: true, subscriber: { select: { service: true } } },
+      }),
+    ]);
+
+    const byService: Record<string, number> = { HOTSPOT: 0, PPPOE: 0, STATIC: 0 };
+    let monthTotal = 0;
+    for (const p of monthPayments) {
+      const svc = p.subscriber?.service || 'HOTSPOT';
+      byService[svc] = (byService[svc] || 0) + p.amount;
+      monthTotal += p.amount;
+    }
+
+    sendSuccess(res, {
+      vpn: {
+        wgIp: r.wgIp,
+        lastHandshake: r.wgLastHandshake,
+        online: !!r.wgLastHandshake && (now.getTime() - new Date(r.wgLastHandshake).getTime() < VPN_ONLINE_MS),
+      },
+      health: { status: r.status, uptime: r.uptime, lastSeenAt: r.lastSeenAt, identity: r.identity },
+      winbox: {
+        host: winboxHost,
+        port: r.winboxPort,
+        address: r.winboxPort ? `${winboxHost}:${r.winboxPort}` : null,
+        username: r.winboxUser,
+        password: r.winboxPass,
+        openUntil: r.winboxOpenUntil,
+        open: !!r.winboxOpenUntil && new Date(r.winboxOpenUntil) > now,
+      },
+      users: { online: onlineCount, activeThisMonth, total: totalSubs },
+      payments: { monthTotal, byService },
+    });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed to load router overview', 500);
   }
 });
 

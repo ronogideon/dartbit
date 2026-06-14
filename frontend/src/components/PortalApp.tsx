@@ -183,7 +183,7 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
           <form onSubmit={login} className="bg-gray-800 rounded-2xl p-6 space-y-4 border border-gray-700">
             <div>
               <label className="text-xs text-gray-400 mb-1 block">Email or Username</label>
-              <input className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-white" value={username} onChange={e => setUsername(e.target.value)} placeholder="Email (staff) or username (customer)" autoCapitalize="none" />
+              <input className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-white" value={username} onChange={e => setUsername(e.target.value)} placeholder="Email or Username" autoCapitalize="none" />
             </div>
             <div>
               <label className="text-xs text-gray-400 mb-1 block">Password</label>

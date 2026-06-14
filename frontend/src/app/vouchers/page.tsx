@@ -42,7 +42,7 @@ export default function VouchersPage() {
 
   const list = vouchers as Voucher[];
   const batchList = batches as Batch[];
-  const pkgList = packages as Array<{ id: string; name: string; service: string }>;
+  const pkgList = packages as Array<{ id: string; name: string; service: string; validityMinutes?: number; speedUpKbps?: number; speedDownKbps?: number }>;
   const hotspotPackages = pkgList.filter(p => p.service === 'HOTSPOT');
   const routerList = routers as Array<{ id: string; name: string }>;
 
@@ -246,37 +246,28 @@ export default function VouchersPage() {
 
           <div>
             <label className="label">Hotspot package</label>
-            <select className="input" value={form.packageId} onChange={e => setForm(f => ({ ...f, packageId: e.target.value }))}>
-              <option value="">— No package (uses default speed) —</option>
+            <select required className="input" value={form.packageId} onChange={e => setForm(f => ({ ...f, packageId: e.target.value }))}>
+              <option value="">— Select a package —</option>
               {hotspotPackages.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
-            {hotspotPackages.length === 0 && (
+            {hotspotPackages.length === 0 ? (
               <p className="text-xs text-orange-500 mt-1">No HOTSPOT packages yet. Create one on the Packages page first.</p>
-            )}
+            ) : (() => {
+              const pkg = hotspotPackages.find(p => p.id === form.packageId);
+              return pkg ? (
+                <p className="text-xs text-gray-500 mt-1">
+                  Duration {formatDuration(pkg.validityMinutes || 0)} · Speed {Math.round((pkg.speedDownKbps || 0) / 1024 * 10) / 10}M↓ / {Math.round((pkg.speedUpKbps || 0) / 1024 * 10) / 10}M↑ — taken from the package.
+                </p>
+              ) : <p className="text-xs text-gray-400 mt-1">The package sets the duration and up/down speeds.</p>;
+            })()}
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="label">Session duration</label>
-              <select className="input" value={form.durationMinutes} onChange={e => setForm(f => ({ ...f, durationMinutes: parseInt(e.target.value) }))}>
-                <option value={30}>30 minutes</option>
-                <option value={60}>1 hour</option>
-                <option value={180}>3 hours</option>
-                <option value={360}>6 hours</option>
-                <option value={720}>12 hours</option>
-                <option value={1440}>1 day</option>
-                <option value={4320}>3 days</option>
-                <option value={10080}>1 week</option>
-                <option value={43200}>30 days</option>
-              </select>
-            </div>
-            <div>
-              <label className="label">Restrict to router (optional)</label>
-              <select className="input" value={form.routerId} onChange={e => setForm(f => ({ ...f, routerId: e.target.value }))}>
-                <option value="">— Any router —</option>
-                {routerList.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-              </select>
-            </div>
+          <div>
+            <label className="label">Restrict to router (optional)</label>
+            <select className="input" value={form.routerId} onChange={e => setForm(f => ({ ...f, routerId: e.target.value }))}>
+              <option value="">— Any router —</option>
+              {routerList.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </select>
           </div>
 
           <div>

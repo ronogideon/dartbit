@@ -178,6 +178,8 @@ model MikrotikRouter {
   wgPeerAdded    Boolean                   @default(false) // true once the peer is registered on the droplet
   winboxPort     Int?                      @unique // stable public port on the droplet DNAT'd to this router's Winbox (8291)
   winboxOpenUntil DateTime?                // remote Winbox access auto-closes after this time
+  winboxUser     String?                   // dedicated RouterOS login Dartbit provisions for tenant Winbox access
+  winboxPass     String?                   // password for winboxUser (stored so the dashboard can show it)
   wgLastHandshake DateTime?                // last VPN handshake seen (for "VPN online" status)
   radiusSecret   String?                   // per-router RADIUS/CoA shared secret (for PPPoE-over-RADIUS)
   radiusEnabled  Boolean                   @default(false) // is this router using RADIUS auth?

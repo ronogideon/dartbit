@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getRouters, linkRouter, updateRouter, deleteRouter, getProvisionConfig, saveProvisionConfig, rebootRouter, changeRouterIdentity, updateRouterLanPorts, getRouterInterfaces, reprovisionRouter, getRouterZtpCommand, getRouterVpn, provisionRouterVpn } from '@/lib/api';
+import { getRouters, linkRouter, updateRouter, deleteRouter, getProvisionConfig, saveProvisionConfig, rebootRouter, changeRouterIdentity, updateRouterLanPorts, getRouterInterfaces, reprovisionRouter, getRouterZtpCommand, getRouterVpn, provisionRouterVpn, openWinbox, closeWinbox } from '@/lib/api';
 import LinkWizard from '@/components/LinkWizard';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
@@ -156,6 +156,63 @@ function ProvisionPanel({ routerId }: { routerId: string }) {
 }
 
 // Options menu — identity change & LAN port update
+// Remote Winbox access: opens a port-forward on the droplet so the tenant can Winbox straight to the
+// router (no VPN client needed) using a dedicated login, then shows the address + credentials with a
+// live countdown. Access auto-closes server-side after its window.
+function WinboxAccess({ routerId }: { routerId: string }) {
+  const [info, setInfo] = useState<{ address: string; username: string; password: string; expiresAt: string } | null>(null);
+  const [showPass, setShowPass] = useState(false);
+  const openMut = useMutation({
+    mutationFn: () => openWinbox(routerId),
+    onSuccess: (d: { address: string; username: string; password: string; expiresAt: string }) => { setInfo(d); toast.success('Winbox access opened'); },
+    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : 'Could not open Winbox access'),
+  });
+  const closeMut = useMutation({
+    mutationFn: () => closeWinbox(routerId),
+    onSuccess: () => { setInfo(null); toast.success('Winbox access closed'); },
+  });
+  const copy = (v: string, label: string) => { navigator.clipboard.writeText(v); toast.success(`${label} copied`); };
+
+  return (
+    <div className="space-y-2 border-t border-gray-100 dark:border-gray-800 pt-4">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium">Remote Winbox</div>
+        {info && (
+          <button onClick={() => closeMut.mutate()} disabled={closeMut.isPending} className="text-xs text-red-600">Close access</button>
+        )}
+      </div>
+      {!info ? (
+        <>
+          <p className="text-xs text-gray-500">Open a temporary, secure path to this router. You can connect with Winbox directly — no VPN setup on your computer.</p>
+          <button onClick={() => openMut.mutate()} disabled={openMut.isPending} className="btn-primary w-full text-sm">
+            {openMut.isPending ? 'Opening…' : 'Open Winbox access'}
+          </button>
+        </>
+      ) : (
+        <div className="space-y-2">
+          {([
+            ['Address', info.address, false],
+            ['Username', info.username, false],
+            ['Password', showPass ? info.password : '••••••••', true],
+          ] as [string, string, boolean][]).map(([label, val, isPass]) => (
+            <div key={label} className="flex items-center justify-between p-2 rounded-lg bg-gray-50 dark:bg-gray-800/50">
+              <div className="min-w-0">
+                <div className="text-[11px] text-gray-500">{label}</div>
+                <div className="font-mono text-sm truncate">{val}</div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {isPass && <button onClick={() => setShowPass(s => !s)} className="text-xs text-blue-600">{showPass ? 'Hide' : 'Show'}</button>}
+                <button onClick={() => copy(isPass ? info.password : val, label)} className="text-gray-400 hover:text-blue-600"><Copy size={14} /></button>
+              </div>
+            </div>
+          ))}
+          <p className="text-xs text-gray-400">Access closes automatically at {new Date(info.expiresAt).toLocaleTimeString()}. Open Winbox → enter the address, username and password above.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function VpnModal({ isOpen, onClose, routerId, routerName }: { isOpen: boolean; onClose: () => void; routerId: string; routerName: string }) {
   const { data, isPending, refetch } = useQuery({
     queryKey: ['router-vpn', routerId],
@@ -205,17 +262,21 @@ function VpnModal({ isOpen, onClose, routerId, routerName }: { isOpen: boolean; 
                 {provisionMut.isPending ? 'Setting up…' : 'Set up VPN'}
               </button>
             </div>
-          ) : data.mikrotikConfig ? (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="text-xs text-gray-500">Run this once on the router (Winbox terminal / SSH)</label>
-                <button onClick={() => copyConfig(data.mikrotikConfig!)} className="text-xs text-blue-600 flex items-center gap-1"><Copy size={12} /> Copy</button>
-              </div>
-              <pre className="text-[11px] bg-gray-900 text-gray-100 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-all max-h-56">{data.mikrotikConfig}</pre>
-              <p className="text-xs text-gray-500">Endpoint: <span className="font-mono">{data.endpoint}</span>. After running it, the status above turns green once the tunnel connects.</p>
-              <p className="text-xs text-gray-400">To reach this router via Winbox: connect your computer to the Dartbit VPN, then open Winbox to <span className="font-mono">{data.wgIp}</span>.</p>
-            </div>
-          ) : null}
+          ) : (
+            <>
+              {data.mikrotikConfig && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs text-gray-500">Run this once on the router (Winbox terminal / SSH)</label>
+                    <button onClick={() => copyConfig(data.mikrotikConfig!)} className="text-xs text-blue-600 flex items-center gap-1"><Copy size={12} /> Copy</button>
+                  </div>
+                  <pre className="text-[11px] bg-gray-900 text-gray-100 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-all max-h-56">{data.mikrotikConfig}</pre>
+                  <p className="text-xs text-gray-500">Endpoint: <span className="font-mono">{data.endpoint}</span>. After running it, the status above turns green once the tunnel connects.</p>
+                </div>
+              )}
+              <WinboxAccess routerId={routerId} />
+            </>
+          )}
         </div>
       )}
     </Modal>

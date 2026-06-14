@@ -93,8 +93,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.50', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.50', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.51', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.51', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -125,7 +125,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.50 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.51 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -133,6 +133,7 @@ const server = app.listen(PORT, () => {
   startWgStatusRefresher();
   startAutoDeleteScheduler();
   startFreeradiusHealthCheck();
+  startWinboxAutoClose();
   // NOTE: the live "who's online + speed" view is owned by the router-side 3s dartbit-sessions
   // reporter (single writer of OnlineSession). RADIUS still does accounting (radacct) in the
   // background for billing/usage; we intentionally do NOT mirror radacct into OnlineSession here,
@@ -316,6 +317,31 @@ function startExpiryWatcher() {
   };
   run();
   setInterval(run, 10 * 1000); // every 10s — disconnects an expired user within ~10–12s
+}
+
+// Auto-close remote Winbox access once its window lapses: tears down the droplet DNAT so management
+// ports aren't left open. Runs every minute.
+function startWinboxAutoClose() {
+  const prisma = new PrismaClient();
+  const run = async () => {
+    try {
+      const now = new Date();
+      const due = await prisma.mikrotikRouter.findMany({
+        where: { winboxOpenUntil: { not: null, lte: now }, winboxPort: { not: null } },
+        select: { id: true, winboxPort: true },
+      });
+      if (!due.length) return;
+      const { closeWinboxPort } = await import('./utils/wireguard');
+      for (const r of due) {
+        if (r.winboxPort) await closeWinboxPort(r.winboxPort).catch(() => {});
+        await prisma.mikrotikRouter.update({ where: { id: r.id }, data: { winboxOpenUntil: null } }).catch(() => {});
+      }
+    } catch (e) {
+      console.error('[winbox] auto-close error:', e instanceof Error ? e.message : e);
+    }
+  };
+  run();
+  setInterval(run, 60 * 1000); // every 60s
 }
 
 // Periodically pull WireGuard peer handshakes from the droplet so the router cards show live VPN
@@ -518,6 +544,8 @@ async function patchDatabase() {
     // MikrotikRouter — remote Winbox port-forward (per-router DNAT on the droplet).
     await safeExec(prisma, 'MikrotikRouter.winboxPort', `ALTER TABLE "MikrotikRouter" ADD COLUMN IF NOT EXISTS "winboxPort" INTEGER`);
     await safeExec(prisma, 'MikrotikRouter.winboxOpenUntil', `ALTER TABLE "MikrotikRouter" ADD COLUMN IF NOT EXISTS "winboxOpenUntil" TIMESTAMP(3)`);
+    await safeExec(prisma, 'MikrotikRouter.winboxUser', `ALTER TABLE "MikrotikRouter" ADD COLUMN IF NOT EXISTS "winboxUser" TEXT`);
+    await safeExec(prisma, 'MikrotikRouter.winboxPass', `ALTER TABLE "MikrotikRouter" ADD COLUMN IF NOT EXISTS "winboxPass" TEXT`);
 
     // RouterProvisioningConfig — CREATE TABLE first
     await safeExec(prisma, 'RouterProvisioningConfig table',
