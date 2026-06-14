@@ -105,9 +105,11 @@ export async function syncSubscriberToRadius(subscriberId: string, opts?: { kick
 
   const now = new Date();
   const expired = sub.expiresAt ? sub.expiresAt <= now : false;
-  // HOTSPOT entitlement also requires a package (matches the legacy expiry-watcher rule).
+  // HOTSPOT entitlement: active + not expired, and EITHER a linked package OR a real expiry window.
+  // Requiring a package alone wrongly de-entitled paid users without one (vouchers, custom durations,
+  // M-Pesa buys with no package) — their radcheck got cleared and auto-login then looped forever.
   const entitled = sub.service === 'HOTSPOT'
-    ? sub.isActive && !!sub.packageId && !expired
+    ? sub.isActive && !expired && (!!sub.packageId || !!sub.expiresAt)
     : sub.isActive && !expired;
 
   // Build the identity list for this subscriber.

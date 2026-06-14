@@ -236,11 +236,28 @@ button.primary svg{width:14px;height:14px}
   // Reconnect an already-paid device by its MAC. Asks the backend whether this MAC has an ACTIVE
   // subscriber/voucher/payment; if so, submits its credentials to the hotspot (auto sign-in). If not,
   // falls through to the package list. Guarded so it can NEVER loop: it only runs on a clean page
-  // load (no MikroTik error) or an explicit tap, and /auto-login only returns ACTIVE plans, so an
-  // expired device just gets the buy options instead of retrying forever.
+  // load (no MikroTik error) or an explicit tap, /auto-login only returns ACTIVE plans, AND a short
+  // cross-reload attempt counter stops the "reconnecting..." cycle if a login keeps failing to stick.
   var autoTried=false;
+  function recentAutoAttempts(){
+    try{
+      var k='dbtRC', nowS=Date.now(), arr=JSON.parse(localStorage.getItem(k)||'[]');
+      arr=arr.filter(function(t){return nowS-t<45000});
+      return arr;
+    }catch(e){return []}
+  }
+  function noteAutoAttempt(){
+    try{var k='dbtRC',arr=recentAutoAttempts();arr.push(Date.now());localStorage.setItem(k,JSON.stringify(arr));}catch(e){}
+  }
+  function clearAutoAttempts(){ try{localStorage.removeItem('dbtRC')}catch(e){} }
   function tryAutoLogin(manual){
     if(autoTried&&!manual)return; autoTried=true;
+    // If the device has already tried to reconnect several times in the last ~45s without it sticking,
+    // stop auto-submitting (that's the "stuck reconnecting" loop) and let the user choose.
+    if(!manual && recentAutoAttempts().length>=3){
+      show('error','Reconnect isn\\'t holding. Tap your package or re-enter your voucher to continue.');
+      loadPackages(); return;
+    }
     var xhr=new XMLHttpRequest();
     xhr.open('POST',BACKEND+'/hotspot/auto-login',true);
     xhr.setRequestHeader('Content-Type','application/json');
@@ -248,7 +265,7 @@ button.primary svg{width:14px;height:14px}
     xhr.onload=function(){
       try{
         var data=JSON.parse(xhr.responseText);
-        if(data&&data.success){show('success','Welcome back! Reconnecting...');setTimeout(function(){submitMikrotik(data.username,data.password)},400);}
+        if(data&&data.success){noteAutoAttempt();show('success','Welcome back! Reconnecting...');setTimeout(function(){submitMikrotik(data.username,data.password)},400);}
         else{if(manual)show('error','No active plan for this device. Buy a package or enter a voucher.');loadPackages();}
       }catch(e){loadPackages();}
     };
@@ -476,6 +493,7 @@ button.primary svg{width:14px;height:14px}
   var isLoggedIn=(loggedUser && loggedUser!=='$(username)' && loggedUser.length>0);
   var dest='$(link-redirect)';
   if(isLoggedIn){
+    clearAutoAttempts();
     show('success','Connected. You\\'re online.');
     if(dest && dest.indexOf('$(')!==0){setTimeout(function(){location.href=dest},800);}
   } else {

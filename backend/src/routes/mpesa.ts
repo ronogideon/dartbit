@@ -390,6 +390,10 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
 
   // Add/refresh the customer in the subscribers list (HOTSPOT). Reuse the existing record
   // for this phone (found above) so we never create a duplicate for the same number.
+  // Was this a RESUME of a lapsed/walled-garden session (vs a fresh buy or an early renewal)? Only a
+  // resume needs a kick — a fresh login is already at full service, and kicking it would log the
+  // just-connected device straight back out (the "logged out after a few seconds" complaint).
+  const wasExpired = !!existingSub && (existingSub.expiresAt ? existingSub.expiresAt <= new Date() : false);
   let subscriberId: string | null = null;
   try {
     if (!existingSub) {
@@ -435,7 +439,7 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   if (radiusManaged && subscriberId) {
     try {
       const { radiusConfigured, syncSubscriberToRadius } = await import('../utils/radius');
-      if (radiusConfigured()) await syncSubscriberToRadius(subscriberId, { kickToApply: true });
+      if (radiusConfigured()) await syncSubscriberToRadius(subscriberId, { kickToApply: wasExpired });
     } catch (e) {
       console.error('radius hotspot sync error:', e instanceof Error ? e.message : e);
     }
