@@ -93,8 +93,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.46', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.46', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.47', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.47', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -125,7 +125,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.46 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.47 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -489,6 +489,10 @@ async function patchDatabase() {
     // Subscriber columns
     await safeExec(prisma, 'Subscriber.ipAddress', `ALTER TABLE "Subscriber" ADD COLUMN IF NOT EXISTS "ipAddress" TEXT`);
     await safeExec(prisma, 'Subscriber.macAddress', `ALTER TABLE "Subscriber" ADD COLUMN IF NOT EXISTS "macAddress" TEXT`);
+
+    // MikrotikRouter — remote Winbox port-forward (per-router DNAT on the droplet).
+    await safeExec(prisma, 'MikrotikRouter.winboxPort', `ALTER TABLE "MikrotikRouter" ADD COLUMN IF NOT EXISTS "winboxPort" INTEGER`);
+    await safeExec(prisma, 'MikrotikRouter.winboxOpenUntil', `ALTER TABLE "MikrotikRouter" ADD COLUMN IF NOT EXISTS "winboxOpenUntil" TIMESTAMP(3)`);
 
     // RouterProvisioningConfig — CREATE TABLE first
     await safeExec(prisma, 'RouterProvisioningConfig table',

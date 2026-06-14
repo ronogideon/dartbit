@@ -431,7 +431,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
         add(`/ppp aaa set use-radius=yes accounting=yes interim-update=1m`);
         // Switch the Dartbit hotspot profile (only) to RADIUS auth with the login methods the portal
         // needs. Never touches other profiles (e.g. a coexisting centipid hotspot).
-        add(`:foreach hp in=[/ip hotspot profile find where name="hsprof-dartbit"] do={ /ip hotspot profile set $hp use-radius=yes radius-accounting=yes radius-interim-update=1m login-by=mac,cookie,http-chap,http-pap }`);
+        add(`:foreach hp in=[/ip hotspot profile find where name="hsprof-dartbit"] do={ /ip hotspot profile set $hp use-radius=yes radius-accounting=yes radius-interim-update=1m login-by=mac,http-chap,http-pap }`);
         add('');
         // Register/refresh this router as a FreeRADIUS client on the droplet, from the SAME wgIp +
         // secret — so the client, both /radius entries, and clients.conf can never drift apart.

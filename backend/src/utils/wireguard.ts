@@ -88,6 +88,23 @@ function shq(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+// Public host tenants connect Winbox to (the droplet), e.g. "vpn.dartbittech.com".
+export const winboxHost = WG_ENDPOINT.split(':')[0] || 'vpn.dartbittech.com';
+
+// Open a DNAT on the droplet so the public port forwards to <wgIp>:8291 (RouterOS Winbox). The
+// dartbit-winbox-port helper (installed at /usr/local/bin, allowed in sudoers) adds the PREROUTING
+// DNAT + POSTROUTING SNAT (so the router's replies return through the droplet) + a FORWARD accept.
+export async function openWinboxPort(port: number, wgIp: string): Promise<void> {
+  if (!wgConfigured()) throw new Error('VPN not configured (DARTBIT_WG_* env)');
+  await sshExec(`sudo dartbit-winbox-port set ${Number(port)} ${shq(wgIp)}`);
+}
+
+// Remove the DNAT for a port (best-effort).
+export async function closeWinboxPort(port: number): Promise<void> {
+  if (!wgConfigured()) return;
+  await sshExec(`sudo dartbit-winbox-port del ${Number(port)}`).catch(() => { /* best-effort */ });
+}
+
 export interface WgProvisionResult {
   wgIp: string;
   publicKey: string;

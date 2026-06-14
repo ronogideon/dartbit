@@ -183,6 +183,69 @@ router.post('/:id/command', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// POST /mikrotiks/:id/winbox/open — open remote Winbox access to this router.
+// Assigns a stable public port (once), opens a DNAT on the droplet (public port -> 10.8.0.x:8291),
+// and sets a 2h auto-close. Tenants then point Winbox at <winboxHost>:<port> — no VPN client needed.
+const WINBOX_PORT_BASE = 21000;
+const WINBOX_PORT_MAX = 21999; // 1000 routers; widen the range when you outgrow it
+const WINBOX_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+router.post('/:id/winbox/open', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const r = await prisma.mikrotikRouter.findUnique({ where: { id: req.params.id } });
+    if (!r) return sendError(res, 'Router not found', 404);
+    if (tenantId && r.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
+    if (!r.wgIp) return sendError(res, 'This router has no VPN address yet — provision it first.', 400);
+
+    const { winboxHost, openWinboxPort } = await import('../utils/wireguard');
+
+    // Assign a stable port on first use: the lowest free one in the range.
+    let port = r.winboxPort ?? null;
+    if (!port) {
+      const used = new Set(
+        (await prisma.mikrotikRouter.findMany({ where: { winboxPort: { not: null } }, select: { winboxPort: true } }))
+          .map(x => x.winboxPort as number),
+      );
+      for (let p = WINBOX_PORT_BASE; p <= WINBOX_PORT_MAX; p++) { if (!used.has(p)) { port = p; break; } }
+      if (!port) return sendError(res, 'No free Winbox ports left — widen the range.', 500);
+    }
+
+    await openWinboxPort(port, r.wgIp);
+    const openUntil = new Date(Date.now() + WINBOX_TTL_MS);
+    await prisma.mikrotikRouter.update({ where: { id: r.id }, data: { winboxPort: port, winboxOpenUntil: openUntil } });
+
+    sendSuccess(res, {
+      host: winboxHost,
+      port,
+      address: `${winboxHost}:${port}`,
+      expiresAt: openUntil,
+      message: `Open Winbox and connect to ${winboxHost}:${port} (closes ${openUntil.toLocaleTimeString()}).`,
+    });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed to open Winbox access', 500);
+  }
+});
+
+// POST /mikrotiks/:id/winbox/close — close remote Winbox access now.
+router.post('/:id/winbox/close', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const r = await prisma.mikrotikRouter.findUnique({ where: { id: req.params.id } });
+    if (!r) return sendError(res, 'Router not found', 404);
+    if (tenantId && r.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
+
+    if (r.winboxPort) {
+      const { closeWinboxPort } = await import('../utils/wireguard');
+      await closeWinboxPort(r.winboxPort);
+    }
+    await prisma.mikrotikRouter.update({ where: { id: r.id }, data: { winboxOpenUntil: null } });
+    sendSuccess(res, { closed: true });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed to close Winbox access', 500);
+  }
+});
+
 // GET /mikrotiks/:id/ztp-command — get the fetch+import command for an EXISTING router
 // Used for reprovisioning without creating a new router
 router.get('/:id/ztp-command', async (req: AuthRequest, res: Response) => {

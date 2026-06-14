@@ -468,16 +468,28 @@ button.primary svg{width:14px;height:14px}
     xhr.send(JSON.stringify({username:u,password:p,routerApiKey:API_KEY,mac:MAC,ip:IP}));
   });
 
-  // Show errors passed by MikroTik
-  var err='$(error)';
-  if(err&&err!=='$(error)'&&err!==''){
-    // A login attempt just failed — do NOT auto-retry (that's what caused the old endless loop).
-    // Show the error and the package list so the user can choose what to do.
-    show('error','Login failed: '+err);loadPackages();
+  // If MikroTik is serving this page AFTER a successful login (alogin.html is the same file as
+  // login.html), $(username) is filled with the logged-in user. In that case we must NOT run the
+  // auto-login again — re-submitting the code with shared-users=1 forces a logout/login churn every
+  // few seconds. Just send the device on to wherever it was going.
+  var loggedUser='$(username)';
+  var isLoggedIn=(loggedUser && loggedUser!=='$(username)' && loggedUser.length>0);
+  var dest='$(link-redirect)';
+  if(isLoggedIn){
+    show('success','Connected. You\\'re online.');
+    if(dest && dest.indexOf('$(')!==0){setTimeout(function(){location.href=dest},800);}
   } else {
-    // Clean load: try to reconnect this device by MAC if it has an active plan. If not, tryAutoLogin
-    // falls through to the package list. Safe — /auto-login only returns ACTIVE plans.
-    tryAutoLogin(false);
+    // Show errors passed by MikroTik
+    var err='$(error)';
+    if(err&&err!=='$(error)'&&err!==''){
+      // A login attempt just failed — do NOT auto-retry (that's what caused the old endless loop).
+      // Show the error and the package list so the user can choose what to do.
+      show('error','Login failed: '+err);loadPackages();
+    } else {
+      // Clean load, not yet logged in: try to reconnect this device by MAC if it has an active plan.
+      // If not, tryAutoLogin falls through to the package list. Safe — /auto-login only returns ACTIVE plans.
+      tryAutoLogin(false);
+    }
   }
 })();
 </script>
