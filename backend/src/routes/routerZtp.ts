@@ -1230,11 +1230,14 @@ router.get('/sync-script', async (req: Request, res: Response) => {
         add(`:if ([:len [/ip hotspot user find name="${v.code}"]] > 0) do={ /ip hotspot user set [find name="${v.code}"] mac-address=${v.usedByMac.toUpperCase()} }`);
       }
       if (expired) {
-        // Wall-clock expired: disable the user and remove any active session + mac-cookie
-        // so the device is dropped and cannot auto-reconnect.
+        // Wall-clock expired: disable the user and remove any active session + cookie so the device
+        // is dropped and cannot auto-reconnect. The MAC cookie is keyed by mac-address (not user),
+        // so we remove by BOTH user AND mac — this is what actually bounds the cookie's life to the
+        // session regardless of the cookie's nominal timeout.
         add(`:if ([:len [/ip hotspot user find name="${v.code}"]] > 0) do={ /ip hotspot user set [find name="${v.code}"] disabled=yes }`);
         add(`:foreach a in=[/ip hotspot active find user="${v.code}"] do={ /ip hotspot active remove \$a }`);
         add(`:foreach c in=[/ip hotspot cookie find user="${v.code}"] do={ /ip hotspot cookie remove \$c }`);
+        if (v.usedByMac) add(`:foreach c in=[/ip hotspot cookie find mac-address="${v.usedByMac.toUpperCase()}"] do={ /ip hotspot cookie remove \$c }`);
       } else {
         add(`:if ([:len [/ip hotspot user find name="${v.code}"]] > 0) do={ /ip hotspot user set [find name="${v.code}"] disabled=no }`);
       }

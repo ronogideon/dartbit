@@ -93,8 +93,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.55', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.55', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.56', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.56', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -125,7 +125,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.55 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.56 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -303,7 +303,8 @@ function startExpiryWatcher() {
           } else {
             const mac = (sub.macAddress || '').toUpperCase();
             const macClause = mac ? ` or mac-address="${mac}"` : '';
-            await enqueueCommand(sub.routerId!, `:foreach a in=[/ip hotspot active find where user="${sub.username}"${macClause}] do={ /ip hotspot active remove $a }`);
+            const cookieByMac = mac ? `:foreach c in=[/ip hotspot cookie find mac-address="${mac}"] do={ /ip hotspot cookie remove $c }; ` : '';
+            await enqueueCommand(sub.routerId!, `:foreach a in=[/ip hotspot active find where user="${sub.username}"${macClause}] do={ /ip hotspot active remove $a }\n${cookieByMac}:foreach c in=[/ip hotspot cookie find user="${sub.username}"] do={ /ip hotspot cookie remove $c }`);
           }
           console.log(`[expiry] kicked ${sub.username} (${sub.service})`);
         } catch (e) { console.error('expiry: kick failed for', sub.username, e instanceof Error ? e.message : e); }
