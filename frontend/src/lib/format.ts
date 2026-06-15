@@ -39,8 +39,33 @@ export function expiryInfo(expiresAt: string | null | undefined): { tier: Expiry
   const ms = new Date(expiresAt).getTime() - Date.now();
   if (ms <= 0) return { tier: 'expired', text: 'Expired' };
   const days = ms / 86400000;
-  const tier: ExpiryTier = days > 5 ? 'ok' : 'soon';
+  const tier: ExpiryTier = days >= 7 ? 'ok' : 'soon';
   return { tier, text: formatExpiryRelative(expiresAt) };
+}
+
+// Traffic-light expiry badge: red = expired, yellow = under 7 days, green = 7+ days, with brighter
+// hues the longer the remaining time. Returns the text plus a ready-to-use Tailwind class so every
+// surface (admin tables, customer portal) renders it identically.
+export function expiryBadge(expiresAt: string | null | undefined): { text: string; className: string } {
+  if (!expiresAt) return { text: '—', className: 'text-gray-400' };
+  const ms = new Date(expiresAt).getTime() - Date.now();
+  if (ms <= 0) return { text: 'Expired', className: 'bg-red-100 text-red-700 dark:bg-red-500/25 dark:text-red-300' };
+  const days = ms / 86400000;
+  const text = formatExpiryRelative(expiresAt);
+  if (days < 7) {
+    return {
+      text,
+      className: days < 2
+        ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300'      // dimmer: nearly out
+        : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-400/25 dark:text-yellow-200', // brighter yellow
+    };
+  }
+  return {
+    text,
+    className: days >= 30
+      ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-400/25 dark:text-emerald-200' // brightest: lots of time
+      : 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300',         // green: a week+
+  };
 }
 
 // Human-readable bytes (e.g. 1.5 GB).

@@ -5,6 +5,7 @@ import { login as adminLogin } from '@/lib/api';
 import toast from 'react-hot-toast';
 import { fontStack } from '@/lib/fonts';
 import { googleFontsHref } from '@/lib/fonts';
+import { expiryBadge } from '@/lib/format';
 import { Wifi, Calendar, Download, Upload, LogOut, Clock, RefreshCw, Zap } from 'lucide-react';
 
 interface Account {
@@ -226,7 +227,7 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div><div className="text-gray-400 text-xs">Username</div><div className="font-mono">{account.username}</div></div>
             <div><div className="text-gray-400 text-xs">Package</div><div>{account.package || '—'}</div></div>
-            <div className="flex items-center gap-1.5"><Calendar size={16} className="text-white" strokeWidth={2.5} /><div><div className="text-gray-400 text-xs">Expires</div><div className="font-bold text-white">{fmtDate(account.expiresAt)}</div></div></div>
+            <div className="flex items-center gap-1.5"><Calendar size={16} className="text-white" strokeWidth={2.5} /><div><div className="text-gray-400 text-xs">Expires</div><div className="font-bold text-white flex items-center gap-2">{fmtDate(account.expiresAt)}{(() => { const b = expiryBadge(account.expiresAt); return b.className === 'text-gray-400' ? null : <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${b.className}`}>{b.text}</span>; })()}</div></div></div>
             <div className="flex items-center gap-1.5"><Clock size={14} className="text-gray-400" /><div><div className="text-gray-400 text-xs">Last online</div><div>{fmtDate(account.lastOnlineAt)}</div></div></div>
           </div>
         </div>

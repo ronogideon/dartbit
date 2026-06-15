@@ -6,14 +6,9 @@ import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import SubscriberDetail from '@/components/SubscriberDetail';
-import { expiryInfo, timeAgo, type ExpiryTier } from '@/lib/format';
+import { expiryBadge, timeAgo } from '@/lib/format';
 
 // Time-left pill colors: text close to the indicator, on a near-opaque tinted background.
-const EXPIRY_PILL: Record<Exclude<ExpiryTier, 'none'>, string> = {
-  ok: 'bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-300',
-  soon: 'bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300',
-  expired: 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300',
-};
 import toast from 'react-hot-toast';
 import { Plus, Edit2, Trash2, Search } from 'lucide-react';
 
@@ -89,13 +84,20 @@ export default function SubscribersPage() {
   // Deep-link: /subscribers?focus=<id> (used by subscriber links elsewhere) opens that detail panel.
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const id = new URLSearchParams(window.location.search).get('focus');
-    if (id) {
-      setDetailId(id);
-      // Clean the URL so a refresh doesn't keep re-opening it.
+    const params = new URLSearchParams(window.location.search);
+    const focus = params.get('focus');
+    if (focus) {
+      setDetailId(focus);
       window.history.replaceState(null, '', '/subscribers');
+      return;
     }
-  }, []);
+    const edit = params.get('edit');
+    if (edit) {
+      const s = (subscribers as Subscriber[]).find(x => x.id === edit);
+      if (s) { openEdit(s); window.history.replaceState(null, '', '/subscribers'); }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subscribers]);
 
   // Open the edit modal for a subscriber referenced by id (used from the detail panel's Edit button).
   const openEditById = (id: string) => {
@@ -225,6 +227,7 @@ export default function SubscribersPage() {
                 <th className="table-th">Subscriber</th>
                 <th className="table-th">Service</th>
                 <th className="table-th">Package</th>
+                <th className="table-th">Router</th>
                 <th className="table-th">Time Left</th>
                 <th className="table-th">Last Online</th>
                 <th className="table-th">Actions</th>
@@ -232,11 +235,10 @@ export default function SubscribersPage() {
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
               {isPending ? (
-                <tr><td colSpan={6} className="table-td text-center py-8 text-gray-400">Loading...</td></tr>
+                <tr><td colSpan={7} className="table-td text-center py-8 text-gray-400">Loading...</td></tr>
               ) : filtered.length === 0 ? (
-                <tr><td colSpan={6} className="table-td text-center py-8 text-gray-400">No subscribers found</td></tr>
+                <tr><td colSpan={7} className="table-td text-center py-8 text-gray-400">No subscribers found</td></tr>
               ) : filtered.map(s => {
-                const exp = expiryInfo(s.expiresAt);
                 return (
                   <tr key={s.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/30">
                     <td className="table-td">
@@ -250,14 +252,11 @@ export default function SubscribersPage() {
                     </td>
                     <td className="table-td"><span className="badge-blue">{s.service}</span></td>
                     <td className="table-td">{s.package?.name || '-'}</td>
+                    <td className="table-td">{s.router?.name ? <span className="badge-blue">{s.router.name}</span> : <span className="text-gray-400">—</span>}</td>
                     <td className="table-td">
-                      {exp.tier === 'none' ? (
-                        <span className="text-gray-400">—</span>
-                      ) : (
-                        <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${EXPIRY_PILL[exp.tier]}`}>
-                          {exp.text}
-                        </span>
-                      )}
+                      {(() => { const b = expiryBadge(s.expiresAt); return b.className === 'text-gray-400'
+                        ? <span className="text-gray-400">—</span>
+                        : <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${b.className}`}>{b.text}</span>; })()}
                     </td>
                     <td className="table-td text-gray-500 text-sm">
                       {s.isOnline ? <span className="text-green-600 font-medium">Online now</span> : timeAgo(s.lastOnlineAt)}

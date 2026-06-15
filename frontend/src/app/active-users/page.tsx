@@ -1,5 +1,6 @@
 'use client';
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { getOnlineSessions } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
@@ -53,6 +54,7 @@ export default function ActiveUsersPage() {
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState<'ALL' | 'PPPOE' | 'HOTSPOT' | 'STATIC'>('ALL');
   const [detailId, setDetailId] = useState<string | null>(null);
+  const router = useRouter();
   const allS = sessions as Session[];
   const counts = {
     ALL: allS.length,
@@ -166,7 +168,7 @@ export default function ActiveUsersPage() {
         </table>
       </div>
 
-      <SubscriberDetail subscriberId={detailId} onClose={() => setDetailId(null)} />
+      <SubscriberDetail subscriberId={detailId} onClose={() => setDetailId(null)} onEdit={(id) => router.push(`/subscribers?edit=${id}`)} />
     </AppLayout>
   );
 }

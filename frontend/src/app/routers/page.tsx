@@ -1,10 +1,11 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getRouters, linkRouter, updateRouter, deleteRouter, getProvisionConfig, saveProvisionConfig, rebootRouter, changeRouterIdentity, updateRouterLanPorts, getRouterInterfaces, reprovisionRouter, getRouterZtpCommand, getRouterVpn, provisionRouterVpn, openWinbox, closeWinbox } from '@/lib/api';
+import { getRouters, linkRouter, updateRouter, deleteRouter, getProvisionConfig, saveProvisionConfig, rebootRouter, changeRouterIdentity, updateRouterLanPorts, getRouterInterfaces, reprovisionRouter, getRouterZtpCommand, getRouterVpn, provisionRouterVpn, openWinbox, closeWinbox, getRouterOverview, getSubscribers } from '@/lib/api';
 import LinkWizard from '@/components/LinkWizard';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
+import { expiryBadge } from '@/lib/format';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import toast from 'react-hot-toast';
 import { Plus, Edit2, Trash2, Copy, Terminal, Settings2, ChevronDown, ChevronUp, RotateCw, MoreVertical, Tag, Network, DownloadCloud } from 'lucide-react';
@@ -389,10 +390,10 @@ function RouterOptionsMenu({ router, onReboot, onEdit, onDelete }: {
       <div className="relative">
         <button
           onClick={e => { e.stopPropagation(); setOpen(v => !v); }}
-          className="p-1.5 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-          title="More options"
+          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+          title="Router actions"
         >
-          <MoreVertical size={15} />
+          Actions <MoreVertical size={13} />
         </button>
         {open && (
           <div
@@ -434,12 +435,6 @@ function RouterOptionsMenu({ router, onReboot, onEdit, onDelete }: {
               className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-800 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <RotateCw size={14} className="text-orange-600" /> Reboot router
-            </button>
-            <button
-              onClick={() => { setOpen(false); setVpnModal(true); }}
-              className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-gray-800 flex items-center gap-2"
-            >
-              <Network size={14} className="text-indigo-600" /> Manage VPN
             </button>
             <div className="border-t border-gray-200 dark:border-gray-700 my-1" />
             <button
@@ -567,6 +562,101 @@ function RouterOptionsMenu({ router, onReboot, onEdit, onDelete }: {
   );
 }
 
+// Small labelled stat box used across the router detail tabs.
+function StatBox({ label, value, mono, accent }: { label: string; value: string; mono?: boolean; accent?: 'green' | 'gray' }) {
+  return (
+    <div className="bg-gray-50 dark:bg-gray-800/50 rounded-lg p-3">
+      <div className="text-xs text-gray-500">{label}</div>
+      <div className={`font-semibold text-sm ${mono ? 'font-mono' : ''} ${accent === 'green' ? 'text-green-600' : ''}`}>{value}</div>
+    </div>
+  );
+}
+
+// Clickable-router detail: Info (health + VPN + Winbox), Users (subscribers on this router), Payments
+// (this month's collections by service). Data from /mikrotiks/:id/overview + the subscribers list.
+function RouterDetailModal({ router, isOpen, onClose }: { router: { id: string; name: string; status?: string; uptime?: string } | null; isOpen: boolean; onClose: () => void }) {
+  const [tab, setTab] = useState<'info' | 'users' | 'payments'>('info');
+  const [vpnOpen, setVpnOpen] = useState(false);
+  const { data: overview } = useQuery({
+    queryKey: ['router-overview', router?.id],
+    queryFn: () => getRouterOverview(router!.id),
+    enabled: isOpen && !!router,
+    refetchInterval: isOpen ? 15000 : false,
+  });
+  const { data: allSubs = [] } = useQuery({ queryKey: ['subscribers'], queryFn: getSubscribers, enabled: isOpen });
+  if (!router) return null;
+  const subs = (allSubs as Array<{ id: string; username: string; service: string; isOnline?: boolean; expiresAt?: string; routerId?: string; router?: { id: string } }>)
+    .filter(s => (s.router?.id || s.routerId) === router.id);
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title={router.name} size="lg">
+      <div className="flex gap-1 mb-4 border-b border-gray-100 dark:border-gray-800">
+        {(['info', 'users', 'payments'] as const).map(t => (
+          <button key={t} onClick={() => setTab(t)}
+            className={`px-3 py-2 text-sm font-medium capitalize border-b-2 -mb-px ${tab === t ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>{t}</button>
+        ))}
+      </div>
+
+      {tab === 'info' && (
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <StatBox label="Status" value={overview?.health?.status || router.status || '—'} accent={(overview?.health?.status || router.status) === 'ONLINE' ? 'green' : undefined} />
+            <StatBox label="Uptime" value={overview?.health?.uptime || router.uptime || '—'} />
+            <StatBox label="VPN" value={overview?.vpn?.online ? 'Connected' : 'Offline'} accent={overview?.vpn?.online ? 'green' : undefined} />
+            <StatBox label="VPN IP" value={overview?.vpn?.wgIp || '—'} mono />
+          </div>
+          <p className="text-xs text-gray-400">Last seen: {overview?.health?.lastSeenAt ? new Date(overview.health.lastSeenAt).toLocaleString() : '—'}</p>
+          {overview?.vpn?.wgIp
+            ? <WinboxAccess routerId={router.id} />
+            : <p className="text-xs text-gray-400 border-t border-gray-100 dark:border-gray-800 pt-3">Set up the VPN below to enable remote Winbox access.</p>}
+          <button onClick={() => setVpnOpen(true)} className="btn-secondary w-full text-sm flex items-center justify-center gap-2">
+            <Network size={14} /> VPN setup &amp; status
+          </button>
+          <VpnModal isOpen={vpnOpen} onClose={() => setVpnOpen(false)} routerId={router.id} routerName={router.name} />
+        </div>
+      )}
+
+      {tab === 'users' && (
+        <div className="space-y-3">
+          <div className="grid grid-cols-3 gap-2">
+            <StatBox label="Online now" value={String(overview?.users?.online ?? 0)} />
+            <StatBox label="Active this month" value={String(overview?.users?.activeThisMonth ?? 0)} />
+            <StatBox label="Total" value={String(overview?.users?.total ?? subs.length)} />
+          </div>
+          <div className="max-h-72 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-800">
+            {subs.length === 0 ? <p className="text-sm text-gray-400 py-6 text-center">No users on this router yet.</p> : subs.map(s => {
+              const b = expiryBadge(s.expiresAt);
+              return (
+                <div key={s.id} className="flex items-center justify-between py-2">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate">{s.username}</div>
+                    <div className="text-xs text-gray-500">{s.service}{s.isOnline ? ' · online now' : ''}</div>
+                  </div>
+                  {b.className !== 'text-gray-400' && <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0 ${b.className}`}>{b.text}</span>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {tab === 'payments' && (
+        <div className="space-y-3">
+          <div className="rounded-xl bg-blue-50 dark:bg-blue-500/10 p-4 text-center">
+            <div className="text-xs text-gray-500">Collected this month</div>
+            <div className="text-2xl font-bold text-blue-600">KES {(overview?.payments?.monthTotal ?? 0).toLocaleString()}</div>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            {(['HOTSPOT', 'PPPOE', 'STATIC'] as const).map(svc => (
+              <StatBox key={svc} label={svc.charAt(0) + svc.slice(1).toLowerCase()} value={`KES ${(overview?.payments?.byService?.[svc] ?? 0).toLocaleString()}`} />
+            ))}
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 export default function RoutersPage() {
   const qc = useQueryClient();
   const [modalOpen, setModalOpen] = useState(false);
@@ -575,6 +665,8 @@ export default function RoutersPage() {
   const [editing, setEditing] = useState<MikrotikRouter | null>(null);
   const [search, setSearch] = useState('');
   const [form, setForm] = useState({ name: '', host: '' });
+  const [statusTab, setStatusTab] = useState<'all' | 'online' | 'offline'>('all');
+  const [detailRouter, setDetailRouter] = useState<MikrotikRouter | null>(null);
 
   const { data: routers = [], isPending } = useQuery({ queryKey: ['routers'], queryFn: getRouters, refetchInterval: 5000 });
 
@@ -611,7 +703,10 @@ export default function RoutersPage() {
   const handleSubmit = (e: React.FormEvent) => { e.preventDefault(); editing ? updateMut.mutate({ id: editing.id, data: form }) : linkMut.mutate(form); };
   const allRouters = routers as MikrotikRouter[];
   const rq = search.trim().toLowerCase();
-  const list = rq ? allRouters.filter(r => (r.name||'').toLowerCase().includes(rq) || (r.host||'').toLowerCase().includes(rq) || (r.status||'').toLowerCase().includes(rq)) : allRouters;
+  const searched = rq ? allRouters.filter(r => (r.name||'').toLowerCase().includes(rq) || (r.host||'').toLowerCase().includes(rq) || (r.status||'').toLowerCase().includes(rq)) : allRouters;
+  const onlineCount = allRouters.filter(r => r.status === 'ONLINE').length;
+  const offlineCount = allRouters.length - onlineCount;
+  const list = statusTab === 'all' ? searched : searched.filter(r => statusTab === 'online' ? r.status === 'ONLINE' : r.status !== 'ONLINE');
 
   return (
     <AppLayout>
@@ -627,6 +722,13 @@ export default function RoutersPage() {
 
       <div className="mb-4 max-w-md">
         <SearchInput value={search} onChange={setSearch} placeholder="Search by name, host, status…" />
+      </div>
+
+      <div className="flex gap-1 mb-4 border-b border-gray-100 dark:border-gray-800">
+        {([['all', `All (${allRouters.length})`], ['online', `Online (${onlineCount})`], ['offline', `Offline (${offlineCount})`]] as const).map(([key, label]) => (
+          <button key={key} onClick={() => setStatusTab(key)}
+            className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px ${statusTab === key ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>{label}</button>
+        ))}
       </div>
 
       {isPending ? (
@@ -646,8 +748,8 @@ export default function RoutersPage() {
           {list.map(r => (
             <div key={r.id} className="card p-5">
               <div className="flex items-start justify-between mb-3">
-                <div className="min-w-0 flex-1">
-                  <h3 className="font-semibold">{r.name}</h3>
+                <div className="min-w-0 flex-1 cursor-pointer" onClick={() => setDetailRouter(r)}>
+                  <h3 className="font-semibold hover:text-blue-600 transition-colors">{r.name}</h3>
                   {r.host && r.host !== 'auto' && <p className="text-sm text-gray-500">{r.host}</p>}
                   {r.identity && <p className="text-xs text-gray-400 mt-0.5">Identity: {r.identity}</p>}
                 </div>
@@ -661,7 +763,7 @@ export default function RoutersPage() {
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-2 mb-2">
+              <div className="grid grid-cols-3 gap-2 mb-2 cursor-pointer" onClick={() => setDetailRouter(r)}>
                 {[['CPU', r.cpuLoad != null ? `${r.cpuLoad}%` : '—'], ['Uptime', r.uptime || '—'], ['Interfaces', String(r.interfaces?.length ?? 0)]].map(([label, val]) => (
                   <div key={label} className="bg-gray-50 dark:bg-gray-800 rounded-lg p-2 text-center">
                     <p className="text-xs text-gray-500 mb-1">{label}</p>
@@ -703,6 +805,8 @@ export default function RoutersPage() {
           />
         </Modal>
       )}
+
+      <RouterDetailModal router={detailRouter} isOpen={!!detailRouter} onClose={() => setDetailRouter(null)} />
 
       <ConfirmDialog isOpen={!!deleteId} onClose={() => setDeleteId(null)}
         onConfirm={() => deleteId && deleteMut.mutate(deleteId)} loading={deleteMut.isPending}
