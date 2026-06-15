@@ -205,7 +205,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     //  gives robust auto-login for active devices without that loop.
     add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=mac,http-pap mac-auth-password=dartbit use-radius=no }`);
     // Always sync the profile settings (idempotent — no disruption)
-    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=mac,http-pap mac-auth-password=dartbit use-radius=no`);
+    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,mac,http-pap mac-auth-password=dartbit use-radius=no`);
     // User profile — one device per credential. No add-mac-cookie (cookie auth removed; MAC auth
     // via the MAC-named user is the reconnect mechanism and it cleanly stops at expiry).
     add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 address-pool=dhcp-pool }`);
@@ -431,7 +431,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
         add(`/ppp aaa set use-radius=yes accounting=yes interim-update=1m`);
         // Switch the Dartbit hotspot profile (only) to RADIUS auth with the login methods the portal
         // needs. Never touches other profiles (e.g. a coexisting centipid hotspot).
-        add(`:foreach hp in=[/ip hotspot profile find where name="hsprof-dartbit"] do={ /ip hotspot profile set $hp use-radius=yes radius-accounting=yes radius-interim-update=1m login-by=mac,http-chap,http-pap }`);
+        add(`:foreach hp in=[/ip hotspot profile find where name="hsprof-dartbit"] do={ /ip hotspot profile set $hp use-radius=yes radius-accounting=yes radius-interim-update=1m login-by=cookie,mac,http-chap,http-pap }`);
         add('');
         // Register/refresh this router as a FreeRADIUS client on the droplet, from the SAME wgIp +
         // secret — so the client, both /radius entries, and clients.conf can never drift apart.
@@ -1177,7 +1177,7 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     // Group by package so we create one user profile per package. M-Pesa-receipt vouchers
     // (batchId="MPESA") share the SAME profile as their hotspot subscriber (db-h-<pkg>) so the
     // code, username/password and MAC are one identity; standalone vouchers use db-v-<pkg>.
-    const profilesByPkg: Record<string, { name: string; speed: string }> = {};
+    const profilesByPkg: Record<string, { name: string; speed: string; validityMin: number }> = {};
     for (const v of vouchers) {
       if (v.package) {
         const pid = v.package.id.substring(0, 8);
@@ -1186,13 +1186,16 @@ router.get('/sync-script', async (req: Request, res: Response) => {
           profilesByPkg[pname] = {
             name: pname,
             speed: `${v.package.speedUpKbps}k/${v.package.speedDownKbps}k`,
+            validityMin: v.durationMinutes,
           };
         }
       }
     }
     for (const prof of Object.values(profilesByPkg)) {
       add(`:if ([:len [/ip hotspot user profile find name="${prof.name}"]] = 0) do={ /ip hotspot user profile add name=${prof.name} address-pool=dhcp-pool }`);
-      add(`/ip hotspot user profile set [find name="${prof.name}"] rate-limit="${prof.speed}" shared-users=1 add-mac-cookie=no address-pool=dhcp-pool`);
+      // Write a MAC cookie on login so the device reconnects silently, bounded to the voucher's
+      // validity + 60s (never the 7-day default) so it expires with the session and is then wiped.
+      add(`/ip hotspot user profile set [find name="${prof.name}"] rate-limit="${prof.speed}" shared-users=1 add-mac-cookie=yes mac-cookie-timeout=${prof.validityMin * 60 + 60}s address-pool=dhcp-pool`);
     }
     // Add each voucher as a hotspot user — username and password = code.
     // limit-uptime caps cumulative active time, BUT we ALSO enforce wall-clock expiry:
