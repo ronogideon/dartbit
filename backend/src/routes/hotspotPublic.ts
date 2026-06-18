@@ -224,7 +224,11 @@ router.get('/packages', async (req: Request, res: Response) => {
     if (!r) return res.status(404).json({ success: false, error: 'Router not found' });
 
     const packages = await prisma.package.findMany({
-      where: { tenantId: r.tenantId, service: 'HOTSPOT', isActive: true },
+      where: {
+        tenantId: r.tenantId, service: 'HOTSPOT', isActive: true,
+        // Offered on this router if scoped to all routers (empty list) or explicitly to this one.
+        OR: [{ routerIds: { isEmpty: true } }, { routerIds: { has: r.id } }],
+      },
       select: { id: true, name: true, speedUpKbps: true, speedDownKbps: true, validityMinutes: true, price: true, isTrial: true },
       orderBy: { price: 'asc' },
     });

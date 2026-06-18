@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getPackages, createPackage, updatePackage, deletePackage } from '@/lib/api';
+import { getPackages, createPackage, updatePackage, deletePackage, getRouters } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
@@ -12,10 +12,10 @@ import { Plus, Edit2, Trash2 } from 'lucide-react';
 
 interface Package {
   id: string; name: string; service: string; speedUpKbps: number;
-  speedDownKbps: number; validityMinutes: number; price: number; isActive: boolean; isTrial?: boolean;
+  speedDownKbps: number; validityMinutes: number; price: number; isActive: boolean; isTrial?: boolean; routerIds?: string[];
 }
 
-const emptyForm = { name: '', service: '', validityMinutes: '' as number | '', price: '' as number | '', isTrial: false };
+const emptyForm = { name: '', service: '', validityMinutes: '' as number | '', price: '' as number | '', isTrial: false, routerIds: [] as string[] };
 
 export default function PackagesPage() {
   const qc = useQueryClient();
@@ -30,6 +30,8 @@ export default function PackagesPage() {
   const [downSpeed, setDownSpeed] = useState<{ value: number | ''; unit: SpeedUnit }>({ value: '', unit: 'Mbps' });
 
   const { data: packages = [], isPending } = useQuery({ queryKey: ['packages'], queryFn: getPackages });
+  const { data: routers = [] } = useQuery({ queryKey: ['routers'], queryFn: getRouters });
+  const routerList = routers as Array<{ id: string; name: string }>;
 
   const createMut = useMutation({
     mutationFn: createPackage,
@@ -54,7 +56,7 @@ export default function PackagesPage() {
   };
   const openEdit = (p: Package) => {
     setEditing(p);
-    setForm({ name: p.name, service: p.service, validityMinutes: p.validityMinutes, price: p.price, isTrial: !!p.isTrial });
+    setForm({ name: p.name, service: p.service, validityMinutes: p.validityMinutes, price: p.price, isTrial: !!p.isTrial, routerIds: p.routerIds || [] });
     setUpSpeed(fromKbps(p.speedUpKbps)); setDownSpeed(fromKbps(p.speedDownKbps));
     setModalOpen(true);
   };
@@ -77,6 +79,7 @@ export default function PackagesPage() {
       validityMinutes: Number(form.validityMinutes),
       price: form.isTrial ? 0 : Number(form.price),
       isTrial: form.isTrial,
+      routerIds: form.routerIds,
     };
     if (editing) updateMut.mutate({ id: editing.id, data: payload });
     else createMut.mutate(payload);
@@ -231,6 +234,29 @@ export default function PackagesPage() {
                 onChange={(v) => setForm(f => ({ ...f, validityMinutes: Number(v) }))}
                 placeholder="Select validity…"
               />
+            </div>
+            <div className="col-span-2">
+              <label className="label">Available on routers</label>
+              <div className="flex flex-wrap gap-2">
+                <button type="button"
+                  onClick={() => setForm(f => ({ ...f, routerIds: [] }))}
+                  className={`px-3 py-1.5 rounded-full text-sm border ${form.routerIds.length === 0 ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300'}`}>
+                  All routers
+                </button>
+                {routerList.map(r => {
+                  const on = form.routerIds.includes(r.id);
+                  return (
+                    <button key={r.id} type="button"
+                      onClick={() => setForm(f => ({ ...f, routerIds: on ? f.routerIds.filter(x => x !== r.id) : [...f.routerIds, r.id] }))}
+                      className={`px-3 py-1.5 rounded-full text-sm border ${on ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300'}`}>
+                      {r.name}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="text-xs text-gray-500 mt-1">
+                {form.routerIds.length === 0 ? 'This package is offered on every router.' : `Offered only on the ${form.routerIds.length} selected router${form.routerIds.length > 1 ? 's' : ''}.`}
+              </div>
             </div>
           </div>
           <div className="flex gap-3 justify-end pt-2">

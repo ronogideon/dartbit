@@ -93,8 +93,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.56', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.56', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.57', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.57', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -125,7 +125,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.56 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.57 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -903,6 +903,7 @@ async function patchDatabase() {
     await safeExec(prisma, 'NotifConfig templates', `ALTER TABLE "NotificationConfig" ADD COLUMN IF NOT EXISTS "templates" JSONB`);
     await safeExec(prisma, 'NotifConfig provider', `ALTER TABLE "NotificationConfig" ADD COLUMN IF NOT EXISTS "provider" TEXT NOT NULL DEFAULT 'BLESSEDTEXTS'`);
     await safeExec(prisma, 'Package isTrial', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "isTrial" BOOLEAN NOT NULL DEFAULT false`);
+    await safeExec(prisma, 'Package routerIds', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "routerIds" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[]`);
     await safeExec(prisma, 'Router wgIp', `ALTER TABLE "MikrotikRouter" ADD COLUMN IF NOT EXISTS "wgIp" TEXT`);
     await safeExec(prisma, 'Router wgPublicKey', `ALTER TABLE "MikrotikRouter" ADD COLUMN IF NOT EXISTS "wgPublicKey" TEXT`);
     await safeExec(prisma, 'Router wgPrivateKey', `ALTER TABLE "MikrotikRouter" ADD COLUMN IF NOT EXISTS "wgPrivateKey" TEXT`);

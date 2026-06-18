@@ -15,6 +15,7 @@ const packageSchema = z.object({
   validityMinutes: z.number().int().min(1),
   price: z.number().min(0),
   isTrial: z.boolean().optional().default(false),
+  routerIds: z.array(z.string()).optional().default([]), // empty = offered on all routers
 });
 
 router.get('/', async (req: AuthRequest, res: Response) => {

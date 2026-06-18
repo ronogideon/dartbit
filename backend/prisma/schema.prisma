@@ -272,6 +272,7 @@ model Package {
   price           Float
   isTrial         Boolean      @default(false)  // free hotspot trial — MAC-only login, no payment
   isActive        Boolean      @default(true)
+  routerIds       String[]     @default([])     // routers this package is offered on; empty = ALL routers
   tenantId        String
   tenant          Tenant       @relation(fields: [tenantId], references: [id])
   subscribers     Subscriber[]
