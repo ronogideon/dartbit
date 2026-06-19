@@ -1,106 +1,106 @@
-# Dartbit v1.1.4 — Local Setup Guide
+# Dartbit — Local Setup Guide
 
 ## Prerequisites
 - Node.js 18+
-- PostgreSQL running locally (any version)
+- PostgreSQL 14+ running locally
 
 ---
 
-## Step 1 — Configure the database
+## 1 — Database
 
-Open `backend/.env` and update the `DATABASE_URL` to match your PostgreSQL setup:
+Create the database, then set the connection string in `backend/.env`:
 
-```env
-# Default (works if postgres user has no password):
-DATABASE_URL="postgresql://postgres:postgres@localhost:5432/dartbit"
-
-# If your postgres has a different password:
-DATABASE_URL="postgresql://postgres:YOUR_PASSWORD@localhost:5432/dartbit"
-
-# If you use a different username:
-DATABASE_URL="postgresql://YOUR_USER:YOUR_PASSWORD@localhost:5432/dartbit"
-```
-
-Create the database first if it doesn't exist:
 ```sql
--- In psql or pgAdmin:
 CREATE DATABASE dartbit;
 ```
+```env
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/dartbit"
+# adjust user/password/host as needed
+```
 
 ---
 
-## Step 2 — Run the backend
+## 2 — Backend
 
-```cmd
+```bash
 cd backend
-npm install
-npx prisma migrate dev --name init
-npm run seed
+npm install                 # postinstall runs `prisma generate`
+npx prisma migrate dev      # or: npx prisma db push  (applies the schema)
+npm run seed                # creates the demo tenant + superadmin
 npm run dev
 ```
 
-You should see:
+Expected:
 ```
-🚀 Dartbit v1.1.4 backend running
+🚀 Dartbit backend running
    Local:   http://localhost:4000
    Health:  http://localhost:4000/health
-   DB:      ✓ DATABASE_URL set
 ```
 
-Visit http://localhost:4000 — you should see the API info page.
-Visit http://localhost:4000/health — you should see {"status":"ok"}.
+Visit `http://localhost:4000/health` → `{"status":"ok"}`.
+
+> **Note:** the backend applies idempotent schema patches on every boot (adds any new
+> columns/tables if missing), so a freshly pulled build self-updates its database
+> without a manual migration in most cases.
 
 ---
 
-## Step 3 — Run the frontend
+## 3 — Tenant dashboard
 
-```cmd
+```bash
 cd frontend
+cp .env.example .env.local   # NEXT_PUBLIC_API_URL=http://localhost:4000
+npm install --legacy-peer-deps
+npm run dev                  # http://localhost:3000
+```
+
+## 4 — Superadmin console (optional, platform owner)
+
+```bash
+cd superadmin-frontend
+cp .env.example .env.local   # NEXT_PUBLIC_API_URL=http://localhost:4000
 npm install --legacy-peer-deps
 npm run dev
 ```
 
-Visit http://localhost:3000 — you will be redirected to the login page.
-
 ---
 
-## Step 4 — Login
-
-Click one of the **Quick Login** buttons on the login page, or type:
+## 5 — Login
 
 | Role         | Email                       | Password       |
 |--------------|-----------------------------|----------------|
 | Tenant Admin | admin@demoisp.com           | Test12345      |
 | Superadmin   | superadmin@dartbit.local    | SuperAdmin123! |
 
+(Change these immediately for any non-local environment.)
+
+---
+
+## MikroTik ZTP on local dev
+
+The router must reach your backend over the LAN:
+
+1. Find your PC's LAN IP (`ipconfig` / `ip addr`).
+2. Set `BACKEND_URL=http://YOUR_LAN_IP:4000` in `backend/.env`.
+3. Allow port 4000 through the firewall, e.g. on Windows:
+   ```cmd
+   netsh advfirewall firewall add rule name="Dartbit" dir=in action=allow protocol=TCP localport=4000
+   ```
+4. Re-link the router in the UI to get a bootstrap command with the correct IP.
+
 ---
 
 ## Troubleshooting
 
-### "Environment variable not found: DATABASE_URL"
-- Make sure `backend/.env` exists (not just `.env.example`)
-- Make sure `DATABASE_URL` is set correctly in it
-- Run `npm run dev` from the `backend/` folder, not the root
+**`Environment variable not found: DATABASE_URL`** — ensure `backend/.env` exists (not
+just `.env.example`) and you're running from `backend/`.
 
-### "Cannot GET /"
-- Old version issue — fixed in v1.1.4. The root route now returns API info.
+**Frontend can't reach the backend** — confirm `frontend/.env.local` has
+`NEXT_PUBLIC_API_URL=http://localhost:4000` and the backend is up on 4000.
 
-### Seed failed
-- Make sure the database exists and migrations ran first:
-  ```cmd
-  npx prisma migrate dev --name init
-  npm run seed
-  ```
+**Seed failed** — make sure the database exists and the schema was applied
+(`npx prisma db push`) before `npm run seed`.
 
-### Frontend can't connect to backend
-- Make sure `frontend/.env.local` has: `NEXT_PUBLIC_API_URL=http://localhost:4000`
-- Make sure the backend is running on port 4000
-
-### For MikroTik ZTP (local dev)
-- Find your PC's LAN IP: run `ipconfig` in CMD
-- Update `backend/.env`: `BACKEND_URL=http://YOUR_LAN_IP:4000`
-- Allow port 4000 in Windows Firewall:
-  ```cmd
-  netsh advfirewall firewall add rule name="Dartbit" dir=in action=allow protocol=TCP localport=4000
-  ```
-- Delete and re-link the router in the UI to get a new bootstrap command with the correct IP
+**Type errors only on Railway, not locally** — the local Prisma client may be a stub;
+the real `prisma generate` on Railway validates field/relation names. Run
+`npx prisma generate` locally against the real schema to reproduce.
