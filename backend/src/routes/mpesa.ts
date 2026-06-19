@@ -102,24 +102,33 @@ router.post('/stk', async (req: Request, res: Response) => {
       },
     });
 
-    try {
-      const result = await stkPush({
-        creds,
-        phone,
-        amount: pkg.price,
-        accountRef: 'Dartbit',
-        description: 'Internet',
-        callbackUrl: `${BACKEND_URL}/hotspot/stk-callback/${tx.id}`,
+    // Respond to the customer immediately — the request must never hang on Daraja latency. The STK
+    // push runs in the background; the portal polls /hotspot/stk-status/:txId for the outcome, and
+    // the phone prompt arrives when Daraja processes the push.
+    res.json({ success: true, transactionId: tx.id, pending: true });
+
+    stkPush({
+      creds,
+      phone,
+      amount: pkg.price,
+      accountRef: 'Dartbit',
+      description: 'Internet',
+      callbackUrl: `${BACKEND_URL}/hotspot/stk-callback/${tx.id}`,
+    })
+      .then(async (result) => {
+        await prisma.mpesaTransaction.update({
+          where: { id: tx.id },
+          data: { checkoutRequestId: result.checkoutRequestId, merchantRequestId: result.merchantRequestId },
+        });
+      })
+      .catch(async (e) => {
+        console.error('[stk] background push failed:', e instanceof Error ? e.message : e);
+        await prisma.mpesaTransaction.update({
+          where: { id: tx.id },
+          data: { status: 'FAILED', resultDesc: e instanceof Error ? e.message : 'STK failed' },
+        }).catch(() => {});
       });
-      await prisma.mpesaTransaction.update({
-        where: { id: tx.id },
-        data: { checkoutRequestId: result.checkoutRequestId, merchantRequestId: result.merchantRequestId },
-      });
-      return res.json({ success: true, transactionId: tx.id, checkoutRequestId: result.checkoutRequestId });
-    } catch (e) {
-      await prisma.mpesaTransaction.update({ where: { id: tx.id }, data: { status: 'FAILED', resultDesc: e instanceof Error ? e.message : 'STK failed' } });
-      return res.status(502).json({ success: false, error: e instanceof Error ? e.message : 'STK push failed' });
-    }
+    return;
   } catch (err) {
     console.error('stk error:', err);
     res.status(500).json({ success: false, error: 'Failed' });

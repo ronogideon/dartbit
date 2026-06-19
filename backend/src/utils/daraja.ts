@@ -52,7 +52,7 @@ export function isCentralDarajaConfigured(): boolean {
 function httpsRequest(method: string, path: string, headers: Record<string, string>, body?: string): Promise<{ status: number; json: Record<string, unknown> }> {
   return new Promise((resolve, reject) => {
     const req = https.request(
-      { hostname: DARAJA_HOST, port: 443, path, method, headers },
+      { hostname: DARAJA_HOST, port: 443, path, method, headers, timeout: 20000 },
       (res) => {
         let data = '';
         res.on('data', (c) => (data += c));
@@ -62,6 +62,9 @@ function httpsRequest(method: string, path: string, headers: Record<string, stri
         });
       }
     );
+    // Without this, a slow/unresponsive Daraja makes the request hang forever and the STK endpoint
+    // never replies — the customer's payment request just times out. Fail fast instead.
+    req.on('timeout', () => { req.destroy(new Error('Daraja request timed out — please try again')); });
     req.on('error', reject);
     if (body) req.write(body);
     req.end();
