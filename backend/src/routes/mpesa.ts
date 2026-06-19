@@ -318,12 +318,12 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   // Create-or-update the profile (carries the package rate-limit), verifying it exists before
   // adding users (a brand-new package's profile has never existed on this router).
   cmds.push(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} address-pool=dhcp-pool }`);
-  // On a paid session we WANT a MAC cookie written so the device reconnects silently — but bounded
-  // to the package validity + 60s (never the 7-day default), so it can't outlive the paid session.
-  // The cookie is created by the router when the device logs in (the auto-login pushed below).
-  cmds.push(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=yes mac-cookie-timeout=${sessionSec + 60}s address-pool=dhcp-pool`);
-  // Clear any stale cookies for this MAC so a previous (longer) cookie can't keep the device on an
-  // old session; the fresh login writes a new cookie with the bounded timeout.
+  // No MAC cookie: auto-reconnect for the paid device is handled by its MAC-named user (MAC-auth),
+  // which exists only while the package is valid. A cookie would be a second, independent credential
+  // that lets a device back on without re-auth — defeating the "unknown/expired MAC must sign in"
+  // rule — so cookies stay off here.
+  cmds.push(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=no address-pool=dhcp-pool`);
+  // Clear any stale cookies for this MAC so a leftover cookie can't keep the device logged in.
   if (macUC) cmds.push(`:foreach c in=[/ip hotspot cookie find mac-address="${macUC}"] do={ /ip hotspot cookie remove \$c }`);
   // Primary user (D-name + 4-digit pwd), bound to the paying device's MAC. Recreate fresh.
   cmds.push(`:foreach u in=[/ip hotspot user find name="${loginUser}"] do={ /ip hotspot user remove \$u }`);
