@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import * as API from '@/lib/api';
-import { LayoutDashboard, Building2, Wallet, Users, LogOut, Plus, Trash2, KeyRound, Copy, Zap, MessageSquare, Save, RotateCcw } from 'lucide-react';
+import { LayoutDashboard, Building2, Wallet, Users, LogOut, Plus, Trash2, KeyRound, Copy, Zap, MessageSquare, Save, RotateCcw, CreditCard, Power, MoreVertical } from 'lucide-react';
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LabelList,
@@ -12,7 +12,7 @@ import {
 function kes(n: number) { return 'KES ' + (n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 }); }
 function fmtDate(d?: string | null) { return d ? new Date(d).toLocaleDateString() : '—'; }
 
-type Tab = 'overview' | 'tenants' | 'payouts' | 'team' | 'messaging';
+type Tab = 'overview' | 'tenants' | 'payments' | 'payouts' | 'team' | 'messaging';
 
 export default function SuperadminPortal() {
   const [authed, setAuthed] = useState(false);
@@ -108,6 +108,7 @@ function Dashboard({ role, onLogout }: { role: string; onLogout: () => void }) {
         <nav className="lg:w-52 lg:border-r border-b lg:border-b-0 border-gray-800 lg:min-h-[calc(100vh-65px)] p-2 lg:p-3 flex lg:flex-col gap-1 overflow-x-auto">
           <NavBtn active={tab === 'overview'} onClick={() => setTab('overview')} icon={<LayoutDashboard size={17} />} label="Overview" />
           <NavBtn active={tab === 'tenants'} onClick={() => setTab('tenants')} icon={<Building2 size={17} />} label="Tenants" />
+          <NavBtn active={tab === 'payments'} onClick={() => setTab('payments')} icon={<CreditCard size={17} />} label="Payments" />
           <NavBtn active={tab === 'payouts'} onClick={() => setTab('payouts')} icon={<Wallet size={17} />} label="Payouts" />
           <NavBtn active={tab === 'messaging'} onClick={() => setTab('messaging')} icon={<MessageSquare size={17} />} label="Messaging" />
           <NavBtn active={tab === 'team'} onClick={() => setTab('team')} icon={<Users size={17} />} label="Team" />
@@ -115,6 +116,7 @@ function Dashboard({ role, onLogout }: { role: string; onLogout: () => void }) {
         <main className="flex-1 p-4 sm:p-6 min-w-0 overflow-x-hidden">
           {tab === 'overview' && <Overview />}
           {tab === 'tenants' && <Tenants />}
+          {tab === 'payments' && <Payments canEdit={isFull} />}
           {tab === 'payouts' && <Payouts />}
           {tab === 'messaging' && <Messaging canEdit={isFull} />}
           {tab === 'team' && <Team canEdit={isFull} />}
@@ -300,7 +302,6 @@ function Overview() {
           <Card label="Sent (this mo)" value={String(sms.sentThisMonth || 0)} />
           <Card label="SMS Cost (mo)" value={kes(sms.costThisMonth || 0)} sub={`${kes(sms.costAllTime || 0)} all-time`} />
         </div>
-        <div className="mt-3"><SmsRateControl /></div>
       </div>
 
       <div>
@@ -318,46 +319,186 @@ function Overview() {
   );
 }
 
+type TenantRow = {
+  id: string; name: string; subdomain: string; status: string; subscribers: number; routers: number;
+  collected: number; owed: number; pendingPayout: number;
+  smsGateway: string; smsProvider: string; smsSenderId: string | null; paymentMethod: string; paymentShortcode: string | null;
+};
+const PAY_LABEL: Record<string, string> = {
+  TILL_MANUAL: 'Dartbit · Till payout', PHONE_MANUAL: 'Dartbit · Phone payout',
+  DARAJA_API: 'Own Daraja', KOPOKOPO_API: 'KopoKopo',
+};
+
 function Tenants() {
+  const qc = useQueryClient();
   const { data, isLoading } = useQuery({ queryKey: ['sa-tenants'], queryFn: API.getTenants });
   const [search, setSearch] = useState('');
+  const [menuId, setMenuId] = useState<string | null>(null);
+  const [toDelete, setToDelete] = useState<TenantRow | null>(null);
+  const [confirmText, setConfirmText] = useState('');
+
+  const statusMut = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: 'ACTIVE' | 'SUSPENDED' }) => API.setTenantStatus(id, status),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['sa-tenants'] }); toast.success('Tenant updated'); setMenuId(null); },
+    onError: () => toast.error('Failed to update tenant'),
+  });
+  const deleteMut = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => API.deleteTenant(id, name),
+    onSuccess: (d: { name: string }) => { qc.invalidateQueries({ queryKey: ['sa-tenants'] }); toast.success(`Deleted ${d.name} and all its data`); setToDelete(null); setConfirmText(''); },
+    onError: () => toast.error('Delete failed'),
+  });
+
   if (isLoading || !data) return <div className="text-gray-500">Loading…</div>;
   const q = search.trim().toLowerCase();
-  const rows = q
-    ? data.filter((t: { name: string; subdomain: string; status: string }) =>
-        (t.name || '').toLowerCase().includes(q) || (t.subdomain || '').toLowerCase().includes(q) || (t.status || '').toLowerCase().includes(q))
-    : data;
+  const rows: TenantRow[] = q
+    ? (data as TenantRow[]).filter(t => (t.name || '').toLowerCase().includes(q) || (t.subdomain || '').toLowerCase().includes(q) || (t.status || '').toLowerCase().includes(q))
+    : (data as TenantRow[]);
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
         <h2 className="text-lg font-bold">All Tenants</h2>
-        <input
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          placeholder="Search tenants…"
-          className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm w-64 focus:outline-none focus:border-blue-500"
-        />
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search tenants…"
+          className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm w-64 focus:outline-none focus:border-blue-500" />
       </div>
       <div className="overflow-x-auto bg-gray-900 rounded-xl border border-gray-800">
         <table className="w-full text-sm">
           <thead><tr className="text-left text-gray-400 border-b border-gray-800">
             <th className="p-3">Name</th><th className="p-3">Status</th><th className="p-3">Subs</th><th className="p-3">Routers</th>
-            <th className="p-3">Collected</th><th className="p-3">Owed</th><th className="p-3">Pending</th>
+            <th className="p-3">SMS gateway</th><th className="p-3">Payment</th>
+            <th className="p-3">Collected</th><th className="p-3">Pending</th><th className="p-3"></th>
           </tr></thead>
           <tbody>
-            {rows.map((t: { id: string; name: string; subdomain: string; status: string; subscribers: number; routers: number; collected: number; owed: number; pendingPayout: number }) => (
+            {rows.map(t => (
               <tr key={t.id} className="border-b border-gray-800/50">
                 <td className="p-3"><div className="font-medium">{t.name}</div><div className="text-xs text-gray-500">{t.subdomain}</div></td>
-                <td className="p-3"><span className="text-xs px-2 py-0.5 rounded-full bg-gray-800">{t.status}</span></td>
+                <td className="p-3"><span className={`text-xs px-2 py-0.5 rounded-full ${t.status === 'ACTIVE' ? 'bg-green-600/20 text-green-300' : t.status === 'SUSPENDED' ? 'bg-red-600/20 text-red-300' : 'bg-gray-800'}`}>{t.status}</span></td>
                 <td className="p-3">{t.subscribers}</td><td className="p-3">{t.routers}</td>
-                <td className="p-3">{kes(t.collected)}</td><td className="p-3">{kes(t.owed)}</td>
+                <td className="p-3">
+                  {t.smsGateway === 'CUSTOM'
+                    ? <span className="text-gray-200">Own · {t.smsProvider === 'TALKSASA' ? 'TalkSasa' : 'BlessedTexts'}{t.smsSenderId ? ` (${t.smsSenderId})` : ''}</span>
+                    : <span className="text-gray-400">Dartbit shared</span>}
+                </td>
+                <td className="p-3 text-gray-300">{PAY_LABEL[t.paymentMethod] || t.paymentMethod}{t.paymentShortcode ? <span className="text-xs text-gray-500"> · {t.paymentShortcode}</span> : ''}</td>
+                <td className="p-3">{kes(t.collected)}</td>
                 <td className="p-3">{t.pendingPayout > 0 ? <span className="text-amber-400">{kes(t.pendingPayout)}</span> : '—'}</td>
+                <td className="p-3 relative">
+                  <button onClick={() => setMenuId(menuId === t.id ? null : t.id)} className="p-1.5 text-gray-400 hover:text-gray-200 rounded hover:bg-gray-800"><MoreVertical size={16} /></button>
+                  {menuId === t.id && (
+                    <div className="absolute right-3 top-10 z-20 w-44 bg-gray-800 border border-gray-700 rounded-lg shadow-xl py-1">
+                      <button onClick={() => statusMut.mutate({ id: t.id, status: t.status === 'SUSPENDED' ? 'ACTIVE' : 'SUSPENDED' })}
+                        className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700 flex items-center gap-2">
+                        <Power size={14} className={t.status === 'SUSPENDED' ? 'text-green-400' : 'text-amber-400'} />
+                        {t.status === 'SUSPENDED' ? 'Enable tenant' : 'Disable tenant'}
+                      </button>
+                      <button onClick={() => { setToDelete(t); setMenuId(null); setConfirmText(''); }}
+                        className="w-full px-3 py-2 text-left text-sm hover:bg-gray-700 flex items-center gap-2 text-red-400">
+                        <Trash2 size={14} /> Delete tenant
+                      </button>
+                    </div>
+                  )}
+                </td>
               </tr>
             ))}
-            {rows.length === 0 && <tr><td colSpan={7} className="p-6 text-center text-gray-500">No matching tenants</td></tr>}
+            {rows.length === 0 && <tr><td colSpan={9} className="p-6 text-center text-gray-500">No matching tenants</td></tr>}
           </tbody>
         </table>
       </div>
+
+      {toDelete && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => !deleteMut.isPending && setToDelete(null)}>
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-5 w-full max-w-md" onClick={e => e.stopPropagation()}>
+            <h3 className="text-base font-semibold text-red-400 flex items-center gap-2"><Trash2 size={18} /> Delete tenant</h3>
+            <p className="text-sm text-gray-300 mt-2">This permanently deletes <span className="font-semibold">{toDelete.name}</span> and <span className="text-red-300">all its data</span> — subscribers, routers, packages, vouchers, payments, messages and config. This cannot be undone.</p>
+            <p className="text-xs text-gray-500 mt-3">Type the tenant name to confirm:</p>
+            <input value={confirmText} onChange={e => setConfirmText(e.target.value)} placeholder={toDelete.name}
+              className="w-full mt-1 bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-red-500" />
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setToDelete(null)} disabled={deleteMut.isPending} className="px-3 py-2 rounded-lg text-sm border border-gray-700 text-gray-300">Cancel</button>
+              <button onClick={() => deleteMut.mutate({ id: toDelete.id, name: toDelete.name })}
+                disabled={deleteMut.isPending || confirmText !== toDelete.name}
+                className="px-3 py-2 rounded-lg text-sm bg-red-600 text-white disabled:opacity-40 disabled:cursor-not-allowed">
+                {deleteMut.isPending ? 'Deleting…' : 'Delete permanently'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Payments({ canEdit }: { canEdit: boolean }) {
+  const qc = useQueryClient();
+  const { data: central } = useQuery({ queryKey: ['central-payments'], queryFn: API.getCentralPayments });
+  const { data: stats, isLoading } = useQuery({ queryKey: ['payment-stats'], queryFn: API.getPaymentStats, refetchInterval: 30000 });
+  const toggleMut = useMutation({
+    mutationFn: (enabled: boolean) => API.setCentralPayments(enabled),
+    onSuccess: (d: { enabled: boolean }) => {
+      qc.invalidateQueries({ queryKey: ['central-payments'] });
+      qc.invalidateQueries({ queryKey: ['payment-stats'] });
+      toast.success(`Central Dartbit payments turned ${d.enabled ? 'ON' : 'OFF'}`);
+    },
+    onError: () => toast.error('Failed to update'),
+  });
+  const enabled = central?.enabled ?? true;
+  const at = stats?.allTime; const mo = stats?.thisMonth;
+
+  return (
+    <div>
+      <h2 className="text-lg font-semibold text-gray-200 mb-4">Payments</h2>
+
+      <div className="bg-gray-900 rounded-xl border border-gray-800 p-5 mb-6">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-300">Central Dartbit collection</h3>
+            <p className="text-xs text-gray-500 mt-1 max-w-xl">
+              When ON, tenants on the shared Dartbit Daraja (Till/Phone payout methods) collect via Dartbit and Dartbit keeps the 1% fee. Turn OFF to immediately stop new central collections platform-wide — tenants using their own Daraja are unaffected.
+            </p>
+          </div>
+          <button
+            onClick={() => canEdit && toggleMut.mutate(!enabled)}
+            disabled={!canEdit || toggleMut.isPending}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition ${enabled ? 'border-green-500 bg-green-600/20 text-green-300' : 'border-gray-600 bg-gray-800 text-gray-400'} ${!canEdit ? 'opacity-60 cursor-not-allowed' : ''}`}
+          >
+            <Power size={16} /> {enabled ? 'ON' : 'OFF'}
+          </button>
+        </div>
+        {!enabled && <div className="mt-3 text-xs text-amber-400">Central collection is OFF — new STK pushes on shared-Dartbit methods are being rejected.</div>}
+      </div>
+
+      {isLoading || !stats ? (
+        <div className="text-gray-500 text-sm">Loading income…</div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            <Card label="Fee income (1%) — all-time" value={kes(at.fee)} sub={`${at.count} collections`} />
+            <Card label="Fee income — this month" value={kes(mo.fee)} sub={`${mo.count} collections`} />
+            <Card label="Subscription income" value={kes(stats.subscriptionIncome)} sub="tenant platform fees" />
+            <Card label="Total collected (central)" value={kes(at.collected)} sub="gross via Dartbit" />
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-6">
+            <Card label="Disbursed to tenants" value={kes(at.disbursed)} sub="settled" />
+            <Card label="Pending payout" value={kes(at.pending)} sub="owed to tenants" />
+            <Card label="Net Dartbit income" value={kes((at.fee || 0) + (stats.subscriptionIncome || 0))} sub="fees + subscriptions" />
+          </div>
+
+          <div className="bg-gray-900 rounded-xl border border-gray-800 p-5">
+            <h3 className="text-sm font-semibold text-gray-300 mb-3">Fee income — last 6 months</h3>
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={stats.trend}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                <XAxis dataKey="month" stroke="#6b7280" fontSize={11} />
+                <YAxis stroke="#6b7280" fontSize={11} />
+                <Tooltip contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8, color: '#fff' }} itemStyle={{ color: '#fff', fontWeight: 600 }} labelStyle={{ color: '#9ca3af' }} formatter={(v: number) => kes(v)} />
+                <Bar dataKey="fee" fill="#3b82f6" radius={[4, 4, 0, 0]}>
+                  <LabelList dataKey="fee" position="top" formatter={(v: number) => kes(v)} style={{ fill: '#fff', fontSize: 10 }} />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -462,6 +603,7 @@ function Messaging({ canEdit }: { canEdit: boolean }) {
             );
           })}
         </div>
+        <div className="mt-4 pt-4 border-t border-gray-800"><SmsRateControl /></div>
       </div>
 
       {/* Per-tenant table */}

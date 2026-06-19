@@ -72,6 +72,11 @@ router.post('/stk', async (req: Request, res: Response) => {
       collectedVia = 'TENANT';
       if (!creds) return res.status(400).json({ success: false, error: 'Payment credentials incomplete' });
     } else if (cfg.method === 'TILL_MANUAL' || cfg.method === 'PHONE_MANUAL') {
+      // Central Dartbit collection — blocked when the superadmin has switched it off platform-wide.
+      const centralRow = await prisma.platformSetting.findUnique({ where: { key: 'central_payments_enabled' } });
+      if (centralRow && centralRow.value === 'false') {
+        return res.status(503).json({ success: false, error: 'Central payment collection is temporarily disabled. Please try again later.' });
+      }
       creds = centralDarajaCreds();
       collectedVia = 'DARTBIT';
       if (!creds) return res.status(503).json({ success: false, error: 'Central payment service unavailable. Contact support.' });

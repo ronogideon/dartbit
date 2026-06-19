@@ -40,3 +40,12 @@ export const getMessagingProvider = () => api.get('/superadmin/messaging/provide
 export const setMessagingProvider = (provider: 'BLESSEDTEXTS' | 'TALKSASA') => api.put('/superadmin/messaging/provider', { provider }).then((r) => r.data.data);
 export const getMessagingTemplates = () => api.get('/superadmin/messaging/templates').then((r) => r.data.data as { templates: MsgTemplate[] });
 export const saveMessagingTemplate = (key: string, body: string) => api.put(`/superadmin/messaging/templates/${key}`, { body }).then((r) => r.data.data);
+
+// Central Dartbit payments master switch + platform income stats
+export const getCentralPayments = () => api.get('/superadmin/central-payments').then((r) => r.data.data as { enabled: boolean });
+export const setCentralPayments = (enabled: boolean) => api.put('/superadmin/central-payments', { enabled }).then((r) => r.data.data as { enabled: boolean });
+export const getPaymentStats = () => api.get('/superadmin/payments/stats').then((r) => r.data.data);
+
+// Tenant lifecycle
+export const setTenantStatus = (id: string, status: 'ACTIVE' | 'SUSPENDED') => api.put(`/superadmin/tenants/${id}/status`, { status }).then((r) => r.data.data);
+export const deleteTenant = (id: string, confirmName: string) => api.delete(`/superadmin/tenants/${id}`, { data: { confirmName } }).then((r) => r.data.data);

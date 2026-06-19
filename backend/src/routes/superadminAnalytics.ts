@@ -205,6 +205,16 @@ router.get('/tenants', requireSuperAdminRead, async (_req: AuthRequest, res: Res
     const pendingByTenant: Record<string, number> = {};
     for (const g of pendingGroups) pendingByTenant[g.tenantId] = g._sum.netToTenant || 0;
 
+    // Each tenant's SMS gateway (shared Dartbit vs their own) and payment method.
+    const [notifCfgs, payCfgs] = await Promise.all([
+      prisma.notificationConfig.findMany({ select: { tenantId: true, gateway: true, provider: true, senderId: true } }),
+      prisma.paymentConfig.findMany({ select: { tenantId: true, method: true, darajaShortcode: true, darajaType: true } }),
+    ]);
+    const notifByTenant: Record<string, { gateway: string; provider: string; senderId: string | null }> = {};
+    for (const n of notifCfgs) notifByTenant[n.tenantId] = { gateway: n.gateway, provider: n.provider, senderId: n.senderId };
+    const payByTenant: Record<string, { method: string; darajaShortcode: string | null; darajaType: string | null }> = {};
+    for (const p of payCfgs) payByTenant[p.tenantId] = { method: p.method, darajaShortcode: p.darajaShortcode, darajaType: p.darajaType };
+
     const result = tenants.map(t => ({
       id: t.id, name: t.name, subdomain: t.subdomain, status: t.status,
       billingStatus: t.billingStatus, billingDueDate: t.billingDueDate,
@@ -213,6 +223,11 @@ router.get('/tenants', requireSuperAdminRead, async (_req: AuthRequest, res: Res
       owed: txByTenant[t.id]?.net || 0,
       feeFromTenant: txByTenant[t.id]?.fee || 0,
       pendingPayout: pendingByTenant[t.id] || 0,
+      smsGateway: notifByTenant[t.id]?.gateway || 'DARTBIT',
+      smsProvider: notifByTenant[t.id]?.provider || 'BLESSEDTEXTS',
+      smsSenderId: notifByTenant[t.id]?.senderId || null,
+      paymentMethod: payByTenant[t.id]?.method || 'TILL_MANUAL',
+      paymentShortcode: payByTenant[t.id]?.darajaShortcode || null,
     }));
 
     sendSuccess(res, result);
@@ -359,6 +374,123 @@ router.put('/sms-rate', requireSuperAdmin, async (req: AuthRequest, res: Respons
     sendSuccess(res, { rate });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
+// --- Central Dartbit payments master switch --------------------------------------------------
+const CENTRAL_KEY = 'central_payments_enabled';
+async function isCentralEnabled(): Promise<boolean> {
+  const row = await prisma.platformSetting.findUnique({ where: { key: CENTRAL_KEY } });
+  return row ? row.value !== 'false' : true; // default ON
+}
+
+router.get('/central-payments', requireSuperAdminRead, async (_req: AuthRequest, res: Response) => {
+  try { sendSuccess(res, { enabled: await isCentralEnabled() }); }
+  catch (err) { sendError(res, err instanceof Error ? err.message : 'Failed', 500); }
+});
+
+router.put('/central-payments', requireSuperAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const enabled = !!req.body?.enabled;
+    const val = enabled ? 'true' : 'false';
+    await prisma.platformSetting.upsert({ where: { key: CENTRAL_KEY }, update: { value: val }, create: { key: CENTRAL_KEY, value: val } });
+    sendSuccess(res, { enabled });
+  } catch (err) { sendError(res, err instanceof Error ? err.message : 'Failed', 500); }
+});
+
+// --- Platform income stats (money into Dartbit) ----------------------------------------------
+router.get('/payments/stats', requireSuperAdminRead, async (_req: AuthRequest, res: Response) => {
+  try {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const all = await prisma.mpesaTransaction.findMany({
+      where: { collectedVia: 'DARTBIT', status: 'PAID' },
+      select: { amount: true, platformFee: true, netToTenant: true, payoutStatus: true, createdAt: true },
+    });
+    const sum = (arr: typeof all, f: (t: typeof all[number]) => number) => arr.reduce((s, t) => s + (f(t) || 0), 0);
+    const monthTx = all.filter(t => t.createdAt >= monthStart);
+    const trend: { month: string; collected: number; fee: number }[] = [];
+    for (let i = 5; i >= 0; i--) {
+      const mStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const mEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+      const m = all.filter(t => t.createdAt >= mStart && t.createdAt < mEnd);
+      trend.push({ month: mStart.toISOString().slice(0, 7), collected: sum(m, t => t.amount), fee: sum(m, t => t.platformFee) });
+    }
+    const subAgg = await prisma.tenantPayment.aggregate({ where: { status: 'PAID' }, _sum: { amount: true } });
+    sendSuccess(res, {
+      centralEnabled: await isCentralEnabled(),
+      allTime: {
+        collected: sum(all, t => t.amount),
+        fee: sum(all, t => t.platformFee),
+        disbursed: sum(all.filter(t => t.payoutStatus === 'PAID'), t => t.netToTenant),
+        pending: sum(all.filter(t => t.payoutStatus !== 'PAID'), t => t.netToTenant),
+        count: all.length,
+      },
+      thisMonth: { collected: sum(monthTx, t => t.amount), fee: sum(monthTx, t => t.platformFee), count: monthTx.length },
+      subscriptionIncome: subAgg._sum.amount || 0,
+      trend,
+    });
+  } catch (err) { sendError(res, err instanceof Error ? err.message : 'Failed', 500); }
+});
+
+// --- Tenant disable / enable -----------------------------------------------------------------
+router.put('/tenants/:id/status', requireSuperAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const status = req.body?.status === 'ACTIVE' ? 'ACTIVE' : 'SUSPENDED';
+    const t = await prisma.tenant.update({ where: { id: req.params.id }, data: { status }, select: { id: true, name: true, status: true } });
+    sendSuccess(res, t);
+  } catch (err) { sendError(res, err instanceof Error ? err.message : 'Failed', 500); }
+});
+
+// --- Tenant delete (full cascade) ------------------------------------------------------------
+// Destructive + irreversible. Runs in a single transaction (atomic — any failure rolls the whole
+// thing back), deletes children before parents to satisfy FKs, and requires the caller to echo the
+// exact tenant name as confirmation.
+router.delete('/tenants/:id', requireSuperAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.params.id;
+    const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { id: true, name: true } });
+    if (!tenant) return sendError(res, 'Tenant not found', 404);
+    if ((req.body?.confirmName || '') !== tenant.name) return sendError(res, 'Confirmation name does not match the tenant name', 400);
+
+    await prisma.$transaction(async (tx) => {
+      const routers = await tx.mikrotikRouter.findMany({ where: { tenantId }, select: { id: true } });
+      const routerIds = routers.map(r => r.id);
+      // Router-scoped records that are not themselves tenant-scoped
+      if (routerIds.length) {
+        await tx.routerCommand.deleteMany({ where: { routerId: { in: routerIds } } });
+        await tx.routerInterface.deleteMany({ where: { routerId: { in: routerIds } } });
+        await tx.routerProvisioningConfig.deleteMany({ where: { routerId: { in: routerIds } } });
+      }
+      // Records referencing subscriber/router/package — remove before those parents
+      await tx.message.deleteMany({ where: { tenantId } });
+      await tx.mpesaTransaction.deleteMany({ where: { tenantId } });
+      await tx.onlineSession.deleteMany({ where: { tenantId } });
+      await tx.sessionRecord.deleteMany({ where: { tenantId } });
+      await tx.payment.deleteMany({ where: { tenantId } });
+      await tx.trialClaim.deleteMany({ where: { tenantId } });
+      await tx.voucher.deleteMany({ where: { tenantId } });
+      await tx.smsWalletTxn.deleteMany({ where: { tenantId } });
+      // Parents
+      await tx.subscriber.deleteMany({ where: { tenantId } });
+      await tx.mikrotikRouter.deleteMany({ where: { tenantId } });
+      await tx.package.deleteMany({ where: { tenantId } });
+      // Remaining tenant-scoped config/ledger
+      await tx.expense.deleteMany({ where: { tenantId } });
+      await tx.notificationConfig.deleteMany({ where: { tenantId } });
+      await tx.paymentConfig.deleteMany({ where: { tenantId } });
+      await tx.tenantSetting.deleteMany({ where: { tenantId } });
+      await tx.tenantPayment.deleteMany({ where: { tenantId } });
+      await tx.smsWallet.deleteMany({ where: { tenantId } });
+      await tx.user.deleteMany({ where: { tenantId } });
+      // Finally the tenant
+      await tx.tenant.delete({ where: { id: tenantId } });
+    }, { timeout: 60000 });
+
+    sendSuccess(res, { deleted: true, name: tenant.name });
+  } catch (err) {
+    console.error('tenant delete error:', err);
+    sendError(res, err instanceof Error ? err.message : 'Failed to delete tenant', 500);
   }
 });
 
