@@ -156,21 +156,19 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add('');
 
     // 4b. ANTI-TETHERING (block hotspot/USB sharing) — TTL based, DISABLED BY DEFAULT.
-    // 4b. ANTI-TETHERING (block one paid device sharing to others via its own hotspot/USB) — ENABLED.
-    // A second device connected to the paid device's mobile hotspot is NAT'd behind that device's
-    // single MAC, so MAC-auth can't see it. But its packets pass THROUGH the paid device, which acts
-    // as a router and decrements IP TTL by one — arriving at 63 (from OS default 64) or 127 (from
-    // 128), while the paid device's OWN traffic keeps its full TTL. We drop the decremented traffic
-    // to the internet, so the shared device gets no connectivity and must connect to the hotspot
-    // itself and pay. The dartbit-backend address-list is excluded so the captive portal / package
-    // purchase / status polling keep working for everyone.
-    // If a legitimate single device is ever affected (rare — only a device that is itself one router
-    // hop behind another), disable with: /ip firewall filter disable [find comment~"Dartbit anti-tether"]
-    add('# 4b. Anti-tethering (TTL) — blocks a paid device sharing to a second device');
+    // 4b. ANTI-TETHERING (TTL) — DISABLED. TTL-based detection is unsafe on this product's typical
+    // topology: in a WISP/hotspot deployment, legitimate customer traffic frequently arrives already
+    // decremented (TTL 63/127) because it passes through the customer's own router or a routed AP
+    // before reaching the MikroTik. Enabling the drop therefore blocks paying customers, not just
+    // tethered second devices (confirmed in the field). The rules are kept here, created DISABLED, so
+    // an operator whose topology is flat L2 (every client a direct bridge member) can opt in with:
+    //   /ip firewall filter enable [find comment~"Dartbit anti-tether"]
+    // The reprovision below also REMOVES any previously-enabled copies so a bad enable can't persist.
+    add('# 4b. Anti-tethering (TTL) — DISABLED (unsafe for routed-client topologies)');
     add(`:foreach f in=[/ip firewall filter find comment~"Dartbit anti-tether"] do={ /ip firewall filter remove \$f }`);
     add(`:foreach f in=[/ip firewall mangle find comment~"Dartbit ttl"] do={ /ip firewall mangle remove \$f }`);
-    add(`/ip firewall filter add chain=forward in-interface-list=LAN out-interface=${wan} ttl=equal:63 dst-address-list=!dartbit-backend action=drop comment="Dartbit anti-tether 63"`);
-    add(`/ip firewall filter add chain=forward in-interface-list=LAN out-interface=${wan} ttl=equal:127 dst-address-list=!dartbit-backend action=drop comment="Dartbit anti-tether 127"`);
+    add(`/ip firewall filter add chain=forward in-interface-list=LAN out-interface=${wan} ttl=equal:63 dst-address-list=!dartbit-backend action=drop comment="Dartbit anti-tether 63" disabled=yes`);
+    add(`/ip firewall filter add chain=forward in-interface-list=LAN out-interface=${wan} ttl=equal:127 dst-address-list=!dartbit-backend action=drop comment="Dartbit anti-tether 127" disabled=yes`);
     add('');
 
     // 5. PPPoE server
