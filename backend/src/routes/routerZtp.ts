@@ -201,20 +201,17 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     //  EXPIRED device (cookie is its own credential, independent of the user existing), bouncing it
     //  in a reconnect loop on the captive portal and blocking the purchase flow. MAC auth alone
     //  gives robust auto-login for active devices without that loop.
-    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=mac,http-pap mac-auth-password=dartbit use-radius=no }`);
+    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,mac,http-pap mac-auth-password=dartbit use-radius=no }`);
     // Always sync the profile settings (idempotent — no disruption). login-by is MAC + form methods,
     // NO cookie: a device is auto-logged-in ONLY while a hotspot user named after its MAC exists
     // (the sync maintains that user for active/paid devices and removes it at expiry). An unknown or
     // expired MAC therefore has no credential and is shown the captive-portal sign-in — this is what
     // stops a paid session being shared to other devices.
-    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=mac,http-pap mac-auth-password=dartbit use-radius=no`);
+    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,mac,http-pap mac-auth-password=dartbit use-radius=no`);
     // User profile — one device per credential. No add-mac-cookie (cookie auth removed; MAC auth
     // via the MAC-named user is the reconnect mechanism and it cleanly stops at expiry).
     add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 address-pool=dhcp-pool }`);
-    add(`:do { /ip hotspot user profile set [find name="dartbit-default"] add-mac-cookie=no } on-error={}`);
-    // Clear any leftover MAC cookies (from a prior cookie-enabled config). With cookies off, the only
-    // credential is the per-MAC hotspot user, so a stale cookie must not survive to keep a device on.
-    add(`:foreach c in=[/ip hotspot cookie find] do={ /ip hotspot cookie remove $c }`);
+    add(`:do { /ip hotspot user profile set [find name="dartbit-default"] add-mac-cookie=yes } on-error={}`);
     // Hotspot itself on the bridge
     add(`:if ([:len [/ip hotspot find name="dartbit-hotspot"]] = 0) do={ /ip hotspot add name=dartbit-hotspot interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no }`);
     // Sync hotspot settings — idempotent, RouterOS handles no-op gracefully
@@ -309,6 +306,13 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // (and the apex) so an expired customer can load the portal page and renew without a plan.
     add(`/ip hotspot walled-garden add dst-host=${portalBase} comment="Dartbit portal"`);
     add(`/ip hotspot walled-garden add dst-host=*.${portalBase} comment="Dartbit portal wildcard"`);
+    // The tenant's OWN portal subdomain, explicitly (not just via the wildcard above) — this is the
+    // exact host a customer hits to buy/renew, so it must always be reachable pre-login.
+    if (tenantPortalHost) add(`/ip hotspot walled-garden add dst-host=${tenantPortalHost} comment="Dartbit tenant portal"`);
+    // Safaricom — so the M-Pesa STK/Daraja flow and the customer's M-Pesa interactions are reachable
+    // from the captive portal before the device is authenticated.
+    add(`/ip hotspot walled-garden add dst-host=safaricom.co.ke comment="Dartbit safaricom"`);
+    add(`/ip hotspot walled-garden add dst-host=*.safaricom.co.ke comment="Dartbit safaricom wildcard"`);
     if (tenantDomain) {
       add(`/ip hotspot walled-garden add dst-host=${tenantDomain} comment="Dartbit tenant domain"`);
       add(`/ip hotspot walled-garden add dst-host=*.${tenantDomain} comment="Dartbit tenant domain wildcard"`);
@@ -434,7 +438,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
         add(`/ppp aaa set use-radius=yes accounting=yes interim-update=1m`);
         // Switch the Dartbit hotspot profile (only) to RADIUS auth with the login methods the portal
         // needs. Never touches other profiles (e.g. a coexisting centipid hotspot).
-        add(`:foreach hp in=[/ip hotspot profile find where name="hsprof-dartbit"] do={ /ip hotspot profile set $hp use-radius=yes radius-accounting=yes radius-interim-update=1m login-by=mac,http-chap,http-pap }`);
+        add(`:foreach hp in=[/ip hotspot profile find where name="hsprof-dartbit"] do={ /ip hotspot profile set $hp use-radius=yes radius-accounting=yes radius-interim-update=1m login-by=cookie,mac,http-chap,http-pap }`);
         add('');
         // Register/refresh this router as a FreeRADIUS client on the droplet, from the SAME wgIp +
         // secret — so the client, both /radius entries, and clients.conf can never drift apart.
@@ -1059,7 +1063,7 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     // reprovision) has its profile guaranteed to exist before its first MAC/D-name user is added,
     // so auto-login works for ALL packages — existing or newly created. We also always ensure the
     // stable dartbit-default profile exists as a universal fallback.
-    add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 add-mac-cookie=no address-pool=dhcp-pool }`);
+    add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 add-mac-cookie=yes address-pool=dhcp-pool }`);
     const hsProfilesSeen = new Set<string>();
     for (const sub of hsUsers) {
       if (!sub.package) continue;
@@ -1067,8 +1071,12 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       if (hsProfilesSeen.has(pn)) continue;
       hsProfilesSeen.add(pn);
       const sp = `${sub.package.speedUpKbps}k/${sub.package.speedDownKbps}k`;
+      // MAC cookie written on login so the device reconnects instantly; it expires 60s AFTER the
+      // package validity (mac-cookie-timeout is relative to login ≈ purchase), so it never outlives
+      // the paid window. Expiry enforcement also wipes it, as a backstop.
+      const ckSec = (sub.package.validityMinutes || 60) * 60 + 60;
       add(`:if ([:len [/ip hotspot user profile find name="${pn}"]] = 0) do={ /ip hotspot user profile add name=${pn} address-pool=dhcp-pool }`);
-      add(`/ip hotspot user profile set [find name="${pn}"] rate-limit="${sp}" shared-users=1 add-mac-cookie=no address-pool=dhcp-pool`);
+      add(`/ip hotspot user profile set [find name="${pn}"] rate-limit="${sp}" shared-users=1 add-mac-cookie=yes mac-cookie-timeout=${ckSec}s address-pool=dhcp-pool`);
     }
 
     for (const sub of hsUsers) {
@@ -1189,9 +1197,8 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     }
     for (const prof of Object.values(profilesByPkg)) {
       add(`:if ([:len [/ip hotspot user profile find name="${prof.name}"]] = 0) do={ /ip hotspot user profile add name=${prof.name} address-pool=dhcp-pool }`);
-      // No MAC cookie — MAC-auth (the per-MAC user kept only while valid) is the reconnect path, so
-      // an unknown/expired device is always shown the sign-in page rather than riding a cookie.
-      add(`/ip hotspot user profile set [find name="${prof.name}"] rate-limit="${prof.speed}" shared-users=1 add-mac-cookie=no address-pool=dhcp-pool`);
+      // MAC cookie written on login for instant reconnect, expiring 60s after the voucher validity.
+      add(`/ip hotspot user profile set [find name="${prof.name}"] rate-limit="${prof.speed}" shared-users=1 add-mac-cookie=yes mac-cookie-timeout=${prof.validityMin * 60 + 60}s address-pool=dhcp-pool`);
     }
     // Add each voucher as a hotspot user — username and password = code.
     // limit-uptime caps cumulative active time, BUT we ALSO enforce wall-clock expiry:

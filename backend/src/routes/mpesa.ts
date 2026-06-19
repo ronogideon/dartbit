@@ -327,23 +327,17 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   // Create-or-update the profile (carries the package rate-limit), verifying it exists before
   // adding users (a brand-new package's profile has never existed on this router).
   cmds.push(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} address-pool=dhcp-pool }`);
-  // No MAC cookie: auto-reconnect for the paid device is handled by its MAC-named user (MAC-auth),
-  // which exists only while the package is valid. A cookie would be a second, independent credential
-  // that lets a device back on without re-auth — defeating the "unknown/expired MAC must sign in"
-  // rule — so cookies stay off here.
-  cmds.push(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=no address-pool=dhcp-pool`);
-  // Clear any stale cookies for this MAC so a leftover cookie can't keep the device logged in.
-  if (macUC) cmds.push(`:foreach c in=[/ip hotspot cookie find mac-address="${macUC}"] do={ /ip hotspot cookie remove \$c }`);
-  // Primary user (D-name + 4-digit pwd), bound to the paying device's MAC. Recreate fresh.
-  cmds.push(`:foreach u in=[/ip hotspot user find name="${loginUser}"] do={ /ip hotspot user remove \$u }`);
-  cmds.push(`/ip hotspot user add name=${loginUser} password=${password} profile=${profileName} limit-uptime=${sessionSec}s${macBind} comment="Dbm:${displayName}"`);
-  // Immediately create the MAC-named auth user so login-by=mac works on the very next reconnect,
-  // without waiting for the 60s sync. This is the device's silent auto-login identity (the MAC is
-  // never shown in the UI; sessions resolve back to the D-number). Password matches the profile's
-  // mac-auth-password ("dartbit").
+  // MAC cookie written on login → instant silent reconnect for the paid device, expiring 60s after
+  // the package validity (mac-cookie-timeout is relative to login ≈ purchase), so it can't outlive
+  // the paid session. Expiry enforcement wipes it too, as a backstop.
+  cmds.push(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=yes mac-cookie-timeout=${sessionSec + 60}s address-pool=dhcp-pool`);
+  // Primary user (D-name + 4-digit pwd), bound to the paying device's MAC. Update IN PLACE if it
+  // already exists (set + reset-counters) rather than remove+add — removing would kick a session the
+  // portal/cookie may have already established, causing the brief connect→drop→reconnect flap.
+  cmds.push(`:if ([:len [/ip hotspot user find name="${loginUser}"]] = 0) do={ /ip hotspot user add name=${loginUser} password=${password} profile=${profileName} limit-uptime=${sessionSec}s${macBind} comment="Dbm:${displayName}" } else={ /ip hotspot user set [find name="${loginUser}"] password=${password} profile=${profileName} limit-uptime=${sessionSec}s${macBind ? macBind : ''} ; /ip hotspot user reset-counters [find name="${loginUser}"] }`);
+  // MAC-named auth user so login-by=mac/cookie works on the next reconnect. Same in-place update.
   if (macUC) {
-    cmds.push(`:foreach u in=[/ip hotspot user find name="${macUC}"] do={ /ip hotspot user remove \$u }`);
-    cmds.push(`/ip hotspot user add name=${macUC} password=dartbit mac-address=${macUC} profile=${profileName} limit-uptime=${sessionSec}s comment="DbMac:${displayName}"`);
+    cmds.push(`:if ([:len [/ip hotspot user find name="${macUC}"]] = 0) do={ /ip hotspot user add name=${macUC} password=dartbit mac-address=${macUC} profile=${profileName} limit-uptime=${sessionSec}s comment="DbMac:${displayName}" } else={ /ip hotspot user set [find name="${macUC}"] profile=${profileName} limit-uptime=${sessionSec}s ; /ip hotspot user reset-counters [find name="${macUC}"] }`);
   }
   // Payment just landed: every auth method bound to this MAC (D-name user, MAC user, and any
   // older leftover) gets the FULL fresh uptime window and its used-time counter zeroed, so a
@@ -370,13 +364,11 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
     const ipArg = tx.clientIp ? ` ip=${tx.clientIp}` : '';
     const loginBatch = radiusManaged ? radiusLoginCmds : cmds;
     loginBatch.push(`:foreach b in=[/ip hotspot ip-binding find mac-address="${macUC}"] do={ /ip hotspot ip-binding remove \$b }`);
-    loginBatch.push(`:foreach a in=[/ip hotspot active find mac-address="${macUC}"] do={ /ip hotspot active remove \$a }`);
-    // Single best-effort direct login (wrapped so a failure doesn't abort the batch). If it doesn't
-    // take immediately, login-by=mac logs the device in on its next request within seconds.
-    // Give the user-table updates above (~2s command poll) a moment to land on the router, then
-    // log the MAC in — a ~3s window after the payment is acknowledged, per the reconnect design.
-    loginBatch.push(`:delay 3s`);
-    loginBatch.push(`:do { /ip hotspot active login user=${loginUser}${ipArg} mac-address=${macUC} } on-error={}`);
+    // Do NOT kick an existing session: if the portal (or the MAC cookie) already connected this
+    // device right after payment, removing its active session and re-logging-in is what caused the
+    // brief "connect → drop → reconnect" flap. Only log the device in when it is NOT already active,
+    // giving the user-table updates a moment to land first. If it's already on, leave it on.
+    loginBatch.push(`:if ([:len [/ip hotspot active find mac-address="${macUC}"]] = 0) do={ :delay 2s ; :do { /ip hotspot active login user=${loginUser}${ipArg} mac-address=${macUC} } on-error={} }`);
     // Clean up any leftover db-login script/scheduler from older versions.
     loginBatch.push(`:foreach s in=[/system scheduler find name="db-login"] do={ /system scheduler remove \$s }`);
     loginBatch.push(`:foreach s in=[/system script find name="db-login"] do={ /system script remove \$s }`);
