@@ -149,8 +149,7 @@ export async function syncSubscriberToRadius(subscriberId: string, opts?: { kick
 
   try {
     await radiusPsql(stmts.join(' '));
-    const state = entitled ? 'wrote' : (walledGarden ? 'walled-garden' : 'cleared');
-    console.log(`[radius] ${state} ${sub.username} (${identities.map(i => i.name).join(', ')})${sub.expiresAt && entitled ? ` exp=${radiusExpiry(sub.expiresAt)}` : ''}`);
+    // (per-subscriber success is intentionally not logged — bulk syncs log a single summary line)
   } catch (e) {
     console.error(`[radius] psql FAILED for ${sub.username}:`, e instanceof Error ? e.message : e);
     throw e;
@@ -248,6 +247,7 @@ export async function bulkSyncPppoeToRadius(opts: { tenantId?: string; routerId?
       await radiusPsql(`BEGIN; ${chunk} COMMIT;`);
     }
   }
+  console.log(`[radius] bulk pppoe sync: ${synced} written, ${skipped} skipped`);
   return { synced, skipped };
 }
 
@@ -297,8 +297,7 @@ export async function redeemVoucherInRadius(code: string, remainingSeconds: numb
   if (m) stmts.push(...voucherRows(m, m, remainingSeconds, upKbps, downKbps, expiresAt));
   try {
     await radiusPsql(stmts.join(' '));
-    const n = (await radiusPsql(`SELECT count(*) FROM radcheck WHERE username IN ('${sqlq(code)}'${m ? `,'${sqlq(m)}'` : ''});`)).trim();
-    console.log(`[voucher-radius] wrote ${code}${m ? ` + mac ${m}` : ''} (radcheck rows: ${n}, timeout=${Math.max(60, Math.floor(remainingSeconds))}s${expiresAt ? `, exp=${radiusExpiry(expiresAt)}` : ''})`);
+    // (per-voucher success is intentionally not logged; the extra count round-trip is removed too)
   } catch (e) {
     console.error(`[voucher-radius] FAILED for ${code}:`, e instanceof Error ? e.message : e);
     throw e;
@@ -400,6 +399,7 @@ export async function bulkSyncVouchersToRadius(opts: { tenantId?: string; router
       await radiusPsql(`BEGIN; ${stmts.slice(i, i + CHUNK).join(' ')} COMMIT;`);
     }
   }
+  console.log(`[radius] bulk voucher sync: ${synced} written, ${skipped} skipped`);
   return { synced, skipped };
 }
 
@@ -447,6 +447,7 @@ export async function bulkSyncHotspotToRadius(opts: { tenantId?: string; routerI
       await radiusPsql(`BEGIN; ${stmts.slice(i, i + CHUNK).join(' ')} COMMIT;`);
     }
   }
+  console.log(`[radius] bulk hotspot sync: ${synced} written, ${skipped} skipped`);
   return { synced, skipped };
 }
 

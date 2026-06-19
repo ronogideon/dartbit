@@ -80,7 +80,6 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
-    add(':log info "Dartbit: Starting provisioning"');
     add('');
 
     // 0. Cleanup — remove Dartbit artifacts from any PRIOR provisioning so a (re)provision starts
@@ -157,20 +156,21 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add('');
 
     // 4b. ANTI-TETHERING (block hotspot/USB sharing) — TTL based, DISABLED BY DEFAULT.
-    // Tethered/secondary devices' packets pass through the paying device, which decrements
-    // IP TTL by one (arriving as 63/127 vs OS defaults 64/128). The rules below drop those.
-    // They are created DISABLED so they can never break the captive-portal/package flow by
-    // accident; enable them deliberately once validated on your network with:
-    //   /ip firewall filter enable [find comment~"Dartbit anti-tether"]
-    // They also exclude the dartbit-backend address-list so the walled-garden/portal traffic
-    // (packages, STK, status) is never affected even when enabled.
-    add('# 4b. Anti-tethering (TTL) — disabled by default');
+    // 4b. ANTI-TETHERING (block one paid device sharing to others via its own hotspot/USB) — ENABLED.
+    // A second device connected to the paid device's mobile hotspot is NAT'd behind that device's
+    // single MAC, so MAC-auth can't see it. But its packets pass THROUGH the paid device, which acts
+    // as a router and decrements IP TTL by one — arriving at 63 (from OS default 64) or 127 (from
+    // 128), while the paid device's OWN traffic keeps its full TTL. We drop the decremented traffic
+    // to the internet, so the shared device gets no connectivity and must connect to the hotspot
+    // itself and pay. The dartbit-backend address-list is excluded so the captive portal / package
+    // purchase / status polling keep working for everyone.
+    // If a legitimate single device is ever affected (rare — only a device that is itself one router
+    // hop behind another), disable with: /ip firewall filter disable [find comment~"Dartbit anti-tether"]
+    add('# 4b. Anti-tethering (TTL) — blocks a paid device sharing to a second device');
     add(`:foreach f in=[/ip firewall filter find comment~"Dartbit anti-tether"] do={ /ip firewall filter remove \$f }`);
     add(`:foreach f in=[/ip firewall mangle find comment~"Dartbit ttl"] do={ /ip firewall mangle remove \$f }`);
-    // Drop tethered traffic to the INTERNET only — exclude our backend so the portal works
-    // even before login. dst-address-list inversion (!dartbit-backend) keeps walled-garden alive.
-    add(`/ip firewall filter add chain=forward in-interface-list=LAN out-interface=${wan} ttl=equal:63 dst-address-list=!dartbit-backend action=drop comment="Dartbit anti-tether 63" disabled=yes`);
-    add(`/ip firewall filter add chain=forward in-interface-list=LAN out-interface=${wan} ttl=equal:127 dst-address-list=!dartbit-backend action=drop comment="Dartbit anti-tether 127" disabled=yes`);
+    add(`/ip firewall filter add chain=forward in-interface-list=LAN out-interface=${wan} ttl=equal:63 dst-address-list=!dartbit-backend action=drop comment="Dartbit anti-tether 63"`);
+    add(`/ip firewall filter add chain=forward in-interface-list=LAN out-interface=${wan} ttl=equal:127 dst-address-list=!dartbit-backend action=drop comment="Dartbit anti-tether 127"`);
     add('');
 
     // 5. PPPoE server
@@ -224,7 +224,6 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // Remove any other hotspots on this interface (e.g. from other tools)
     add(`:foreach h in=[/ip hotspot find interface="${bridge}"] do={ :if ([/ip hotspot get $h name] != "dartbit-hotspot") do={ /ip hotspot remove $h } }`);
     // Diagnostic logging
-    add(`:log info ("Dartbit hotspot: " . [/ip hotspot get [find name="dartbit-hotspot"] disabled] . "; DHCP: " . [/ip dhcp-server get [find name="dartbit-dhcp"] disabled])`);
     add('');
 
     // 6a. Replace MikroTik's default login.html with one that redirects to Dartbit's portal
@@ -239,7 +238,6 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // Also overwrite alogin.html which is shown on successful login
     add(`/tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=hotspot/alogin.html${fetchFlags}`);
     add(`:delay 1s`);
-    add(`:log info "Dartbit: portal HTML installed"`);
     add('');
 
     // 6b. CRITICAL: disable fasttrack-connection. RouterOS's default firewall has a
@@ -362,8 +360,8 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add('');
 
     // 8c. Force hotspot to re-bind to bridge (picks up newly added ports).
-    //     MAC cookie is intentionally ENABLED (see profile above) so returning
-    //     clients auto-reconnect within the cookie lifetime without re-entering vouchers.
+    //     MAC cookies are OFF by design — reconnect for a paid device is handled by its MAC-named
+    //     user (which exists only while valid), so unknown/expired devices are always re-prompted.
     add('# 8c. Force hotspot to re-bind to bridge (picks up newly added ports)');
     add(`:foreach h in=[/ip hotspot find name="dartbit-hotspot"] do={ /ip hotspot set $h address-pool=dhcp-pool profile=hsprof-dartbit; /ip hotspot disable $h; :delay 500ms; /ip hotspot enable $h }`);
     add('');
@@ -542,8 +540,6 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`/system scheduler add name=dartbit-sessions interval=3s on-event="/system script run dartbit-sessions" comment="Dartbit session sync"`);
     add('');
 
-    add(':log info "Dartbit: Provisioning complete"');
-
     return lines.join('\n');
 }
 
@@ -560,12 +556,10 @@ router.get('/cmd-script', async (req: Request, res: Response) => {
     const backendUrl = resolveBackendUrl();
     const fetchFlags = ' mode=https check-certificate=no';
     const lines = [
-      ':log info "Dartbit: updating cmd poller"',
       `:foreach s in=[/system scheduler find comment="Dartbit cmd"] do={ /system scheduler remove $s }`,
       `:foreach s in=[/system script find name="dartbit-cmd"] do={ /system script remove $s }`,
       `/system script add name=dartbit-cmd policy=read,write,test,reboot source={:do {/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ /import file-name=dartbit-cmd.rsc; :delay 1s; :foreach f in=[/file find name="dartbit-cmd.rsc"] do={ /file remove $f } }} on-error={}}`,
       `/system scheduler add name=dartbit-cmd interval=5s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`,
-      ':log info "Dartbit: cmd poller now on current backend"',
     ];
     res.type('text/plain').send(lines.join('\n'));
   } catch (err) {
@@ -996,8 +990,6 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     const now = new Date();
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
-
-    add(`:log info "Dartbit: Syncing ${subscribers.length} subscribers"`);
     add('');
     // Keep the command poller fast (2s) so purchases/changes apply near-instantly. Updating it here
     // means the speed-up takes effect WITHOUT a reprovision.
@@ -1037,7 +1029,6 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       add(`:foreach u in=[/ip hotspot user find comment~"Dbm:"] do={ /ip hotspot user remove \$u }`);
       add(`:foreach u in=[/ip hotspot user find comment~"Dbv:"] do={ /ip hotspot user remove \$u }`);
       add(`:foreach u in=[/ip hotspot user find comment~"DbVMac:"] do={ /ip hotspot user remove \$u }`);
-      add(`:log info "Dartbit: RADIUS mode — local hotspot/voucher sync skipped (FreeRADIUS authoritative)"`);
       return res.type('text/plain').send(lines.join('\n'));
     }
 
@@ -1210,7 +1201,6 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     // session so the device cannot stay/reconnect after its time window — even if the
     // cumulative uptime limit wasn't reached (intermittent use). This is the fix for
     // "expired voucher still reconnects".
-    add(`:log info "Dartbit: sync pushing ${vouchers.length} vouchers"`);
     for (const v of vouchers) {
       const pid = v.package ? v.package.id.substring(0, 8) : '';
       // M-Pesa vouchers live on the hotspot subscriber profile (db-h-) so the code shares the
