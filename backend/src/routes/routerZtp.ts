@@ -96,7 +96,10 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach s in=[/system scheduler find where name~"dartbit"] do={ :local n [/system scheduler get $s name]; :if ($n != "dartbit-cmd" && $n != "dartbit-cmd-upd") do={ /system scheduler remove $s } }`);
     add(`:foreach s in=[/system scheduler find where comment~"Dartbit"] do={ :local n [/system scheduler get $s name]; :if ($n != "dartbit-cmd" && $n != "dartbit-cmd-upd") do={ /system scheduler remove $s } }`);
     add(`:foreach s in=[/system script find where name~"dartbit"] do={ :local n [/system script get $s name]; :if ($n != "dartbit-cmd" && $n != "dartbit-cmd-upd") do={ /system script remove $s } }`);
-    add(`:foreach rr in=[/radius find where comment~"Dartbit RADIUS"] do={ /radius remove $rr }`);
+    // NOTE: we do NOT remove /radius entries here. Section 8e removes+re-adds them atomically when
+    // RADIUS is active. Stripping them unconditionally here would wipe a working router's RADIUS
+    // config whenever the backend's RADIUS env switch is momentarily off — and never restore it,
+    // leaving the router sending nothing to FreeRADIUS ("times out, no requests").
     add('');
 
     // 0b. Identity — make the MikroTik system identity match the dashboard name, so there's ONE name
@@ -202,12 +205,10 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     //  in a reconnect loop on the captive portal and blocking the purchase flow. MAC auth alone
     //  gives robust auto-login for active devices without that loop.
     add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,mac,http-pap mac-auth-password=dartbit use-radius=no }`);
-    // Always sync the profile settings (idempotent — no disruption). login-by is MAC + form methods,
-    // NO cookie: a device is auto-logged-in ONLY while a hotspot user named after its MAC exists
-    // (the sync maintains that user for active/paid devices and removes it at expiry). An unknown or
-    // expired MAC therefore has no credential and is shown the captive-portal sign-in — this is what
-    // stops a paid session being shared to other devices.
-    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,mac,http-pap mac-auth-password=dartbit use-radius=no`);
+    // Always sync the profile settings (idempotent — no disruption). use-radius is intentionally NOT
+    // set here: new profiles default to use-radius=no (the create above), and section 8e flips it to
+    // =yes when RADIUS is active — so we never downgrade a RADIUS-mode profile on reprovision.
+    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,mac,http-pap mac-auth-password=dartbit`);
     // User profile — one device per credential. No add-mac-cookie (cookie auth removed; MAC auth
     // via the MAC-named user is the reconnect mechanism and it cleanly stops at expiry).
     add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 address-pool=dhcp-pool }`);
@@ -538,7 +539,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add('# 12. Active session + live-speed reporter (3s)');
     add(`:foreach s in=[/system scheduler find comment="Dartbit session sync"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-sessions"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . "|P,"); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :local mac [/ip hotspot active get \$a mac-address]; :local bi 0; :local bo 0; :do { :set bi [/ip hotspot active get \$a bytes-in]; :set bo [/ip hotspot active get \$a bytes-out]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$bi . "|" . \$bo . "|H|" . \$mac . ","); }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
+    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . "|P,"); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :local mac [/ip hotspot active get \$a mac-address]; :local bi 0; :local bo 0; :do { :set bi [/ip hotspot active get \$a bytes-in]; :set bo [/ip hotspot active get \$a bytes-out]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$bi . "|" . \$bo . "|H|" . \$mac . ","); }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); :do { /tool fetch url=\$url${fetchFlags} output=none as-value } on-error={}}`);
     add(`/system scheduler add name=dartbit-sessions interval=3s on-event="/system script run dartbit-sessions" comment="Dartbit session sync"`);
     add('');
 
