@@ -206,8 +206,31 @@ async function disconnectSession(sub: RadiusSub, names: string[]): Promise<void>
 // One-time / on-demand bulk sync: push ALL entitled PPPoE subscribers for a tenant (optionally a
 // single router) into RADIUS in a single batched psql call. Used to migrate existing customers into
 // RADIUS before enabling it on the router. Returns how many were written.
+// RouterOS reads these reply attributes as limit-bytes-* (data caps). Dartbit NEVER sets them — any
+// that exist are stale/foreign (an old config, a hand-added row, or the coexisting RADIUS) and cause
+// the "maximum send/recv limit exceeded" disconnect loop. We delete them from BOTH the per-user
+// (radreply) and group-wide (radgroupreply) tables so no Dartbit user can ever be byte-capped.
+// Mikrotik-Rate-Limit (speed) is deliberately NOT in this list and is left untouched.
+const BYTE_LIMIT_ATTRS = [
+  'Mikrotik-Total-Limit', 'Mikrotik-Total-Limit-Gigawords',
+  'Mikrotik-Recv-Limit', 'Mikrotik-Recv-Limit-Gigawords',
+  'Mikrotik-Xmit-Limit', 'Mikrotik-Xmit-Limit-Gigawords',
+];
+
+export async function purgeRadiusByteLimits(): Promise<void> {
+  if (!radiusConfigured()) return;
+  const list = BYTE_LIMIT_ATTRS.map(a => `'${a}'`).join(',');
+  try {
+    await radiusPsql(`DELETE FROM radreply WHERE attribute IN (${list}); DELETE FROM radgroupreply WHERE attribute IN (${list});`);
+  } catch (e) {
+    console.error('[radius] byte-limit purge failed:', e instanceof Error ? e.message : e);
+  }
+}
+
 export async function bulkSyncPppoeToRadius(opts: { tenantId?: string; routerId?: string }): Promise<{ synced: number; skipped: number }> {
   if (!radiusConfigured()) throw new Error('RADIUS not configured');
+  // Strip any stray data caps before syncing so no PPPoE user is byte-limited (self-healing each run).
+  await purgeRadiusByteLimits();
   const subs = await prisma.subscriber.findMany({
     where: {
       service: 'PPPOE',
