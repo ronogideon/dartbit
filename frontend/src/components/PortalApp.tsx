@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/lib/api';
-import { login as adminLogin } from '@/lib/api';
+import { login as adminLogin, forgotPassword, resetPasswordWithCode } from '@/lib/api';
 import toast from 'react-hot-toast';
 import { fontStack } from '@/lib/fonts';
 import { googleFontsHref } from '@/lib/fonts';
@@ -33,6 +33,12 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
   const [token, setToken] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [fpOpen, setFpOpen] = useState(false);
+  const [fpStep, setFpStep] = useState(1);
+  const [fpId, setFpId] = useState('');
+  const [fpCode, setFpCode] = useState('');
+  const [fpNew, setFpNew] = useState('');
+  const [fpLoading, setFpLoading] = useState(false);
   const [account, setAccount] = useState<Account | null>(null);
   const [packages, setPackages] = useState<Pkg[]>([]);
   const [loading, setLoading] = useState(false);
@@ -189,6 +195,9 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
             <div>
               <label className="text-xs text-gray-400 mb-1 block">Password</label>
               <input type="password" className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-white" value={password} onChange={e => setPassword(e.target.value)} placeholder="Your password" />
+              <div className="text-right mt-1.5">
+                <button type="button" onClick={() => { setFpId(username); setFpStep(1); setFpOpen(true); }} className="text-xs" style={{ color: accent }}>Forgot password?</button>
+              </div>
             </div>
             <button type="submit" disabled={loading} className="w-full text-white rounded-lg py-2.5 font-medium disabled:opacity-50" style={{ background: accent }}>
               {loading ? 'Signing in…' : 'Sign In'}
@@ -197,6 +206,43 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
           </form>
           {SupportFooter}
         </div>
+        {fpOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setFpOpen(false)}>
+            <div className="w-full max-w-sm rounded-xl bg-gray-900 border border-gray-700 p-5" onClick={e => e.stopPropagation()}>
+              <h3 className="text-white font-semibold mb-1">Reset password</h3>
+              {fpStep === 1 ? (
+                <>
+                  <p className="text-xs text-gray-400 mb-3">Enter your email (staff) or username (customer). We&apos;ll text a reset code to the phone on your account.</p>
+                  <input value={fpId} onChange={e => setFpId(e.target.value)} placeholder="Email or username" autoCapitalize="none"
+                    className="w-full px-3 py-2 mb-3 border border-gray-700 rounded-lg bg-gray-800 text-white text-sm" />
+                  <button disabled={fpLoading || !fpId} onClick={async () => {
+                    setFpLoading(true);
+                    try { await forgotPassword(fpId.includes('@') ? 'STAFF' : 'CUSTOMER', fpId.trim()); toast.success('If the account exists, a code was sent by SMS.'); setFpStep(2); }
+                    catch { toast.error('Could not send code'); } finally { setFpLoading(false); }
+                  }} className="w-full text-white py-2 rounded-lg text-sm disabled:opacity-50" style={{ background: accent }}>
+                    {fpLoading ? 'Sending…' : 'Send code'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="text-xs text-gray-400 mb-3">Enter the 6-digit code from the SMS and your new password.</p>
+                  <input value={fpCode} onChange={e => setFpCode(e.target.value)} placeholder="6-digit code" inputMode="numeric"
+                    className="w-full px-3 py-2 mb-2 border border-gray-700 rounded-lg bg-gray-800 text-white text-sm" />
+                  <input value={fpNew} onChange={e => setFpNew(e.target.value)} type="password" placeholder="New password (min 6)"
+                    className="w-full px-3 py-2 mb-3 border border-gray-700 rounded-lg bg-gray-800 text-white text-sm" />
+                  <button disabled={fpLoading || fpCode.length < 4 || fpNew.length < 6} onClick={async () => {
+                    setFpLoading(true);
+                    try { await resetPasswordWithCode(fpId.includes('@') ? 'STAFF' : 'CUSTOMER', fpId.trim(), fpCode.trim(), fpNew); toast.success('Password changed — sign in with your new password.'); setFpOpen(false); setFpCode(''); setFpNew(''); }
+                    catch (e) { const err = e as { response?: { data?: { error?: string } } }; toast.error(err?.response?.data?.error || 'Invalid or expired code'); } finally { setFpLoading(false); }
+                  }} className="w-full text-white py-2 rounded-lg text-sm disabled:opacity-50" style={{ background: accent }}>
+                    {fpLoading ? 'Saving…' : 'Set new password'}
+                  </button>
+                  <button onClick={() => setFpStep(1)} className="w-full text-xs text-gray-400 hover:text-gray-200 mt-2">Back</button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     );
   }

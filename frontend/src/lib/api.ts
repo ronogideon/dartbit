@@ -56,7 +56,13 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err.response?.status === 401 && typeof window !== 'undefined') {
+    // A 401 from a LOGIN attempt is expected (wrong credentials, or the admin-probe that the portal
+    // runs before trying customer login). Those must be handled locally by the caller's catch — NOT
+    // trigger the global "session expired" redirect, which otherwise bounces /portal → /auth → /portal
+    // and blocks login entirely. Only redirect on 401s from genuinely authenticated calls.
+    const url: string = err.config?.url || '';
+    const isLoginCall = /\/(auth\/login|portal\/login|auth\/subscriber-login|auth\/subscriber-login-hotspot|auth\/forgot-password|auth\/reset-password)/.test(url);
+    if (err.response?.status === 401 && !isLoginCall && typeof window !== 'undefined') {
       localStorage.removeItem('dartbit_token');
       localStorage.removeItem('dartbit_user');
       window.location.href = '/auth/login';
