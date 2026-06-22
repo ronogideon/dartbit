@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { z } from 'zod';
 import prisma from '../utils/prisma';
 import { signToken } from '../utils/jwt';
@@ -190,8 +191,11 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
 
     const code = genResetCode();
     const codeHash = await bcrypt.hash(code, 10);
-    await prisma.passwordResetCode.updateMany({ where: { scope, subjectId, usedAt: null }, data: { usedAt: new Date() } });
-    await prisma.passwordResetCode.create({ data: { scope, subjectId, codeHash, expiresAt: new Date(Date.now() + 15 * 60 * 1000) } });
+    await prisma.$executeRawUnsafe(`UPDATE "PasswordResetCode" SET "usedAt"=NOW() WHERE scope=$1 AND "subjectId"=$2 AND "usedAt" IS NULL`, scope, subjectId);
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO "PasswordResetCode" (id, scope, "subjectId", "codeHash", "expiresAt", "createdAt") VALUES ($1,$2,$3,$4,$5,NOW())`,
+      crypto.randomUUID(), scope, subjectId, codeHash, new Date(Date.now() + 15 * 60 * 1000),
+    );
 
     const { sendNotification } = await import('../utils/notifications');
     await sendNotification({
@@ -239,10 +243,11 @@ router.post('/reset-password', async (req: Request, res: Response) => {
       subjectId = subscriber.id; subService = subscriber.service;
     }
 
-    const rec = await prisma.passwordResetCode.findFirst({
-      where: { scope, subjectId, usedAt: null, expiresAt: { gt: new Date() } },
-      orderBy: { createdAt: 'desc' },
-    });
+    const rows = (await prisma.$queryRawUnsafe(
+      `SELECT id, "codeHash" FROM "PasswordResetCode" WHERE scope=$1 AND "subjectId"=$2 AND "usedAt" IS NULL AND "expiresAt" > NOW() ORDER BY "createdAt" DESC LIMIT 1`,
+      scope, subjectId,
+    )) as Array<{ id: string; codeHash: string }>;
+    const rec = rows[0];
     if (!rec) return sendError(res, 'Code expired or not found. Request a new one.', 400);
     if (!(await bcrypt.compare(code.trim(), rec.codeHash))) return sendError(res, 'Invalid or expired code', 400);
 
@@ -257,7 +262,7 @@ router.post('/reset-password', async (req: Request, res: Response) => {
         } catch { /* best effort */ }
       }
     }
-    await prisma.passwordResetCode.update({ where: { id: rec.id }, data: { usedAt: new Date() } });
+    await prisma.$executeRawUnsafe(`UPDATE "PasswordResetCode" SET "usedAt"=NOW() WHERE id=$1`, rec.id);
     return sendSuccess(res, { ok: true });
   } catch (err) {
     return sendError(res, err instanceof Error ? err.message : 'Failed', 500);

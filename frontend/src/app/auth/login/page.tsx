@@ -167,7 +167,7 @@ export default function LoginPage() {
                 <p className="text-xs text-gray-400 mb-3">Enter your email (staff) or username (customer). We&apos;ll text a reset code to the phone on file.</p>
                 <input value={fpId} onChange={e => setFpId(e.target.value)} placeholder="Email or username"
                   className="w-full px-3 py-2 mb-3 border border-gray-700 rounded-lg bg-gray-800 text-white text-sm" />
-                <button disabled={fpLoading || !fpId} onClick={async () => {
+                <button type="button" disabled={fpLoading || !fpId} onClick={async () => {
                   setFpLoading(true);
                   try {
                     await forgotPassword(fpId.includes('@') ? 'STAFF' : 'CUSTOMER', fpId.trim());
@@ -185,7 +185,7 @@ export default function LoginPage() {
                   className="w-full px-3 py-2 mb-2 border border-gray-700 rounded-lg bg-gray-800 text-white text-sm" />
                 <input value={fpNew} onChange={e => setFpNew(e.target.value)} type="password" placeholder="New password (min 6)"
                   className="w-full px-3 py-2 mb-3 border border-gray-700 rounded-lg bg-gray-800 text-white text-sm" />
-                <button disabled={fpLoading || fpCode.length < 4 || fpNew.length < 6} onClick={async () => {
+                <button type="button" disabled={fpLoading || fpCode.length < 4 || fpNew.length < 6} onClick={async () => {
                   setFpLoading(true);
                   try {
                     await resetPasswordWithCode(fpId.includes('@') ? 'STAFF' : 'CUSTOMER', fpId.trim(), fpCode.trim(), fpNew);
@@ -195,7 +195,7 @@ export default function LoginPage() {
                 }} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg text-sm disabled:opacity-50">
                   {fpLoading ? 'Saving…' : 'Set new password'}
                 </button>
-                <button onClick={() => setFpStep(1)} className="w-full text-xs text-gray-400 hover:text-gray-200 mt-2">Back</button>
+                <button type="button" onClick={() => setFpStep(1)} className="w-full text-xs text-gray-400 hover:text-gray-200 mt-2">Back</button>
               </>
             )}
           </div>

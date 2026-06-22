@@ -108,7 +108,11 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
       // (who sign in with their email) and subscribers (username). Try the admin login first; if
       // these aren't admin credentials, fall back to the subscriber portal login.
       let adminData: { user: { id: string; email: string; name: string; role: string; tenantId?: string }; token: string; subdomain?: string } | null = null;
-      try { adminData = await adminLogin(username, password); } catch { adminData = null; }
+      // Only an email can be an admin account — skip the admin probe entirely for usernames so a
+      // customer login never triggers an (expected) admin-login 401.
+      if (username.includes('@')) {
+        try { adminData = await adminLogin(username, password); } catch { adminData = null; }
+      }
 
       if (adminData) {
         // Persist admin auth the same way the admin app does, then hand off to the dashboard.
@@ -215,7 +219,7 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
                   <p className="text-xs text-gray-400 mb-3">Enter your email (staff) or username (customer). We&apos;ll text a reset code to the phone on your account.</p>
                   <input value={fpId} onChange={e => setFpId(e.target.value)} placeholder="Email or username" autoCapitalize="none"
                     className="w-full px-3 py-2 mb-3 border border-gray-700 rounded-lg bg-gray-800 text-white text-sm" />
-                  <button disabled={fpLoading || !fpId} onClick={async () => {
+                  <button type="button" disabled={fpLoading || !fpId} onClick={async () => {
                     setFpLoading(true);
                     try { await forgotPassword(fpId.includes('@') ? 'STAFF' : 'CUSTOMER', fpId.trim()); toast.success('If the account exists, a code was sent by SMS.'); setFpStep(2); }
                     catch { toast.error('Could not send code'); } finally { setFpLoading(false); }
@@ -230,14 +234,14 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
                     className="w-full px-3 py-2 mb-2 border border-gray-700 rounded-lg bg-gray-800 text-white text-sm" />
                   <input value={fpNew} onChange={e => setFpNew(e.target.value)} type="password" placeholder="New password (min 6)"
                     className="w-full px-3 py-2 mb-3 border border-gray-700 rounded-lg bg-gray-800 text-white text-sm" />
-                  <button disabled={fpLoading || fpCode.length < 4 || fpNew.length < 6} onClick={async () => {
+                  <button type="button" disabled={fpLoading || fpCode.length < 4 || fpNew.length < 6} onClick={async () => {
                     setFpLoading(true);
                     try { await resetPasswordWithCode(fpId.includes('@') ? 'STAFF' : 'CUSTOMER', fpId.trim(), fpCode.trim(), fpNew); toast.success('Password changed — sign in with your new password.'); setFpOpen(false); setFpCode(''); setFpNew(''); }
                     catch (e) { const err = e as { response?: { data?: { error?: string } } }; toast.error(err?.response?.data?.error || 'Invalid or expired code'); } finally { setFpLoading(false); }
                   }} className="w-full text-white py-2 rounded-lg text-sm disabled:opacity-50" style={{ background: accent }}>
                     {fpLoading ? 'Saving…' : 'Set new password'}
                   </button>
-                  <button onClick={() => setFpStep(1)} className="w-full text-xs text-gray-400 hover:text-gray-200 mt-2">Back</button>
+                  <button type="button" onClick={() => setFpStep(1)} className="w-full text-xs text-gray-400 hover:text-gray-200 mt-2">Back</button>
                 </>
               )}
             </div>
