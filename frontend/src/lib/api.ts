@@ -129,6 +129,12 @@ export const getSystemUsers = () => api.get('/users').then((r) => r.data.data);
 export const createSystemUser = (data: { name: string; email: string; role: string }) => api.post('/users', data).then((r) => r.data.data);
 export const updateSystemUser = (id: string, data: { name?: string; role?: string; isActive?: boolean }) => api.put(`/users/${id}`, data).then((r) => r.data.data);
 export const resetSystemUserPassword = (id: string) => api.post(`/users/${id}/reset-password`, {}).then((r) => r.data.data);
+export const changeSystemUserPassword = (id: string, newPassword: string, currentPassword?: string) =>
+  api.post(`/users/${id}/change-password`, { newPassword, currentPassword }).then((r) => r.data.data);
+export const forgotPassword = (scope: 'STAFF' | 'CUSTOMER', identifier: string, tenantId?: string) =>
+  api.post('/auth/forgot-password', { scope, identifier, tenantId }).then((r) => r.data.data);
+export const resetPasswordWithCode = (scope: 'STAFF' | 'CUSTOMER', identifier: string, code: string, newPassword: string, tenantId?: string) =>
+  api.post('/auth/reset-password', { scope, identifier, code, newPassword, tenantId }).then((r) => r.data.data);
 export const deleteSystemUser = (id: string) => api.delete(`/users/${id}`).then((r) => r.data.data);
 export const getPaymentConfig = () => api.get('/payment-config').then((r) => r.data.data);
 export const updatePaymentConfig = (data: unknown) => api.put('/payment-config', data).then((r) => r.data.data);

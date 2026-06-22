@@ -549,3 +549,15 @@ model TrialClaim {
   @@unique([tenantId, macAddress])
   @@index([tenantId])
 }
+
+// Short-lived SMS codes for password reset (staff Users and portal Subscribers).
+model PasswordResetCode {
+  id        String    @id @default(cuid())
+  scope     String    // 'STAFF' | 'CUSTOMER'
+  subjectId String    // User.id or Subscriber.id
+  codeHash  String    // bcrypt hash of the 6-digit code (never stored in clear)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  @@index([scope, subjectId])
+}

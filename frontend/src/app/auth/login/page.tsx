@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
-import { login, portalLogin, resolveSubdomain, tenantSubdomainFromHost } from '@/lib/api';
+import { login, portalLogin, resolveSubdomain, tenantSubdomainFromHost, forgotPassword, resetPasswordWithCode } from '@/lib/api';
 import toast from 'react-hot-toast';
 import { Zap, Wifi, Eye, EyeOff, ArrowRight } from 'lucide-react';
 import Link from 'next/link';
@@ -19,6 +19,12 @@ export default function LoginPage() {
   // The themed /portal is now the single login entry for both staff and customers. On a tenant
   // subdomain, send /auth/login there. (Apex/superadmin keeps this page.)
   const [redirecting, setRedirecting] = useState(false);
+  const [fpOpen, setFpOpen] = useState(false);
+  const [fpStep, setFpStep] = useState(1);
+  const [fpId, setFpId] = useState('');
+  const [fpCode, setFpCode] = useState('');
+  const [fpNew, setFpNew] = useState('');
+  const [fpLoading, setFpLoading] = useState(false);
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (tenantSubdomainFromHost()) {
@@ -125,6 +131,10 @@ export default function LoginPage() {
                   {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
+              <div className="text-right mt-1.5">
+                <button type="button" onClick={() => { setFpId(email); setFpStep(1); setFpOpen(true); }}
+                  className="text-xs text-blue-400 hover:text-blue-300">Forgot password?</button>
+              </div>
             </div>
 
             <button type="submit" disabled={loading}
@@ -147,6 +157,50 @@ export default function LoginPage() {
         )}
 
       </div>
+
+      {fpOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setFpOpen(false)}>
+          <div className="w-full max-w-sm rounded-xl bg-gray-900 border border-gray-700 p-5" onClick={e => e.stopPropagation()}>
+            <h3 className="text-white font-semibold mb-1">Reset password</h3>
+            {fpStep === 1 ? (
+              <>
+                <p className="text-xs text-gray-400 mb-3">Enter your email (staff) or username (customer). We&apos;ll text a reset code to the phone on file.</p>
+                <input value={fpId} onChange={e => setFpId(e.target.value)} placeholder="Email or username"
+                  className="w-full px-3 py-2 mb-3 border border-gray-700 rounded-lg bg-gray-800 text-white text-sm" />
+                <button disabled={fpLoading || !fpId} onClick={async () => {
+                  setFpLoading(true);
+                  try {
+                    await forgotPassword(fpId.includes('@') ? 'STAFF' : 'CUSTOMER', fpId.trim());
+                    toast.success('If the account exists, a code was sent by SMS.');
+                    setFpStep(2);
+                  } catch { toast.error('Could not send code'); } finally { setFpLoading(false); }
+                }} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg text-sm disabled:opacity-50">
+                  {fpLoading ? 'Sending…' : 'Send code'}
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="text-xs text-gray-400 mb-3">Enter the 6-digit code from the SMS and your new password.</p>
+                <input value={fpCode} onChange={e => setFpCode(e.target.value)} placeholder="6-digit code" inputMode="numeric"
+                  className="w-full px-3 py-2 mb-2 border border-gray-700 rounded-lg bg-gray-800 text-white text-sm" />
+                <input value={fpNew} onChange={e => setFpNew(e.target.value)} type="password" placeholder="New password (min 6)"
+                  className="w-full px-3 py-2 mb-3 border border-gray-700 rounded-lg bg-gray-800 text-white text-sm" />
+                <button disabled={fpLoading || fpCode.length < 4 || fpNew.length < 6} onClick={async () => {
+                  setFpLoading(true);
+                  try {
+                    await resetPasswordWithCode(fpId.includes('@') ? 'STAFF' : 'CUSTOMER', fpId.trim(), fpCode.trim(), fpNew);
+                    toast.success('Password changed — sign in with your new password.');
+                    setFpOpen(false); setFpCode(''); setFpNew('');
+                  } catch (e) { const err = e as { response?: { data?: { error?: string } } }; toast.error(err?.response?.data?.error || 'Invalid or expired code'); } finally { setFpLoading(false); }
+                }} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg text-sm disabled:opacity-50">
+                  {fpLoading ? 'Saving…' : 'Set new password'}
+                </button>
+                <button onClick={() => setFpStep(1)} className="w-full text-xs text-gray-400 hover:text-gray-200 mt-2">Back</button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -2,10 +2,10 @@
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getSettings, updateSettings, getBillingCurrent, getBillingHistory, billingCheckout, getSystemUsers, createSystemUser, updateSystemUser, resetSystemUserPassword, deleteSystemUser, getPaymentConfig, updatePaymentConfig, getNotificationConfig, saveNotificationConfig, getSmsBalance, sendTestSms, getTenantInfo, getBranding, saveBranding, type NotificationConfig } from '@/lib/api';
+import { getSettings, updateSettings, getBillingCurrent, getBillingHistory, billingCheckout, getSystemUsers, createSystemUser, updateSystemUser, resetSystemUserPassword, changeSystemUserPassword, deleteSystemUser, getPaymentConfig, updatePaymentConfig, getNotificationConfig, saveNotificationConfig, getSmsBalance, sendTestSms, getTenantInfo, getBranding, saveBranding, type NotificationConfig } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import toast from 'react-hot-toast';
-import { Settings as SettingsIcon, CreditCard, Users, Plus, Trash2, KeyRound, Copy, Check, Wallet, Bell, Send } from 'lucide-react';
+import { Settings as SettingsIcon, CreditCard, Users, Plus, Trash2, KeyRound, Lock, Copy, Check, Wallet, Bell, Send } from 'lucide-react';
 
 type Tab = 'general' | 'notifications' | 'billing' | 'payments' | 'users';
 
@@ -903,6 +903,12 @@ function UsersTab() {
     onError: () => toast.error('Failed to reset password'),
   });
 
+  const changePwMut = useMutation({
+    mutationFn: ({ id, newPassword }: { id: string; newPassword: string }) => changeSystemUserPassword(id, newPassword),
+    onSuccess: () => toast.success('Password changed'),
+    onError: (e: { response?: { data?: { error?: string } } }) => toast.error(e?.response?.data?.error || 'Failed to change password'),
+  });
+
   const deleteMut = useMutation({
     mutationFn: deleteSystemUser,
     onSuccess: () => { invalidate(); toast.success('User removed'); },
@@ -970,7 +976,15 @@ function UsersTab() {
                     </td>
                     <td className="py-3">
                       <div className="flex items-center justify-end gap-2">
-                        <button onClick={() => resetMut.mutate(u.id)} title="Reset password" className="p-1.5 text-gray-400 hover:text-blue-600">
+                        <button onClick={() => {
+                          const np = window.prompt(`Set a new password for ${u.name} (min 6 characters):`);
+                          if (np == null) return;
+                          if (np.length < 6) { toast.error('Password must be at least 6 characters'); return; }
+                          changePwMut.mutate({ id: u.id, newPassword: np });
+                        }} title="Set a specific password" className="p-1.5 text-gray-400 hover:text-blue-600">
+                          <Lock size={15} />
+                        </button>
+                        <button onClick={() => resetMut.mutate(u.id)} title="Generate a temporary password" className="p-1.5 text-gray-400 hover:text-blue-600">
                           <KeyRound size={15} />
                         </button>
                         <button onClick={() => { if (confirm(`Remove ${u.name}?`)) deleteMut.mutate(u.id); }} title="Remove user" className="p-1.5 text-gray-400 hover:text-red-600">

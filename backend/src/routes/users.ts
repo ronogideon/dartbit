@@ -144,4 +144,38 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
   }
 });
 
+const changePwSchema = z.object({
+  newPassword: z.string().min(6),
+  currentPassword: z.string().optional(),
+});
+
+// POST /users/:id/change-password
+// - Admins (TENANT_ADMIN/SUPERADMIN) may set any in-tenant user's password (no current pw needed).
+// - A non-admin may change ONLY their own account, and must supply the correct currentPassword.
+router.post('/:id/change-password', async (req: AuthRequest, res: Response) => {
+  try {
+    const parsed = changePwSchema.safeParse(req.body);
+    if (!parsed.success) return sendError(res, 'Password must be at least 6 characters', 400);
+    const { newPassword, currentPassword } = parsed.data;
+    const role = req.user?.role;
+    const isAdmin = role === 'TENANT_ADMIN' || role === 'SUPERADMIN';
+    const isSelf = req.params.id === req.user?.userId;
+    if (!isAdmin && !isSelf) return sendError(res, 'You can only change your own password', 403);
+
+    const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+    if (!target || (req.user?.tenantId && target.tenantId !== req.user.tenantId)) return sendError(res, 'User not found', 404);
+
+    // A non-admin changing their own password must confirm the current one.
+    if (isSelf && !isAdmin) {
+      if (!currentPassword || !(await bcrypt.compare(currentPassword, target.password))) {
+        return sendError(res, 'Current password is incorrect', 400);
+      }
+    }
+    await prisma.user.update({ where: { id: target.id }, data: { password: await bcrypt.hash(newPassword, 10) } });
+    return sendSuccess(res, { ok: true });
+  } catch (err) {
+    return sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
 export default router;

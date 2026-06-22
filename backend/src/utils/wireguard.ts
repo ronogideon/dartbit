@@ -27,7 +27,7 @@ function normalizeKey(raw: string): string {
 }
 const WG_KEY = normalizeKey(process.env.DARTBIT_WG_SSH_KEY || '');
 const WG_SERVER_PUBKEY = process.env.DARTBIT_WG_SERVER_PUBKEY || '';
-const WG_ENDPOINT = process.env.DARTBIT_WG_ENDPOINT || 'vpn.dartbittech.com:51820';
+const WG_ENDPOINT = process.env.DARTBIT_WG_ENDPOINT || 'vpn.dartbittech.com:1198';
 const WG_SUBNET = process.env.DARTBIT_WG_SUBNET || '10.8.0.0/24';
 
 export function wgConfigured(): boolean {

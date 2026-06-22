@@ -93,8 +93,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.68', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.68', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.69', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.69', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -125,7 +125,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.68 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.69 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -528,6 +528,20 @@ async function patchDatabase() {
     await safeExec(prisma, 'Tenant.phone', `ALTER TABLE "Tenant" ADD COLUMN IF NOT EXISTS "phone" TEXT`);
     await safeExec(prisma, 'Tenant.trialEndsAt', `ALTER TABLE "Tenant" ADD COLUMN IF NOT EXISTS "trialEndsAt" TIMESTAMP(3)`);
     await safeExec(prisma, 'Tenant.status', `ALTER TABLE "Tenant" ADD COLUMN IF NOT EXISTS "status" TEXT NOT NULL DEFAULT 'ACTIVE'`);
+
+    // Password reset codes (SMS) for staff Users and portal Subscribers.
+    await safeExec(prisma, 'PasswordResetCode table',
+      `CREATE TABLE IF NOT EXISTS "PasswordResetCode" (
+        "id" TEXT PRIMARY KEY,
+        "scope" TEXT NOT NULL,
+        "subjectId" TEXT NOT NULL,
+        "codeHash" TEXT NOT NULL,
+        "expiresAt" TIMESTAMP(3) NOT NULL,
+        "usedAt" TIMESTAMP(3),
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`);
+    await safeExec(prisma, 'PasswordResetCode index',
+      `CREATE INDEX IF NOT EXISTS "PasswordResetCode_scope_subjectId_idx" ON "PasswordResetCode" ("scope","subjectId")`);
 
     // Fill subdomains
     await safeExec(prisma, 'Fill subdomains',
