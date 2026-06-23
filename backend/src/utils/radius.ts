@@ -115,7 +115,12 @@ export async function syncSubscriberToRadius(subscriberId: string, opts?: { kick
   // Build the identity list for this subscriber.
   const identities: RadiusIdentity[] = [{ name: sub.username, password: sub.secret }];
   const mac = sub.service === 'HOTSPOT' ? normMac(sub.macAddress) : null;
-  if (mac) identities.push({ name: mac, password: mac });
+  // The MAC identity's password MUST equal the hotspot profile's mac-auth-password ("dartbit"), NOT
+  // the MAC itself — RouterOS does mac-auth as username=<MAC>, password=<mac-auth-password>, so a
+  // radcheck password of the MAC never matches and RADIUS rejects every silent re-auth, bouncing the
+  // paid device back to the login page. With "dartbit" the device auto-authenticates by MAC and stays
+  // on until the RADIUS Expiration.
+  if (mac) identities.push({ name: mac, password: 'dartbit' });
 
   // Expired PPPoE that's still admin-enabled goes to the WALLED GARDEN instead of being rejected:
   // we Access-Accept it (so the CPE connects ONCE and stays up — no reject→redial loop that burns
@@ -317,7 +322,9 @@ export async function redeemVoucherInRadius(code: string, remainingSeconds: numb
   // hotspot's MAC auto-login (mac-as-username) authenticates it automatically — no need to re-enter
   // the code. This mirrors how subscriber/package logins get a MAC identity row.
   const m = normMac(mac);
-  if (m) stmts.push(...voucherRows(m, m, remainingSeconds, upKbps, downKbps, expiresAt));
+  // MAC row password = mac-auth-password ("dartbit"), not the MAC, so RouterOS mac-auth via RADIUS
+  // actually matches and the device silently re-authenticates (see syncSubscriberToRadius).
+  if (m) stmts.push(...voucherRows(m, 'dartbit', remainingSeconds, upKbps, downKbps, expiresAt));
   try {
     await radiusPsql(stmts.join(' '));
     // (per-voucher success is intentionally not logged; the extra count round-trip is removed too)
@@ -447,7 +454,7 @@ export async function bulkSyncHotspotToRadius(opts: { tenantId?: string; routerI
     const entitled = sub.isActive && !!sub.packageId && !expired;
     const identities: RadiusIdentity[] = [{ name: sub.username, password: sub.secret }];
     const mac = normMac(sub.macAddress);
-    if (mac) identities.push({ name: mac, password: mac });
+    if (mac) identities.push({ name: mac, password: 'dartbit' }); // mac-auth-password match (see syncSubscriberToRadius)
     for (const id of identities) {
       const u = sqlq(id.name);
       stmts.push(`DELETE FROM radcheck WHERE username='${u}';`);
