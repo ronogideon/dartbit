@@ -93,8 +93,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.72', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.72', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.73', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.73', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -125,7 +125,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.72 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.73 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -258,10 +258,13 @@ function startExpiryWatcher() {
         where: {
           service: { in: ['PPPOE', 'HOTSPOT'] },
           routerId: { not: null },
-          sessions: { some: { createdAt: { gte: new Date(now.getTime() - 60_000) } } }, // online now (snapshot refreshed ~5s)
+          // NOTE: we deliberately do NOT require a fresh OnlineSession here. On RADIUS-authenticated
+          // routers the live view comes from radacct, not OnlineSession, so an expired device would
+          // never be seen as "online" and never kicked. Instead we act on entitlement directly and
+          // tear every credential down; the kick is a harmless no-op if the device is already gone.
           OR: [
             { isActive: false },
-            { expiresAt: { lte: now } },
+            { expiresAt: { lte: now, gte: new Date(now.getTime() - 6 * 60 * 60 * 1000) } }, // expired within last 6h
             { AND: [{ service: 'HOTSPOT' }, { packageId: null }, { expiresAt: null }] },
           ],
         },
@@ -280,10 +283,11 @@ function startExpiryWatcher() {
           : (sub.isActive && !expired);
         if (entitled) continue;
 
-        // Don't re-kick the same subscriber more than once per 20s — gives the router and the 5s
-        // session reporter time to drop them out of the candidate set.
-        if (Date.now() - (kicked.get(sub.id) || 0) < 20_000) continue;
-        kicked.set(sub.id, Date.now());
+        // Handle each (subscriber, expiry) once per 5 min — clearing all credentials below is
+        // comprehensive, so once torn down the device can't re-auth and doesn't need re-processing.
+        const dk = `${sub.id}:${sub.expiresAt ? sub.expiresAt.getTime() : (sub.isActive ? 'on' : 'off')}`;
+        if (Date.now() - (kicked.get(dk) || 0) < 5 * 60_000) continue;
+        kicked.set(dk, Date.now());
 
         // (a) Stop them re-authenticating. Under RADIUS, clear radcheck (guarantees rejection even if
         // the Expiration attribute is evaluated in a different timezone on the FreeRADIUS host). In
@@ -306,8 +310,20 @@ function startExpiryWatcher() {
           } else {
             const mac = (sub.macAddress || '').toUpperCase();
             const macClause = mac ? ` or mac-address="${mac}"` : '';
-            const cookieByMac = mac ? `:foreach c in=[/ip hotspot cookie find mac-address="${mac}"] do={ /ip hotspot cookie remove $c }; ` : '';
-            await enqueueCommand(sub.routerId!, `:foreach a in=[/ip hotspot active find where user="${sub.username}"${macClause}] do={ /ip hotspot active remove $a }\n${cookieByMac}:foreach c in=[/ip hotspot cookie find user="${sub.username}"] do={ /ip hotspot cookie remove $c }`);
+            const byMac = mac
+              ? `:foreach c in=[/ip hotspot cookie find mac-address="${mac}"] do={ /ip hotspot cookie remove $c }; :foreach u in=[/ip hotspot user find mac-address="${mac}"] do={ /ip hotspot user remove $u }; `
+              : '';
+            // Expire EVERY login method at once so nothing keeps the device on: (1) drop the live
+            // session, (2) remove the MAC cookie + MAC-named local user, (3) remove the D-number cookie
+            // + local user. The RADIUS radcheck rows were already cleared in (a). With no session, no
+            // cookie, no local user and no RADIUS row, the device's next connectivity check is
+            // intercepted by the hotspot → the OS re-shows "Sign in to network".
+            await enqueueCommand(sub.routerId!, [
+              `:foreach a in=[/ip hotspot active find where user="${sub.username}"${macClause}] do={ /ip hotspot active remove $a }`,
+              byMac,
+              `:foreach c in=[/ip hotspot cookie find user="${sub.username}"] do={ /ip hotspot cookie remove $c }`,
+              `:foreach u in=[/ip hotspot user find name="${sub.username}"] do={ /ip hotspot user remove $u }`,
+            ].join('\n'));
           }
           console.log(`[expiry] kicked ${sub.username} (${sub.service})`);
         } catch (e) { console.error('expiry: kick failed for', sub.username, e instanceof Error ? e.message : e); }
