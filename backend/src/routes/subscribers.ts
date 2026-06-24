@@ -362,6 +362,17 @@ router.get('/:id/detail', async (req: AuthRequest, res: Response) => {
       };
     });
 
+    const payments = await prisma.payment.findMany({
+      where: { tenantId: sub.tenantId, subscriberId: sub.id },
+      orderBy: { createdAt: 'desc' }, take: 200,
+      include: { package: { select: { name: true } } },
+    });
+    const lifetimeValue = payments.reduce((s, p) => s + (p.amount || 0), 0);
+    const messages = await prisma.message.findMany({
+      where: { tenantId: sub.tenantId, OR: [{ subscriberId: sub.id }, ...(sub.phone ? [{ recipient: sub.phone }] : [])] },
+      orderBy: { createdAt: 'desc' }, take: 200,
+    });
+
     sendSuccess(res, {
       subscriber: {
         id: sub.id, username: sub.username, fullName: sub.fullName,
@@ -381,6 +392,16 @@ router.get('/:id/detail', async (req: AuthRequest, res: Response) => {
         sessionCount: records.length,
       },
       sessions,
+      payments: payments.map(p => ({
+        id: p.id, amount: p.amount, method: p.method, source: p.source,
+        reference: p.reference, mpesaCode: p.mpesaCode, packageName: p.package?.name || null,
+        createdAt: p.createdAt,
+      })),
+      lifetimeValue,
+      messages: messages.map(m => ({
+        id: m.id, recipient: m.recipient, body: m.body, status: m.status,
+        category: m.category, createdAt: m.createdAt,
+      })),
     });
   } catch (err) {
     console.error('Subscriber detail error:', err);
