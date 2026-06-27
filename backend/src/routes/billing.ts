@@ -25,8 +25,30 @@ export interface BillingBreakdown {
 // Compute the bill for a tenant over a given month (defaults to current calendar month).
 export async function computeTenantBill(tenantId: string, monthStart?: Date): Promise<BillingBreakdown> {
   const now = new Date();
-  const periodStart = monthStart ?? new Date(now.getFullYear(), now.getMonth(), 1);
-  const periodEnd = new Date(periodStart.getFullYear(), periodStart.getMonth() + 1, 1);
+  // The billing period runs from the LAST SUCCESSFUL PAYMENT up to now — so paying resets the
+  // invoice and the next cycle recounts active PPPoE customers and recalculates hotspot income from
+  // that moment forward (rather than from the 1st of the calendar month). An explicit monthStart
+  // override is still honoured for any callers that want a fixed window.
+  let periodStart: Date;
+  if (monthStart) {
+    periodStart = monthStart;
+  } else {
+    const lastPaid = await prisma.tenantPayment.findFirst({
+      where: { tenantId, status: 'PAID' },
+      orderBy: { paidAt: 'desc' },
+      select: { paidAt: true, periodEnd: true },
+    });
+    if (lastPaid?.paidAt) periodStart = lastPaid.paidAt;
+    else if (lastPaid?.periodEnd) periodStart = lastPaid.periodEnd;
+    else {
+      // Never paid yet: bill from when the tenant was created (covers everything since signup).
+      const t = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { createdAt: true } });
+      periodStart = t?.createdAt ?? new Date(now.getFullYear(), now.getMonth(), 1);
+    }
+  }
+  // Clamp so a future anchor (e.g. an as-yet-unreached trial end) can't invert the window.
+  if (periodStart > now) periodStart = now;
+  const periodEnd = now;
 
   // Active PPPoE customers seen online at any point during the month.
   // We use SessionRecord (any session that started in the period) UNION subscribers
@@ -205,6 +227,7 @@ router.post('/checkout', authenticate, async (req: AuthRequest, res: Response) =
         where: { id: invoice.id },
         data: {
           amount,
+          periodStart: breakdown.periodStart, periodEnd: breakdown.periodEnd,
           pppoeCount: breakdown.pppoeCount, pppoeCharge: breakdown.pppoeCharge,
           hotspotIncome: breakdown.hotspotIncome, hotspotCharge: breakdown.hotspotCharge,
         },
