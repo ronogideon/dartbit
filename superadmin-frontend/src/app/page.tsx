@@ -190,7 +190,8 @@ function SmsRateControl() {
 
 function Overview() {
   const { data, isLoading } = useQuery({ queryKey: ['overview'], queryFn: API.getOverview, refetchInterval: 30000 });
-  if (isLoading || !data) return <div className="text-gray-500">Loading…</div>;
+  if (isLoading) return <div className="text-gray-500">Loading…</div>;
+  if (!data) return <div className="text-red-400 text-sm">Couldn&apos;t load this section. <button onClick={() => location.reload()} className="underline">Retry</button></div>;
   const c = data.centralCollection;
   const sms = data.sms || {};
   const tn = data.tenants || {};
@@ -350,7 +351,8 @@ function Tenants() {
     onError: () => toast.error('Delete failed'),
   });
 
-  if (isLoading || !data) return <div className="text-gray-500">Loading…</div>;
+  if (isLoading) return <div className="text-gray-500">Loading…</div>;
+  if (!data) return <div className="text-red-400 text-sm">Couldn&apos;t load this section. <button onClick={() => location.reload()} className="underline">Retry</button></div>;
   const q = search.trim().toLowerCase();
   const rows: TenantRow[] = q
     ? (data as TenantRow[]).filter(t => (t.name || '').toLowerCase().includes(q) || (t.subdomain || '').toLowerCase().includes(q) || (t.status || '').toLowerCase().includes(q))
@@ -508,7 +510,8 @@ function Payments({ canEdit }: { canEdit: boolean }) {
 function Payouts() {
   const { data, isLoading } = useQuery({ queryKey: ['sa-payouts'], queryFn: API.getPayouts });
   const [search, setSearch] = useState('');
-  if (isLoading || !data) return <div className="text-gray-500">Loading…</div>;
+  if (isLoading) return <div className="text-gray-500">Loading…</div>;
+  if (!data) return <div className="text-red-400 text-sm">Couldn&apos;t load this section. <button onClick={() => location.reload()} className="underline">Retry</button></div>;
   const q = search.trim().toLowerCase();
   const rows = q
     ? data.filter((t: { tenantName: string; mpesaReceipt: string | null; payoutStatus: string | null }) =>
@@ -570,7 +573,8 @@ function Messaging({ canEdit }: { canEdit: boolean }) {
     onError: () => toast.error('Failed to save template'),
   });
 
-  if (isLoading || !data) return <div className="text-gray-400 text-sm">Loading…</div>;
+  if (isLoading) return <div className="text-gray-400 text-sm">Loading…</div>;
+  if (!data) return <div className="text-red-400 text-sm">Couldn&apos;t load this section. <button onClick={() => location.reload()} className="underline">Retry</button></div>;
   const t = data.totals;
   const rows = data.tenants.filter(r => !tq || r.name.toLowerCase().includes(tq.toLowerCase()) || r.subdomain.toLowerCase().includes(tq.toLowerCase()));
   const templates = tpl?.templates || [];
@@ -698,7 +702,8 @@ function Team({ canEdit }: { canEdit: boolean }) {
   const resetMut = useMutation({ mutationFn: API.resetTeamPassword, onSuccess: (r: { tempPassword: string }, id: string) => { const u = (data || []).find((x: { id: string }) => x.id === id); setTemp({ email: u?.email || 'user', password: r.tempPassword }); }, onError: () => toast.error('Failed') });
   const deleteMut = useMutation({ mutationFn: API.deleteTeamMember, onSuccess: () => { inv(); toast.success('Removed'); }, onError: (e: { response?: { data?: { error?: string } } }) => toast.error(e?.response?.data?.error || 'Failed') });
 
-  if (isLoading || !data) return <div className="text-gray-500">Loading…</div>;
+  if (isLoading) return <div className="text-gray-500">Loading…</div>;
+  if (!data) return <div className="text-red-400 text-sm">Couldn&apos;t load this section. <button onClick={() => location.reload()} className="underline">Retry</button></div>;
   return (
     <div className="max-w-3xl">
       <div className="flex items-center justify-between mb-4">

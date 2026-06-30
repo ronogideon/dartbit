@@ -44,46 +44,41 @@ router.get('/overview', requireSuperAdminRead, async (_req: AuthRequest, res: Re
     const notRenewedTenants = Math.max(0, tenantCount - renewedTenants);
 
     // Dartbit subscription revenue (what tenants pay Dartbit via Paystack)
-    const paidPlatform = await prisma.tenantPayment.findMany({
-      where: { status: 'PAID' },
-      select: { amount: true, paidAt: true },
-    });
-    const subsRevenueAll = paidPlatform.reduce((s, p) => s + p.amount, 0);
-    const subsRevenueMonth = paidPlatform.filter(p => p.paidAt && p.paidAt >= monthStart).reduce((s, p) => s + p.amount, 0);
+    // Aggregate in the DB rather than loading whole tables into memory — large tables were
+    // OOM-crashing the process, which made every heavy superadmin page hang on "Loading…".
+    const [allAgg, monthAgg] = await Promise.all([
+      prisma.tenantPayment.aggregate({ _sum: { amount: true }, where: { status: 'PAID' } }),
+      prisma.tenantPayment.aggregate({ _sum: { amount: true }, where: { status: 'PAID', paidAt: { gte: monthStart } } }),
+    ]);
+    const subsRevenueAll = allAgg._sum.amount || 0;
+    const subsRevenueMonth = monthAgg._sum.amount || 0;
 
-    // Central-API collection (Dartbit-collected hotspot payments)
-    const centralTx = await prisma.mpesaTransaction.findMany({
-      where: { collectedVia: 'DARTBIT', status: 'PAID' },
-      select: { tenantId: true, amount: true, platformFee: true, netToTenant: true, payoutStatus: true },
-    });
-    const collectedTotal = centralTx.reduce((s, t) => s + t.amount, 0);
-    const feeTotal = centralTx.reduce((s, t) => s + t.platformFee, 0);
-    const owedTotal = centralTx.reduce((s, t) => s + t.netToTenant, 0);
-    const disbursed = centralTx.filter(t => t.payoutStatus === 'PAID').reduce((s, t) => s + t.netToTenant, 0);
-    const pendingPayout = centralTx.filter(t => t.payoutStatus !== 'PAID').reduce((s, t) => s + t.netToTenant, 0);
+    // Central-API collection (Dartbit-collected hotspot payments) — aggregated + grouped in SQL.
+    const centralWhere = { collectedVia: 'DARTBIT', status: 'PAID' };
+    const notPaidOut = { OR: [{ payoutStatus: null }, { payoutStatus: { not: 'PAID' } }] };
+    const [totalsAgg, disbursedAgg, pendingGroup] = await Promise.all([
+      prisma.mpesaTransaction.aggregate({ _sum: { amount: true, platformFee: true, netToTenant: true }, where: centralWhere }),
+      prisma.mpesaTransaction.aggregate({ _sum: { netToTenant: true }, where: { ...centralWhere, payoutStatus: 'PAID' } }),
+      prisma.mpesaTransaction.groupBy({ by: ['tenantId'], where: { ...centralWhere, ...notPaidOut }, _sum: { netToTenant: true, platformFee: true }, _count: { _all: true } }),
+    ]);
+    const collectedTotal = totalsAgg._sum.amount || 0;
+    const feeTotal = totalsAgg._sum.platformFee || 0;
+    const owedTotal = totalsAgg._sum.netToTenant || 0;
+    const disbursed = disbursedAgg._sum.netToTenant || 0;
+    const pendingPayout = Math.max(0, owedTotal - disbursed);
 
-    // Disbursement record: for each tenant, the NET amount still to be settled to them from
-    // central collections (funded by the collected money; Dartbit keeps the 1% fee). Grouped so
-    // the superadmin sees exactly who is owed how much.
-    const pendingMap = new Map<string, { net: number; fee: number; count: number }>();
-    for (const t of centralTx) {
-      if (t.payoutStatus === 'PAID') continue;
-      const cur = pendingMap.get(t.tenantId) || { net: 0, fee: 0, count: 0 };
-      cur.net += t.netToTenant; cur.fee += t.platformFee; cur.count += 1;
-      pendingMap.set(t.tenantId, cur);
-    }
-    const pendingTenantIds = Array.from(pendingMap.keys());
+    const pendingTenantIds = pendingGroup.map(g => g.tenantId);
     const pendingTenants = pendingTenantIds.length
       ? await prisma.tenant.findMany({ where: { id: { in: pendingTenantIds } }, select: { id: true, name: true } })
       : [];
     const tenantNameById = new Map(pendingTenants.map(t => [t.id, t.name]));
-    const disbursementRecord = pendingTenantIds
-      .map(id => ({
-        tenantId: id,
-        tenantName: tenantNameById.get(id) || 'Unknown',
-        amountDue: pendingMap.get(id)!.net,
-        feeRetained: pendingMap.get(id)!.fee,
-        transactions: pendingMap.get(id)!.count,
+    const disbursementRecord = pendingGroup
+      .map(g => ({
+        tenantId: g.tenantId,
+        tenantName: tenantNameById.get(g.tenantId) || 'Unknown',
+        amountDue: g._sum.netToTenant || 0,
+        feeRetained: g._sum.platformFee || 0,
+        transactions: g._count._all,
       }))
       .sort((a, b) => b.amountDue - a.amountDue);
 
@@ -127,7 +122,8 @@ router.get('/overview', requireSuperAdminRead, async (_req: AuthRequest, res: Re
       const mStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
       const mEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
       const label = mStart.toLocaleString('en-US', { month: 'short' });
-      const subRev = paidPlatform.filter(p => p.paidAt && p.paidAt >= mStart && p.paidAt < mEnd).reduce((s, p) => s + p.amount, 0);
+      const subRevAgg = await prisma.tenantPayment.aggregate({ _sum: { amount: true }, where: { status: 'PAID', paidAt: { gte: mStart, lt: mEnd } } });
+      const subRev = subRevAgg._sum.amount || 0;
       const newT = await prisma.tenant.count({ where: { createdAt: { gte: mStart, lt: mEnd } } });
       trend.push({ month: label, subscriptionRevenue: subRev, feeIncome: 0, newTenants: newT });
     }
