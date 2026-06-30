@@ -40,4 +40,21 @@ router.post('/paystack', express.raw({ type: '*/*' }), async (req: Request, res:
   }
 });
 
+// Daraja B2C disbursement result + timeout. JSON-parsed locally (the global parser may not apply
+// before this router). Always 200 so Daraja doesn't retry-storm.
+router.post('/b2c/result', express.json({ type: '*/*' }), async (req: Request, res: Response) => {
+  try {
+    const { handleB2cResult } = await import('../utils/disbursement');
+    await handleB2cResult(req.body || {});
+  } catch (e) {
+    console.error('[webhook] b2c result error:', e instanceof Error ? e.message : e);
+  }
+  res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
+});
+
+router.post('/b2c/timeout', express.json({ type: '*/*' }), async (_req: Request, res: Response) => {
+  // Timeout means no definitive result yet; leave the batch PROCESSING for the result callback / retry.
+  res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
+});
+
 export default router;

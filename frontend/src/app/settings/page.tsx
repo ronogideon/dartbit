@@ -42,8 +42,8 @@ function SettingsContent() {
         <p className="text-sm text-gray-500 mt-1">Manage your account, billing, and team</p>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-gray-200 dark:border-gray-800 mb-6">
+      {/* Tabs — own horizontal scroll so they never push the content below sideways */}
+      <div className="flex gap-1 border-b border-gray-200 dark:border-gray-800 mb-6 overflow-x-auto flex-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
         <TabButton active={tab === 'general'} onClick={() => setTab('general')} icon={<SettingsIcon size={16} />} label="General" />
         <TabButton active={tab === 'notifications'} onClick={() => setTab('notifications')} icon={<Bell size={16} />} label="Notifications" />
         <TabButton active={tab === 'billing'} onClick={() => setTab('billing')} icon={<CreditCard size={16} />} label="Billing" />
@@ -64,7 +64,7 @@ function TabButton({ active, onClick, icon, label }: { active: boolean; onClick:
   return (
     <button
       onClick={onClick}
-      className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+      className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors shrink-0 whitespace-nowrap ${
         active
           ? 'border-blue-600 text-blue-600'
           : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
@@ -718,10 +718,14 @@ function PaymentsTab() {
   const { data, isLoading } = useQuery({ queryKey: ['payment-config'], queryFn: getPaymentConfig });
   const [form, setForm] = useState<Record<string, string>>({});
   const [method, setMethod] = useState('TILL_MANUAL');
+  const [cadence, setCadence] = useState('INSTANT');
+  const [payoutEnabled, setPayoutEnabled] = useState(false);
 
   useEffect(() => {
     if (data) {
       setMethod(data.method || 'TILL_MANUAL');
+      setCadence(data.payoutCadence || 'INSTANT');
+      setPayoutEnabled(!!data.payoutEnabled);
       setForm({
         payoutTill: data.payoutTill || '',
         payoutPhone: data.payoutPhone || '',
@@ -745,7 +749,8 @@ function PaymentsTab() {
   });
 
   const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
-  const save = () => saveMut.mutate({ method, ...form });
+  const save = () => saveMut.mutate({ method, ...form, payoutCadence: cadence, payoutEnabled });
+  const isPooled = method === 'TILL_MANUAL' || method === 'PHONE_MANUAL';
 
   if (isLoading) return <div className="text-center py-8 text-gray-400">Loading...</div>;
 
@@ -837,6 +842,29 @@ function PaymentsTab() {
               <input className="input" type="password" value={form.kopoApiKey || ''} onChange={e => set('kopoApiKey', e.target.value)} placeholder="KopoKopo API key" />
             </div>
             <p className="text-xs text-gray-400">Credentials are encrypted at rest. Leave masked fields unchanged to keep existing values.</p>
+          </div>
+        )}
+
+        {isPooled && (
+          <div className="mt-6 pt-6 border-t border-gray-200 dark:border-gray-800">
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="font-semibold">Automatic payouts</h3>
+              <button type="button" onClick={() => setPayoutEnabled(v => !v)} aria-label="Toggle automatic payouts"
+                className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${payoutEnabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-700'}`}>
+                <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${payoutEnabled ? 'translate-x-5' : ''}`} />
+              </button>
+            </div>
+            <p className="text-sm text-gray-500 mb-4">When on, Dartbit batches the payments it collects for you and sends them to your {method === 'PHONE_MANUAL' ? 'phone' : 'till'} via M-Pesa on the schedule below. Batching groups many payments into one transfer to save on fees.</p>
+            <label className="label">Payout frequency</label>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {([['INSTANT', 'Instant'], ['MIN15', 'Every 15 min'], ['MIN30', 'Every 30 min'], ['HOURLY', 'Hourly']] as const).map(([val, lbl]) => (
+                <button key={val} type="button" onClick={() => setCadence(val)} disabled={!payoutEnabled}
+                  className={`px-3 py-2 rounded-lg text-sm font-medium border transition ${cadence === val ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-700 hover:border-blue-400'} ${!payoutEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-gray-400 mt-2">Instant pays out within about a minute. Longer intervals batch more payments per transfer to cut costs.</p>
           </div>
         )}
 

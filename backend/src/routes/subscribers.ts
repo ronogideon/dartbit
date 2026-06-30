@@ -33,6 +33,25 @@ function cleanForUpdate<T extends Record<string, unknown>>(data: T): Partial<T> 
   return out as Partial<T>;
 }
 
+// GET /subscribers/counts — lightweight tenant-scoped totals for the sidebar bubbles.
+router.get('/counts', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return sendSuccess(res, { total: 0, active: 0, routers: 0 });
+    const now = new Date();
+    const [total, active, routers] = await Promise.all([
+      prisma.subscriber.count({ where: { tenantId } }),
+      prisma.subscriber.count({
+        where: { tenantId, isActive: true, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+      }),
+      prisma.mikrotikRouter.count({ where: { tenantId } }),
+    ]);
+    sendSuccess(res, { total, active, routers });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user?.tenantId;

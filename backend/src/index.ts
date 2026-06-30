@@ -93,8 +93,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.75', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.75', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.77', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.77', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -125,7 +125,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.75 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.77 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -143,6 +143,10 @@ const server = app.listen(PORT, () => {
   // One-time on boot: strip any stray RADIUS data caps (Mikrotik-*-Limit) so no PPPoE user can be
   // byte-limited ("maximum send/recv limit exceeded" loop). Self-heals again on every PPPoE sync.
   import('./utils/radius').then(m => m.purgeRadiusByteLimits()).catch(() => {});
+
+  // Disbursement sweep: batch each pooled tenant's collections and pay them out via Daraja B2C on
+  // their chosen cadence (Instant / 15m / 30m / hourly). No-op until B2C env + a tenant opts in.
+  setInterval(() => { import('./utils/disbursement').then(m => m.runDisbursements()).catch(() => {}); }, 60 * 1000);
 });
 
 // Prune SessionRecords older than 30 days. Before deleting, ensure each subscriber's
@@ -828,6 +832,27 @@ async function patchDatabase() {
     await safeExec(prisma, 'MpesaTx payoutStatus', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutStatus" TEXT`);
     await safeExec(prisma, 'MpesaTx payoutRef', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutRef" TEXT`);
     await safeExec(prisma, 'MpesaTx payoutAt', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutAt" TIMESTAMP(3)`);
+    // v1.10.76 disbursement: payout cadence + enable flag + last-payout marker on PaymentConfig
+    await safeExec(prisma, 'PayCfg payoutCadence', `ALTER TABLE "PaymentConfig" ADD COLUMN IF NOT EXISTS "payoutCadence" TEXT DEFAULT 'INSTANT'`);
+    await safeExec(prisma, 'PayCfg payoutEnabled', `ALTER TABLE "PaymentConfig" ADD COLUMN IF NOT EXISTS "payoutEnabled" BOOLEAN DEFAULT false`);
+    await safeExec(prisma, 'PayCfg lastPayoutAt', `ALTER TABLE "PaymentConfig" ADD COLUMN IF NOT EXISTS "lastPayoutAt" TIMESTAMP(3)`);
+    await safeExec(prisma, 'Disbursement table', `CREATE TABLE IF NOT EXISTS "Disbursement" (
+        "id" TEXT PRIMARY KEY,
+        "tenantId" TEXT NOT NULL,
+        "amount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "charge" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "status" TEXT NOT NULL DEFAULT 'PROCESSING',
+        "destination" TEXT,
+        "isPhone" BOOLEAN NOT NULL DEFAULT true,
+        "txCount" INTEGER NOT NULL DEFAULT 0,
+        "conversationId" TEXT,
+        "mpesaReceipt" TEXT,
+        "resultDesc" TEXT,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "paidAt" TIMESTAMP(3)
+      )`);
+    await safeExec(prisma, 'Disbursement tenant idx', `CREATE INDEX IF NOT EXISTS "Disbursement_tenantId_status_idx" ON "Disbursement"("tenantId","status")`);
+    await safeExec(prisma, 'Disbursement conv idx', `CREATE INDEX IF NOT EXISTS "Disbursement_conversationId_idx" ON "Disbursement"("conversationId")`);
 
     // v1.10.23 — classify payments as AUTOMATIC (gateway-created) vs MANUAL (admin-recorded).
     // Backfill: any existing payment that carries an M-Pesa receipt was gateway-created.

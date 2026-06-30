@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import { useQuery } from '@tanstack/react-query';
-import { getTenantInfo } from '@/lib/api';
+import { getTenantInfo, getSidebarCounts } from '@/lib/api';
 import {
   LayoutDashboard, Users, Package, CreditCard, MessageSquare,
   Router, Activity, Zap, Wifi, Building2, Ticket, Receipt,
@@ -51,6 +51,22 @@ export default function Sidebar({
   const brandName = !isSuper && tenantInfo?.name ? tenantInfo.name : 'Dartbit';
   const BrandIcon = !isSuper && tenantInfo?.name ? Wifi : Zap;
   const [collapsed, setCollapsed] = useState(false);
+
+  // Counts for the sidebar bubbles (tenant-scoped). Refreshed periodically; superadmins skip it.
+  const { data: counts } = useQuery({
+    queryKey: ['sidebar-counts'],
+    queryFn: getSidebarCounts,
+    enabled: !!user && !isSuper,
+    refetchInterval: 30000,
+    retry: false,
+  });
+  const badgeFor = (href: string): number | null => {
+    if (!counts) return null;
+    if (href === '/active-users') return counts.active;
+    if (href === '/subscribers') return counts.total;
+    if (href === '/routers') return counts.routers;
+    return null;
+  };
 
   // Persist collapse state (desktop only) in localStorage.
   useEffect(() => {
@@ -114,6 +130,7 @@ export default function Sidebar({
         <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto overflow-x-hidden">
           {items.map(({ href, label, icon: Icon }) => {
             const active = pathname === href || pathname.startsWith(href + '/');
+            const badge = badgeFor(href);
             return (
               <Link
                 key={href}
@@ -127,6 +144,18 @@ export default function Sidebar({
               >
                 <Icon size={18} className="shrink-0" />
                 <span className={clsx('truncate', collapsed && 'lg:hidden')}>{label}</span>
+                {badge !== null && (
+                  <span className={clsx(
+                    'ml-auto text-xs font-semibold rounded-full px-1.5 min-w-[1.25rem] text-center shrink-0',
+                    active ? 'bg-white/25 text-white' : 'bg-gray-700 text-gray-200 group-hover:bg-gray-600',
+                    collapsed && 'lg:hidden',
+                  )}>{badge > 999 ? '999+' : badge}</span>
+                )}
+                {badge !== null && collapsed && (
+                  <span className="hidden lg:flex absolute top-1 right-1.5 h-4 min-w-[1rem] px-1 items-center justify-center text-[10px] font-semibold rounded-full bg-blue-500 text-white">
+                    {badge > 99 ? '99+' : badge}
+                  </span>
+                )}
                 {collapsed && (
                   <div className="hidden lg:block absolute left-full ml-2 px-2 py-1 bg-gray-800 text-white text-xs rounded-md
                     opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 transition-opacity">

@@ -110,6 +110,11 @@ model PaymentConfig {
   kopoTillNumber     String?
   kopoApiKey         String?  // encrypted
 
+  // Disbursement cadence (for pooled manual methods): how often Dartbit batches + pays out.
+  payoutCadence   String?  @default("INSTANT") // INSTANT | MIN15 | MIN30 | HOURLY
+  payoutEnabled   Boolean  @default(false)
+  lastPayoutAt    DateTime?
+
   configured      Boolean  @default(false)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -560,4 +565,24 @@ model PasswordResetCode {
   usedAt    DateTime?
   createdAt DateTime  @default(now())
   @@index([scope, subjectId])
+}
+
+// A batched B2C payout from Dartbit's pooled collection to a tenant's nominated destination.
+model Disbursement {
+  id             String    @id @default(cuid())
+  tenantId       String
+  amount         Float     @default(0)   // gross paid out (sum of batched collections)
+  charge         Float     @default(0)   // M-Pesa transaction cost captured from the B2C result
+  status         String    @default("PROCESSING") // PROCESSING | PAID | FAILED
+  destination    String?                  // payout phone or till
+  isPhone        Boolean   @default(true)
+  txCount        Int       @default(0)
+  conversationId String?
+  mpesaReceipt   String?
+  resultDesc     String?
+  createdAt      DateTime  @default(now())
+  paidAt         DateTime?
+
+  @@index([tenantId, status])
+  @@index([conversationId])
 }

@@ -32,6 +32,8 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       configured: cfg.configured,
       payoutTill: cfg.payoutTill,
       payoutPhone: cfg.payoutPhone,
+      payoutCadence: cfg.payoutCadence ?? 'INSTANT',
+      payoutEnabled: cfg.payoutEnabled ?? false,
       darajaShortcode: cfg.darajaShortcode,
       darajaType: cfg.darajaType,
       // secrets masked
@@ -52,6 +54,8 @@ const schema = z.object({
   method: z.enum(['TILL_MANUAL', 'PHONE_MANUAL', 'DARAJA_API', 'KOPOKOPO_API']),
   payoutTill: z.string().optional(),
   payoutPhone: z.string().optional(),
+  payoutCadence: z.enum(['INSTANT', 'MIN15', 'MIN30', 'HOURLY']).optional(),
+  payoutEnabled: z.boolean().optional(),
   darajaShortcode: z.string().optional(),
   darajaType: z.enum(['TILL', 'PAYBILL']).optional(),
   darajaConsumerKey: z.string().optional(),
@@ -118,6 +122,15 @@ router.put('/', async (req: AuthRequest, res: Response) => {
       create: { tenantId, ...data },
       update: data,
     });
+
+    // Write the disbursement-cadence columns via raw SQL so this works even if the Prisma client
+    // wasn't regenerated on deploy. Only applies to pooled manual methods.
+    if (d.payoutCadence !== undefined || d.payoutEnabled !== undefined) {
+      await prisma.$executeRawUnsafe(
+        `UPDATE "PaymentConfig" SET "payoutCadence"=COALESCE($1,"payoutCadence"), "payoutEnabled"=COALESCE($2,"payoutEnabled") WHERE "tenantId"=$3`,
+        d.payoutCadence ?? null, d.payoutEnabled ?? null, tenantId,
+      );
+    }
 
     sendSuccess(res, { method: cfg.method, configured: cfg.configured });
   } catch (err) {
