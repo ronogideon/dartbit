@@ -6,6 +6,7 @@ import { useAuth } from '@/lib/auth';
 import { getTenantInfo } from '@/lib/api';
 import Sidebar from '@/components/layout/Sidebar';
 import TopBar from '@/components/layout/TopBar';
+import AnnouncementBanner from '@/components/AnnouncementBanner';
 import TrialBanner from '@/components/ui/TrialBanner';
 import PayNowBanner from '@/components/ui/PayNowBanner';
 import Paywall from '@/components/ui/Paywall';
@@ -61,6 +62,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         {isTenantAdmin && <PayNowBanner />}
         <main className="flex-1 overflow-auto">
           <div className="p-4 sm:p-6 max-w-7xl mx-auto w-full">
+            <AnnouncementBanner />
             {children}
           </div>
         </main>

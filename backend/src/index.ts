@@ -30,6 +30,7 @@ import hotspotPublicRoutes from './routes/hotspotPublic';
 import mpesaRoutes from './routes/mpesa';
 import subscriberPortalRoutes from './routes/subscriberPortal';
 import superadminAnalyticsRoutes from './routes/superadminAnalytics';
+import announcementRoutes from './routes/announcements';
 import superadminMessagingRoutes, { loadPlatformDefaults } from './routes/superadminMessaging';
 import hotspotHtmlRoutes from './routes/hotspotHtml';
 
@@ -93,8 +94,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.77', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.77', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.78', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.78', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -120,12 +121,13 @@ app.use('/hotspot', hotspotPublicRoutes);
 app.use('/portal', subscriberPortalRoutes);
 app.use('/superadmin/messaging', superadminMessagingRoutes);
 app.use('/superadmin', superadminAnalyticsRoutes);
+app.use('/announcements', announcementRoutes);
 app.use('/hotspot-html', hotspotHtmlRoutes);
 
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.77 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.78 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -853,6 +855,15 @@ async function patchDatabase() {
       )`);
     await safeExec(prisma, 'Disbursement tenant idx', `CREATE INDEX IF NOT EXISTS "Disbursement_tenantId_status_idx" ON "Disbursement"("tenantId","status")`);
     await safeExec(prisma, 'Disbursement conv idx', `CREATE INDEX IF NOT EXISTS "Disbursement_conversationId_idx" ON "Disbursement"("conversationId")`);
+    await safeExec(prisma, 'Announcement table', `CREATE TABLE IF NOT EXISTS "Announcement" (
+        "id" TEXT PRIMARY KEY,
+        "title" TEXT NOT NULL,
+        "body" TEXT NOT NULL,
+        "level" TEXT NOT NULL DEFAULT 'INFO',
+        "active" BOOLEAN NOT NULL DEFAULT true,
+        "expiresAt" TIMESTAMP(3),
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`);
 
     // v1.10.23 — classify payments as AUTOMATIC (gateway-created) vs MANUAL (admin-recorded).
     // Backfill: any existing payment that carries an M-Pesa receipt was gateway-created.

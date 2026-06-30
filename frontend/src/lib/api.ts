@@ -282,3 +282,6 @@ export const sendMessage = (recipient: string, body: string) =>
 export interface BroadcastResult { matched: number; sent: number; failed: number }
 export const broadcastMessage = (data: { body: string; routerIds?: string[]; services?: string[]; statuses?: string[] }) =>
   api.post('/messages/broadcast', data).then(r => r.data.data as BroadcastResult);
+
+export interface Announcement { id: string; title: string; body: string; level: 'INFO' | 'WARNING' | 'CRITICAL'; createdAt: string; }
+export const getAnnouncements = () => api.get('/announcements').then((r) => r.data.data as Announcement[]);

@@ -49,3 +49,9 @@ export const getPaymentStats = () => api.get('/superadmin/payments/stats').then(
 // Tenant lifecycle
 export const setTenantStatus = (id: string, status: 'ACTIVE' | 'SUSPENDED') => api.put(`/superadmin/tenants/${id}/status`, { status }).then((r) => r.data.data);
 export const deleteTenant = (id: string, confirmName: string) => api.delete(`/superadmin/tenants/${id}`, { data: { confirmName } }).then((r) => r.data.data);
+
+export interface AdminAnnouncement { id: string; title: string; body: string; level: 'INFO'|'WARNING'|'CRITICAL'; active: boolean; createdAt: string; expiresAt: string|null; }
+export const listAnnouncements = () => api.get('/announcements/all').then((r) => r.data.data as AdminAnnouncement[]);
+export const createAnnouncement = (data: { title: string; body: string; level: string; expiresAt?: string|null }) => api.post('/announcements', data).then((r) => r.data.data);
+export const toggleAnnouncement = (id: string, active: boolean) => api.patch(`/announcements/${id}`, { active }).then((r) => r.data.data);
+export const deleteAnnouncement = (id: string) => api.delete(`/announcements/${id}`).then((r) => r.data.data);

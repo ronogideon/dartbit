@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import * as API from '@/lib/api';
-import { LayoutDashboard, Building2, Wallet, Users, LogOut, Plus, Trash2, KeyRound, Copy, Zap, MessageSquare, Save, RotateCcw, CreditCard, Power, MoreVertical } from 'lucide-react';
+import { LayoutDashboard, Building2, Wallet, Users, LogOut, Plus, Trash2, KeyRound, Copy, Zap, MessageSquare, Save, RotateCcw, CreditCard, Power, MoreVertical, Megaphone } from 'lucide-react';
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LabelList,
@@ -12,7 +12,7 @@ import {
 function kes(n: number) { return 'KES ' + (n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 }); }
 function fmtDate(d?: string | null) { return d ? new Date(d).toLocaleDateString() : '—'; }
 
-type Tab = 'overview' | 'tenants' | 'payments' | 'payouts' | 'team' | 'messaging';
+type Tab = 'overview' | 'tenants' | 'payments' | 'payouts' | 'team' | 'messaging' | 'announcements';
 
 export default function SuperadminPortal() {
   const [authed, setAuthed] = useState(false);
@@ -111,6 +111,7 @@ function Dashboard({ role, onLogout }: { role: string; onLogout: () => void }) {
           <NavBtn active={tab === 'payments'} onClick={() => setTab('payments')} icon={<CreditCard size={17} />} label="Payments" />
           <NavBtn active={tab === 'payouts'} onClick={() => setTab('payouts')} icon={<Wallet size={17} />} label="Payouts" />
           <NavBtn active={tab === 'messaging'} onClick={() => setTab('messaging')} icon={<MessageSquare size={17} />} label="Messaging" />
+          <NavBtn active={tab === 'announcements'} onClick={() => setTab('announcements')} icon={<Megaphone size={17} />} label="Announcements" />
           <NavBtn active={tab === 'team'} onClick={() => setTab('team')} icon={<Users size={17} />} label="Team" />
         </nav>
         <main className="flex-1 p-4 sm:p-6 min-w-0 overflow-x-hidden">
@@ -119,6 +120,7 @@ function Dashboard({ role, onLogout }: { role: string; onLogout: () => void }) {
           {tab === 'payments' && <Payments canEdit={isFull} />}
           {tab === 'payouts' && <Payouts />}
           {tab === 'messaging' && <Messaging canEdit={isFull} />}
+          {tab === 'announcements' && <Announcements canEdit={isFull} />}
           {tab === 'team' && <Team canEdit={isFull} />}
         </main>
       </div>
@@ -756,6 +758,78 @@ function Team({ canEdit }: { canEdit: boolean }) {
           <button onClick={() => setTemp(null)} className="text-sm text-gray-500 mt-3">Done</button>
         </div>
       )}
+    </div>
+  );
+}
+
+function Announcements({ canEdit }: { canEdit: boolean }) {
+  const qc = useQueryClient();
+  const { data: items = [] } = useQuery({ queryKey: ['announcements-admin'], queryFn: API.listAnnouncements });
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [level, setLevel] = useState('INFO');
+
+  const createMut = useMutation({
+    mutationFn: () => API.createAnnouncement({ title, body, level }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['announcements-admin'] }); setTitle(''); setBody(''); setLevel('INFO'); },
+  });
+  const toggleMut = useMutation({
+    mutationFn: ({ id, active }: { id: string; active: boolean }) => API.toggleAnnouncement(id, active),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['announcements-admin'] }),
+  });
+  const delMut = useMutation({
+    mutationFn: (id: string) => API.deleteAnnouncement(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['announcements-admin'] }),
+  });
+
+  const lvlColor: Record<string, string> = {
+    INFO: 'bg-blue-500/15 text-blue-300', WARNING: 'bg-amber-500/15 text-amber-300', CRITICAL: 'bg-red-500/15 text-red-300',
+  };
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      {canEdit && (
+        <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
+          <h3 className="font-semibold text-white mb-3">New announcement</h3>
+          <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Title" maxLength={200}
+            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white mb-2" />
+          <textarea value={body} onChange={e => setBody(e.target.value)} placeholder="Message shown to all tenants" rows={3} maxLength={2000}
+            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white mb-2" />
+          <div className="flex items-center gap-2">
+            <select value={level} onChange={e => setLevel(e.target.value)} className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white">
+              <option value="INFO">Info</option>
+              <option value="WARNING">Warning</option>
+              <option value="CRITICAL">Critical</option>
+            </select>
+            <button onClick={() => title.trim() && body.trim() && createMut.mutate()} disabled={!title.trim() || !body.trim() || createMut.isPending}
+              className="ml-auto bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium px-4 py-2 rounded-lg flex items-center gap-1.5">
+              <Plus size={15} /> {createMut.isPending ? 'Publishing…' : 'Publish'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {items.length === 0 ? <div className="text-gray-500 text-sm text-center py-6">No announcements yet</div> : items.map(a => (
+          <div key={a.id} className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
+            <div className="flex items-center gap-2 mb-1">
+              <span className={`text-xs px-1.5 py-0.5 rounded ${lvlColor[a.level] || lvlColor.INFO}`}>{a.level}</span>
+              <span className="font-semibold text-white">{a.title}</span>
+              {!a.active && <span className="text-xs text-gray-500">(hidden)</span>}
+              {canEdit && (
+                <div className="ml-auto flex items-center gap-1">
+                  <button onClick={() => toggleMut.mutate({ id: a.id, active: !a.active })} title={a.active ? 'Hide' : 'Show'}
+                    className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-700"><Power size={15} /></button>
+                  <button onClick={() => delMut.mutate(a.id)} title="Delete"
+                    className="p-1.5 rounded-lg text-gray-400 hover:text-red-400 hover:bg-gray-700"><Trash2 size={15} /></button>
+                </div>
+              )}
+            </div>
+            <div className="text-sm text-gray-300 whitespace-pre-wrap">{a.body}</div>
+            <div className="text-xs text-gray-500 mt-1">{fmtDate(a.createdAt)}</div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -151,11 +151,6 @@ export default function Sidebar({
                     collapsed && 'lg:hidden',
                   )}>{badge > 999 ? '999+' : badge}</span>
                 )}
-                {badge !== null && collapsed && (
-                  <span className="hidden lg:flex absolute top-1 right-1.5 h-4 min-w-[1rem] px-1 items-center justify-center text-[10px] font-semibold rounded-full bg-blue-500 text-white">
-                    {badge > 99 ? '99+' : badge}
-                  </span>
-                )}
                 {collapsed && (
                   <div className="hidden lg:block absolute left-full ml-2 px-2 py-1 bg-gray-800 text-white text-xs rounded-md
                     opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 transition-opacity">
