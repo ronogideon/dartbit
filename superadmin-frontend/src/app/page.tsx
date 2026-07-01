@@ -190,12 +190,19 @@ function SmsRateControl() {
 }
 
 function Overview() {
-  const { data, isLoading, error } = useQuery({ queryKey: ['overview'], queryFn: API.getOverview, refetchInterval: 30000 });
+  const [range, setRange] = useState('all');
+  const { data, isLoading, error } = useQuery({ queryKey: ['overview', range], queryFn: () => API.getOverview(range), refetchInterval: 30000, placeholderData: (p: unknown) => p });
   if (isLoading) return <div className="text-gray-500">Loading…</div>;
   if (!data) return <div className="text-red-400 text-sm">Couldn&apos;t load: {saErr(error)} <button onClick={() => location.reload()} className="underline ml-1">Retry</button></div>;
   const c = data.centralCollection;
   const sms = data.sms || {};
   const tn = data.tenants || {};
+  const rg = data.ranged || {};
+  const disbAll = data.disbursementCost || {};
+  const RANGES: { key: string; label: string }[] = [
+    { key: 'day', label: 'Daily' }, { key: 'week', label: 'Weekly' }, { key: 'month', label: 'Monthly' }, { key: 'all', label: 'All time' },
+  ];
+  const kesR = (n: number) => 'KES ' + (n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
   const trend = (data.trend || []) as { month: string; subscriptionRevenue: number; newTenants: number }[];
 
   // Renewed vs non-renewed tenants (by Dartbit subscription billing status) for the donut.
@@ -206,6 +213,27 @@ function Overview() {
 
   return (
     <div className="space-y-8">
+      {/* Time-range scoped financials + disbursement costs */}
+      <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
+        <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+          <h2 className="text-lg font-bold">Financials</h2>
+          <div className="inline-flex rounded-lg border border-gray-700 overflow-hidden">
+            {RANGES.map(r => (
+              <button key={r.key} onClick={() => setRange(r.key)}
+                className={`px-3 py-1.5 text-xs font-medium transition ${range === r.key ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-gray-700'}`}>
+                {r.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <Card label="Subscription revenue" value={kesR(rg.subscriptionRevenue)} sub={RANGES.find(r => r.key === range)?.label || ''} />
+          <Card label="Collected (central)" value={kesR(rg.collected)} sub={`${kesR(rg.feesRetained)} fees kept`} />
+          <Card label="Owed to tenants" value={kesR(rg.owedToTenants)} sub="from collections" />
+          <Card label="Disbursement cost" value={kesR(rg.disbursementCost)} sub={`${rg.disbursementCount || 0} payouts · ${kesR(disbAll.allTime)} all-time`} />
+        </div>
+      </div>
+
       {/* Headline KPIs */}
       <div>
         <h2 className="text-lg font-bold mb-3">Platform Overview</h2>

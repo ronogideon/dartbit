@@ -70,8 +70,8 @@ export default function DashboardAnalytics() {
                   <YAxis fontSize={11} stroke="#9ca3af" />
                   <Tooltip formatter={(v: number, name: string) => [`KES ${Number(v).toLocaleString()}`, name === 'hotspot' ? 'Hotspot' : 'PPPoE']} />
                   <Legend formatter={(val: string) => (val === 'hotspot' ? 'Hotspot' : 'PPPoE')} iconType="circle" wrapperStyle={{ fontSize: 12 }} />
-                  <Bar dataKey="pppoe" stackId="pay" fill="#3b82f6" />
-                  <Bar dataKey="hotspot" stackId="pay" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="pppoe" stackId="pay" fill="#1d4ed8" />
+                  <Bar dataKey="hotspot" stackId="pay" fill="#7dd3fc" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>

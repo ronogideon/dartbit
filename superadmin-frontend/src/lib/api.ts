@@ -15,7 +15,7 @@ export default api;
 
 export const login = (email: string, password: string) =>
   api.post('/auth/login', { email, password }).then((r) => r.data.data);
-export const getOverview = () => api.get('/superadmin/overview').then((r) => r.data.data);
+export const getOverview = (range = 'all') => api.get('/superadmin/overview', { params: { range } }).then((r) => r.data.data);
 export const getTenants = () => api.get('/superadmin/tenants').then((r) => r.data.data);
 export const getPayouts = () => api.get('/superadmin/payouts').then((r) => r.data.data);
 export const getTeam = () => api.get('/superadmin/team').then((r) => r.data.data);

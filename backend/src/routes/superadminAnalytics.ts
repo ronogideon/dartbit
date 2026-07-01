@@ -22,7 +22,7 @@ function genTempPassword(): string {
 // ===== ANALYTICS (read — full + viewer superadmins) =====
 
 // GET /superadmin/overview — high-level platform metrics
-router.get('/overview', requireSuperAdminRead, async (_req: AuthRequest, res: Response) => {
+router.get('/overview', requireSuperAdminRead, async (req: AuthRequest, res: Response) => {
   try {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -128,6 +128,35 @@ router.get('/overview', requireSuperAdminRead, async (_req: AuthRequest, res: Re
       trend.push({ month: label, subscriptionRevenue: subRev, feeIncome: 0, newTenants: newT });
     }
 
+    // ---- Time-range toggle (day | week | month | all) + disbursement costs ----
+    const range = String(req.query.range || 'all');
+    const rangeStart = range === 'day' ? new Date(now.getTime() - 24 * 3600 * 1000)
+      : range === 'week' ? new Date(now.getTime() - 7 * 86400 * 1000)
+      : range === 'month' ? new Date(now.getFullYear(), now.getMonth(), 1)
+      : null; // all-time
+    const paidInRange = rangeStart ? { paidAt: { gte: rangeStart } } : {};
+    const madeInRange = rangeStart ? { createdAt: { gte: rangeStart } } : {};
+
+    const [rSubAgg, rCollAgg, rDisbAllRows, rDisbRangeRows] = await Promise.all([
+      prisma.tenantPayment.aggregate({ _sum: { amount: true }, where: { status: 'PAID', ...paidInRange } }),
+      prisma.mpesaTransaction.aggregate({ _sum: { amount: true, platformFee: true, netToTenant: true }, where: { ...centralWhere, ...madeInRange } }),
+      prisma.$queryRawUnsafe(`SELECT COALESCE(SUM(charge),0)::float AS cost, COUNT(*)::int AS n FROM "Disbursement" WHERE status='PAID'`),
+      rangeStart
+        ? prisma.$queryRawUnsafe(`SELECT COALESCE(SUM(charge),0)::float AS cost, COUNT(*)::int AS n FROM "Disbursement" WHERE status='PAID' AND "createdAt" >= $1`, rangeStart)
+        : prisma.$queryRawUnsafe(`SELECT COALESCE(SUM(charge),0)::float AS cost, COUNT(*)::int AS n FROM "Disbursement" WHERE status='PAID'`),
+    ]);
+    const disbAll = (rDisbAllRows as Array<{ cost: number; n: number }>)[0] || { cost: 0, n: 0 };
+    const disbRange = (rDisbRangeRows as Array<{ cost: number; n: number }>)[0] || { cost: 0, n: 0 };
+    const ranged = {
+      range,
+      subscriptionRevenue: rSubAgg._sum.amount || 0,
+      collected: rCollAgg._sum.amount || 0,
+      feesRetained: rCollAgg._sum.platformFee || 0,
+      owedToTenants: rCollAgg._sum.netToTenant || 0,
+      disbursementCost: disbRange.cost,
+      disbursementCount: disbRange.n,
+    };
+
     sendSuccess(res, {
       tenants: {
         total: tenantCount, active: activeTenants, trial: trialTenants,
@@ -157,6 +186,8 @@ router.get('/overview', requireSuperAdminRead, async (_req: AuthRequest, res: Re
       // record of net amounts still to be settled out of collected funds.
       totalRetainedFees: feeTotal,
       disbursementRecord,
+      disbursementCost: { allTime: disbAll.cost, allTimeCount: disbAll.n },
+      ranged,
       trend,
     });
   } catch (err) {
