@@ -11,6 +11,7 @@ import {
 
 function kes(n: number) { return 'KES ' + (n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 }); }
 function fmtDate(d?: string | null) { return d ? new Date(d).toLocaleDateString() : '—'; }
+function saErr(e: unknown): string { const x = e as { response?: { data?: { error?: string } }; message?: string }; return x?.response?.data?.error || x?.message || 'unknown error'; }
 
 type Tab = 'overview' | 'tenants' | 'payments' | 'payouts' | 'team' | 'messaging' | 'announcements';
 
@@ -189,9 +190,9 @@ function SmsRateControl() {
 }
 
 function Overview() {
-  const { data, isLoading } = useQuery({ queryKey: ['overview'], queryFn: API.getOverview, refetchInterval: 30000 });
+  const { data, isLoading, error } = useQuery({ queryKey: ['overview'], queryFn: API.getOverview, refetchInterval: 30000 });
   if (isLoading) return <div className="text-gray-500">Loading…</div>;
-  if (!data) return <div className="text-red-400 text-sm">Couldn&apos;t load this section. <button onClick={() => location.reload()} className="underline">Retry</button></div>;
+  if (!data) return <div className="text-red-400 text-sm">Couldn&apos;t load: {saErr(error)} <button onClick={() => location.reload()} className="underline ml-1">Retry</button></div>;
   const c = data.centralCollection;
   const sms = data.sms || {};
   const tn = data.tenants || {};
