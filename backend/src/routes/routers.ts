@@ -591,7 +591,7 @@ router.post('/:id/radius', async (req: AuthRequest, res: Response) => {
             `/radius incoming set accept=yes port=3799`,
             `/ppp aaa set use-radius=yes`,
             // Scope to the Dartbit hotspot profile ONLY — never touch centipid/default profiles.
-            `:foreach p in=[/ip hotspot profile find where name="hsprof-dartbit"] do={ /ip hotspot profile set $p use-radius=yes login-by=mac,cookie,http-chap,http-pap radius-accounting=yes radius-interim-update=1m }`,
+            `:foreach p in=[/ip hotspot profile find where name="hsprof-dartbit"] do={ /ip hotspot profile set $p use-radius=yes login-by=mac,cookie,http-chap,http-pap radius-accounting=yes radius-interim-update=5m }`,
             `:log info "Dartbit: RADIUS configured (server ${serverIp}, src ${r.wgIp}, ppp+hotspot)"`,
           ].join('\n');
           const { enqueueCommand } = await import('../utils/commandQueue');
