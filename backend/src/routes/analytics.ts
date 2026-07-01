@@ -28,10 +28,10 @@ function trendBuckets(period: Period): { label: string; start: Date; end: Date }
   const now = new Date();
   const buckets: { label: string; start: Date; end: Date }[] = [];
   if (period === 'day') {
-    // hourly for the last 24h (every 3h => 8 buckets)
-    for (let i = 7; i >= 0; i--) {
-      const end = new Date(now.getTime() - i * 3 * 3600 * 1000);
-      const start = new Date(end.getTime() - 3 * 3600 * 1000);
+    // hourly for the last 24h
+    for (let i = 23; i >= 0; i--) {
+      const end = new Date(now.getTime() - i * 3600 * 1000);
+      const start = new Date(end.getTime() - 3600 * 1000);
       buckets.push({ label: `${start.getHours()}:00`, start, end });
     }
   } else if (period === 'week') {
@@ -41,11 +41,11 @@ function trendBuckets(period: Period): { label: string; start: Date; end: Date }
       buckets.push({ label: day.toLocaleDateString('en-US', { weekday: 'short' }), start: day, end });
     }
   } else if (period === 'month') {
-    // ~4 weekly buckets
-    for (let i = 3; i >= 0; i--) {
-      const end = new Date(now.getTime() - i * 7 * 86400 * 1000);
-      const start = new Date(end.getTime() - 7 * 86400 * 1000);
-      buckets.push({ label: `Wk ${4 - i}`, start, end });
+    // daily for the last 30 days
+    for (let i = 29; i >= 0; i--) {
+      const day = new Date(now); day.setDate(day.getDate() - i); day.setHours(0, 0, 0, 0);
+      const end = new Date(day); end.setDate(end.getDate() + 1);
+      buckets.push({ label: day.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), start: day, end });
     }
   } else if (period === 'year') {
     for (let i = 11; i >= 0; i--) {
@@ -74,14 +74,18 @@ router.get('/overview', async (req: AuthRequest, res: Response) => {
     // ---- Payment trend ----
     const payments = await prisma.payment.findMany({
       where: { tenantId, createdAt: { gte: start } },
-      select: { amount: true, createdAt: true, packageId: true },
+      select: { amount: true, createdAt: true, packageId: true, subscriber: { select: { service: true } } },
     });
     const buckets = trendBuckets(period);
-    const paymentTrend = buckets.map(b => ({
-      label: b.label,
-      amount: payments.filter(p => p.createdAt >= b.start && p.createdAt < b.end).reduce((s, p) => s + p.amount, 0),
-      count: payments.filter(p => p.createdAt >= b.start && p.createdAt < b.end).length,
-    }));
+    const paymentTrend = buckets.map(b => {
+      const inB = payments.filter(p => p.createdAt >= b.start && p.createdAt < b.end);
+      const total = inB.reduce((s, p) => s + p.amount, 0);
+      const hotspot = inB.filter(p => p.subscriber?.service === 'HOTSPOT').reduce((s, p) => s + p.amount, 0);
+      // Everything not tied to a HOTSPOT subscriber (PPPoE + manual/no-subscriber) rolls into PPPoE
+      // so the two stacks always sum to the bucket total.
+      const pppoe = total - hotspot;
+      return { label: b.label, amount: total, hotspot, pppoe, count: inB.length };
+    });
     const totalRevenue = payments.reduce((s, p) => s + p.amount, 0);
 
     // ---- Packages: most users + most income ----

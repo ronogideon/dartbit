@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getAnalytics } from '@/lib/api';
 import { formatBytes } from '@/lib/format';
 import {
-  AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Legend,
 } from 'recharts';
 import { TrendingUp, Package as PackageIcon, Coins, Activity, Wifi } from 'lucide-react';
 
@@ -64,19 +64,15 @@ export default function DashboardAnalytics() {
                 <span className="text-sm text-gray-500">Total: KES {data.totalRevenue.toLocaleString()}</span>
               </div>
               <ResponsiveContainer width="100%" height={220}>
-                <AreaChart data={data.paymentTrend}>
-                  <defs>
-                    <linearGradient id="payGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.35} />
-                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
+                <BarChart data={data.paymentTrend}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" className="dark:opacity-20" />
-                  <XAxis dataKey="label" fontSize={11} stroke="#9ca3af" />
+                  <XAxis dataKey="label" fontSize={11} stroke="#9ca3af" interval="preserveStartEnd" minTickGap={16} />
                   <YAxis fontSize={11} stroke="#9ca3af" />
-                  <Tooltip formatter={(v: number) => `KES ${v.toLocaleString()}`} />
-                  <Area type="monotone" dataKey="amount" stroke="#3b82f6" fill="url(#payGrad)" strokeWidth={2} />
-                </AreaChart>
+                  <Tooltip formatter={(v: number, name: string) => [`KES ${Number(v).toLocaleString()}`, name === 'hotspot' ? 'Hotspot' : 'PPPoE']} />
+                  <Legend formatter={(val: string) => (val === 'hotspot' ? 'Hotspot' : 'PPPoE')} iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="pppoe" stackId="pay" fill="#3b82f6" />
+                  <Bar dataKey="hotspot" stackId="pay" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                </BarChart>
               </ResponsiveContainer>
             </div>
 
