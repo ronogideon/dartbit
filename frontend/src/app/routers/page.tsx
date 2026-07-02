@@ -83,24 +83,60 @@ function ProvisionPanel({ routerId }: { routerId: string }) {
 
           <div>
             <p className="text-xs font-bold text-gray-400 uppercase mb-2">Network</p>
-            <div className="grid grid-cols-2 gap-2">
-              {([
-                ['WAN Interface', 'wanInterface'],
-                ['Bridge Name', 'bridgeName'], ['LAN Subnet', 'lanSubnet'],
-                ['LAN Gateway', 'lanGateway'], ['DNS Servers', 'dnsServers'],
-                ['DHCP Start', 'dhcpPoolStart'], ['DHCP End', 'dhcpPoolEnd'],
-              ] as [string, keyof ProvConfig][]).map(([label, key]) => (
-                <div key={String(key)}>
-                  <label className="label text-xs">{label}</label>
-                  <input className="input text-xs" value={String(form[key])} onChange={set(key)} />
-                </div>
-              ))}
-              <div className="col-span-2">
-                <label className="label text-xs">LAN Interfaces (one or more, comma-separated)</label>
-                <input className="input text-xs" value={String(form.lanInterface)} onChange={set('lanInterface')} placeholder="e.g. ether2,ether3,ether4,wlan1" />
-                <p className="text-[10px] text-gray-500 mt-1">All listed ports will be added to the bridge as LAN ports</p>
-              </div>
-            </div>
+            {(() => {
+              // Ordered interface list — ether1 first (default uplink), then the rest.
+              const IFACES = ['ether1', 'ether2', 'ether3', 'ether4', 'ether5', 'ether6', 'ether7', 'ether8', 'ether9', 'ether10', 'sfp1', 'sfp-sfpplus1', 'wlan1', 'wlan2'];
+              const lanList = String(form.lanInterface || '').split(',').map(s => s.trim()).filter(Boolean);
+              const toggleLan = (i: string) => {
+                const sel = new Set(lanList);
+                if (sel.has(i)) sel.delete(i); else sel.add(i);
+                const ordered = IFACES.filter(x => sel.has(x)); // keep canonical order
+                setForm(f => ({ ...f, lanInterface: ordered.join(',') }));
+              };
+              return (
+                <>
+                  <div className="mb-3">
+                    <label className="label text-xs">WAN / Uplink Interface</label>
+                    <select className="input text-xs" value={String(form.wanInterface)}
+                      onChange={e => setForm(f => ({ ...f, wanInterface: e.target.value, lanInterface: String(f.lanInterface || '').split(',').map(s => s.trim()).filter(p => p && p !== e.target.value).join(',') }))}>
+                      {IFACES.map(i => <option key={i} value={i}>{i}{i === 'ether1' ? ' — default uplink' : ''}</option>)}
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {([
+                      ['Bridge Name', 'bridgeName'], ['LAN Subnet', 'lanSubnet'],
+                      ['LAN Gateway', 'lanGateway'], ['DNS Servers', 'dnsServers'],
+                      ['DHCP Start', 'dhcpPoolStart'], ['DHCP End', 'dhcpPoolEnd'],
+                    ] as [string, keyof ProvConfig][]).map(([label, key]) => (
+                      <div key={String(key)}>
+                        <label className="label text-xs">{label}</label>
+                        <input className="input text-xs" value={String(form[key])} onChange={set(key)} />
+                      </div>
+                    ))}
+                    <div className="col-span-2">
+                      <label className="label text-xs">LAN Ports — all bridged into one LAN ({String(form.bridgeName)})</label>
+                      <div className="flex flex-wrap gap-1.5 mt-1">
+                        {IFACES.map(i => {
+                          const isWan = i === form.wanInterface;
+                          const sel = lanList.includes(i);
+                          return (
+                            <button key={i} type="button" disabled={isWan} onClick={() => toggleLan(i)}
+                              title={isWan ? 'Uplink port — cannot be added to the bridge (it would stop working as the internet uplink)' : ''}
+                              className={`px-2 py-1 rounded text-xs border transition ${
+                                isWan ? 'bg-gray-100 dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-400 opacity-60 cursor-not-allowed'
+                                  : sel ? 'bg-blue-600 border-blue-600 text-white'
+                                    : 'bg-white dark:bg-gray-900 border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:border-blue-400'}`}>
+                              {i}{isWan ? ' · uplink' : ''}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="text-[10px] text-gray-500 mt-1">Every selected port joins the single bridge served by one hotspot — so a device works across all of them. Adding ports later never creates a second bridge.</p>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
           </div>
 
           <div>
