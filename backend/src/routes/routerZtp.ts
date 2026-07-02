@@ -543,6 +543,13 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`/system scheduler add name=dartbit-sessions interval=3s on-event="/system script run dartbit-sessions" comment="Dartbit session sync"`);
     add('');
 
+    // 13. Provisioning-complete signal — a clear log line on the router AND a callback so the
+    // dashboard can confirm the reprovision actually FINISHED (not merely that it was delivered).
+    add('# 13. Provisioning complete');
+    add(`:log info "Dartbit: PROVISIONING COMPLETE"`);
+    add(`:do { /tool fetch url="${backendUrl}/router/provision-done?apiKey=${apiKey}"${fetchFlags} output=none as-value } on-error={}`);
+    add('');
+
     return lines.join('\n');
 }
 
@@ -1355,6 +1362,20 @@ router.get('/clear-queue', async (req: Request, res: Response) => {
     res.json({ router: r.name, cleared });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'failed' });
+  }
+});
+
+router.get('/provision-done', async (req: Request, res: Response) => {
+  try {
+    const apiKey = String(req.query.apiKey || '');
+    if (!apiKey) return res.status(400).type('text/plain').send('');
+    const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey } });
+    if (!r) return res.status(404).type('text/plain').send('');
+    await prisma.$executeRawUnsafe(`UPDATE "MikrotikRouter" SET "provisionedAt"=NOW(), "lastSeenAt"=NOW() WHERE id=$1`, r.id);
+    console.log(`[provision-done] router ${r.id} (${r.name}) — PROVISIONING COMPLETE`);
+    res.type('text/plain').send('ok');
+  } catch {
+    res.type('text/plain').send('');
   }
 });
 

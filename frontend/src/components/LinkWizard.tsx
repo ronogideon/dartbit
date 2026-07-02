@@ -22,7 +22,7 @@ export default function LinkWizard({ routerId, command, onDone }: { routerId: st
     },
   });
   const stage = (data?.stage || 'AWAITING_HEARTBEAT') as Stage;
-  const interfaces = data?.interfaces || [];
+  const interfaces = [...(data?.interfaces || [])].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 
   // Pre-select nothing; tenant explicitly chooses. Default-suggest ether2 if present.
   useEffect(() => {

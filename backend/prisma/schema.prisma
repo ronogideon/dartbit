@@ -175,6 +175,7 @@ model MikrotikRouter {
   cpuLoad        Float?
   uptime         String?
   lastSeenAt     DateTime?
+  provisionedAt  DateTime?
   offlineAlertSent Boolean                 @default(false) // true once an offline alert SMS was sent; reset when back online
   offlineSince     DateTime?               // when the current/last outage began (for back-online duration)
   wgIp           String?                   // assigned VPN IP, e.g. 10.8.0.11

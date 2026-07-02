@@ -403,7 +403,23 @@ function RouterOptionsMenu({ router, onReboot, onEdit, onDelete }: {
     mutationFn: () => reprovisionRouter(router.id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['routers'] });
-      toast.success('Reprovision queued — router will re-run the script within 30s');
+      const queuedAt = Date.now();
+      toast.success('Reprovision queued — waiting for the router to finish…');
+      // Poll provisionedAt (the router calls back when the script finishes) so we can confirm.
+      let tries = 0;
+      const iv = setInterval(async () => {
+        tries++;
+        try {
+          const routers = await getRouters();
+          const me = (routers as { id: string; provisionedAt?: string | null }[]).find(x => x.id === router.id);
+          if (me?.provisionedAt && new Date(me.provisionedAt).getTime() >= queuedAt - 5000) {
+            clearInterval(iv);
+            qc.invalidateQueries({ queryKey: ['routers'] });
+            toast.success(`Provisioning complete on ${router.name} ✓`);
+          }
+        } catch { /* keep polling */ }
+        if (tries >= 30) clearInterval(iv); // ~2.5 min ceiling
+      }, 5000);
     },
     onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed'),
   });

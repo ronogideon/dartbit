@@ -94,8 +94,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.84', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.84', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.85', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.85', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -127,7 +127,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.84 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.85 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -855,6 +855,7 @@ async function patchDatabase() {
       )`);
     await safeExec(prisma, 'Disbursement tenant idx', `CREATE INDEX IF NOT EXISTS "Disbursement_tenantId_status_idx" ON "Disbursement"("tenantId","status")`);
     await safeExec(prisma, 'Disbursement conv idx', `CREATE INDEX IF NOT EXISTS "Disbursement_conversationId_idx" ON "Disbursement"("conversationId")`);
+    await safeExec(prisma, 'Router provisionedAt', `ALTER TABLE "MikrotikRouter" ADD COLUMN IF NOT EXISTS "provisionedAt" TIMESTAMP(3)`);
     await safeExec(prisma, 'Announcement table', `CREATE TABLE IF NOT EXISTS "Announcement" (
         "id" TEXT PRIMARY KEY,
         "title" TEXT NOT NULL,
