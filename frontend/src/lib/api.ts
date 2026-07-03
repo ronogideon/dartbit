@@ -78,6 +78,7 @@ export const portalLogin = (username: string, password: string) =>
   api.post('/portal/login', { username, password }).then((r) => r.data);
 
 export const getSubscribers = () => api.get('/subscribers').then((r) => r.data.data);
+export const importSubscribers = (csv: string) => api.post('/subscribers/import', { csv }).then((r) => r.data.data as { imported: number; skipped: number; unparsedExpiry?: number; total?: number; message?: string });
 export const createSubscriber = (data: unknown) => api.post('/subscribers', data).then((r) => r.data.data);
 export const updateSubscriber = (id: string, data: unknown) => api.put(`/subscribers/${id}`, data).then((r) => r.data.data);
 export const deleteSubscriber = (id: string) => api.delete(`/subscribers/${id}`).then((r) => r.data.data);

@@ -33,6 +33,116 @@ function cleanForUpdate<T extends Record<string, unknown>>(data: T): Partial<T> 
   return out as Partial<T>;
 }
 
+// ---- CSV subscriber import (bulk migration from other billing platforms) ----
+
+// Minimal robust CSV parser: handles quoted fields, escaped quotes, embedded commas, CRLF.
+function parseCsv(text: string): string[][] {
+  const s = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const rows: string[][] = [];
+  let row: string[] = [], field = '', inQuotes = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inQuotes) {
+      if (c === '"') { if (s[i + 1] === '"') { field += '"'; i++; } else inQuotes = false; }
+      else field += c;
+    } else if (c === '"') inQuotes = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+    else field += c;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(r => r.some(cell => cell.trim() !== ''));
+}
+
+// Flexible date parse: ISO, unix seconds/ms, and day-first D/M/Y (common outside the US).
+function parseFlexDate(v: string): Date | null {
+  const s = (v || '').trim();
+  if (!s) return null;
+  if (/^\d{10}$/.test(s)) return new Date(Number(s) * 1000);
+  if (/^\d{13}$/.test(s)) return new Date(Number(s));
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) { const d = new Date(s); if (!isNaN(d.getTime())) return d; }
+  const m = s.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})/);
+  if (m) {
+    const day = Number(m[1]), mon = Number(m[2]), yr = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
+    const d = new Date(yr, mon - 1, day);
+    if (!isNaN(d.getTime())) return d;
+  }
+  const nat = new Date(s);
+  return isNaN(nat.getTime()) ? null : nat;
+}
+
+// POST /subscribers/import — bulk-create subscribers from a raw CSV in one swoop.
+router.post('/import', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return sendError(res, 'No tenant', 400);
+    const csv = String(req.body?.csv || '');
+    if (!csv.trim()) return sendError(res, 'The CSV is empty', 400);
+
+    const rows = parseCsv(csv);
+    if (rows.length < 2) return sendError(res, 'The CSV needs a header row and at least one data row', 400);
+
+    const header = rows[0].map(h => h.trim().toLowerCase());
+    const col = (re: RegExp) => header.findIndex(h => re.test(h));
+    const iName = col(/name|customer|client/);
+    const iUser = col(/user.?name|account|login|^user$|pppoe/);
+    const iPhone = col(/phone|mobile|msisdn|contact|number|tel/);
+    const iExpiry = col(/expir|expires|due|valid|end.?date|renew/);
+    const iSecret = col(/password|secret|^pass|pin/);
+    const iService = col(/service|type|plan.?type/);
+    const iEmail = col(/e-?mail/);
+    if (iUser === -1 && iName === -1) return sendError(res, 'Could not find a username or name column in the CSV', 400);
+
+    const existing = new Set((await prisma.subscriber.findMany({ where: { tenantId }, select: { username: true } }))
+      .map(s => s.username.toLowerCase()));
+    const seen = new Set<string>();
+    const toCreate: Array<{ tenantId: string; username: string; secret: string; fullName: string; phone: string | null; email: string | null; service: 'PPPOE' | 'HOTSPOT'; expiresAt: Date | null; isActive: boolean }> = [];
+    let skipped = 0, noExpiry = 0;
+
+    for (let r = 1; r < rows.length; r++) {
+      const row = rows[r];
+      const cell = (i: number) => (i >= 0 && i < row.length ? row[i].trim() : '');
+      const name = iName >= 0 ? cell(iName) : '';
+      let username = iUser >= 0 ? cell(iUser) : '';
+      if (!username) username = name.replace(/\s+/g, '').toLowerCase(); // derive from name if absent
+      if (!username) { skipped++; continue; }
+      const key = username.toLowerCase();
+      if (existing.has(key) || seen.has(key)) { skipped++; continue; }
+      seen.add(key);
+      const expiresAt = iExpiry >= 0 ? parseFlexDate(cell(iExpiry)) : null;
+      if (iExpiry >= 0 && cell(iExpiry) && !expiresAt) noExpiry++;
+      toCreate.push({
+        tenantId, username,
+        secret: (iSecret >= 0 && cell(iSecret)) || Math.random().toString(36).slice(2, 10),
+        fullName: name || username,
+        phone: (iPhone >= 0 && cell(iPhone)) || null,
+        email: (iEmail >= 0 && cell(iEmail)) || null,
+        service: (iService >= 0 && cell(iService).toUpperCase().includes('HOT')) ? 'HOTSPOT' : 'PPPOE',
+        expiresAt, isActive: true,
+      });
+    }
+
+    if (toCreate.length === 0) return sendSuccess(res, { imported: 0, skipped, message: 'No new subscribers found to import (all already exist or were blank).' });
+
+    const result = await prisma.subscriber.createMany({ data: toCreate, skipDuplicates: true });
+
+    // Best-effort background RADIUS sync so migrated users can authenticate right away.
+    (async () => {
+      try {
+        const { radiusConfigured, bulkSyncPppoeToRadius, bulkSyncHotspotToRadius } = await import('../utils/radius');
+        if (radiusConfigured()) {
+          await bulkSyncPppoeToRadius({ tenantId }).catch(() => {});
+          await bulkSyncHotspotToRadius({ tenantId }).catch(() => {});
+        }
+      } catch { /* best-effort */ }
+    })();
+
+    sendSuccess(res, { imported: result.count, skipped, unparsedExpiry: noExpiry, total: rows.length - 1 });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Import failed', 500);
+  }
+});
+
 // GET /subscribers/counts — lightweight tenant-scoped totals for the sidebar bubbles.
 router.get('/counts', async (req: AuthRequest, res: Response) => {
   try {
