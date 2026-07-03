@@ -78,7 +78,8 @@ export const portalLogin = (username: string, password: string) =>
   api.post('/portal/login', { username, password }).then((r) => r.data);
 
 export const getSubscribers = () => api.get('/subscribers').then((r) => r.data.data);
-export const importSubscribers = (csv: string) => api.post('/subscribers/import', { csv }).then((r) => r.data.data as { imported: number; skipped: number; unparsedExpiry?: number; total?: number; message?: string });
+export const analyzeImport = (csv: string) => api.post('/subscribers/import/analyze', { csv }).then((r) => r.data.data as { totalRows: number; packageColumn: string | null; values: { name: string; count: number }[]; detected: Record<string, boolean> });
+export const importSubscribers = (csv: string, mapping?: Record<string, unknown>) => api.post('/subscribers/import', { csv, mapping }).then((r) => r.data.data as { imported: number; skipped: number; unparsedExpiry?: number; total?: number; createdPackages?: string[]; message?: string });
 export const createSubscriber = (data: unknown) => api.post('/subscribers', data).then((r) => r.data.data);
 export const updateSubscriber = (id: string, data: unknown) => api.put(`/subscribers/${id}`, data).then((r) => r.data.data);
 export const deleteSubscriber = (id: string) => api.delete(`/subscribers/${id}`).then((r) => r.data.data);

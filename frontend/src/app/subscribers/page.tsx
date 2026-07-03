@@ -1,11 +1,12 @@
 'use client';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getSubscribers, createSubscriber, updateSubscriber, deleteSubscriber, getPackages, getRouters, importSubscribers } from '@/lib/api';
+import { getSubscribers, createSubscriber, updateSubscriber, deleteSubscriber, getPackages, getRouters } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import SubscriberDetail from '@/components/SubscriberDetail';
+import ImportUsersModal from '@/components/ImportUsersModal';
 import { expiryBadge, timeAgo } from '@/lib/format';
 
 // Time-left pill colors: text close to the indicator, on a near-opaque tinted background.
@@ -56,35 +57,11 @@ export default function SubscribersPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [editing, setEditing] = useState<Subscriber | null>(null);
   const [form, setForm] = useState(emptyForm);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   const { data: subscribers = [], isPending } = useQuery({ queryKey: ['subscribers'], queryFn: getSubscribers });
   const { data: packages = [] } = useQuery({ queryKey: ['packages'], queryFn: getPackages });
   const { data: routers = [] } = useQuery({ queryKey: ['routers'], queryFn: getRouters });
-
-  const importMut = useMutation({
-    mutationFn: importSubscribers,
-    onSuccess: (r) => {
-      qc.invalidateQueries({ queryKey: ['subscribers'] });
-      qc.invalidateQueries({ queryKey: ['sidebar-counts'] });
-      if (r.imported > 0) {
-        toast.success(`Imported ${r.imported} subscriber${r.imported === 1 ? '' : 's'}${r.skipped ? `, skipped ${r.skipped} (already existed or blank)` : ''}${r.unparsedExpiry ? `. ${r.unparsedExpiry} had an unreadable expiry date.` : ''}`, { duration: 6000 });
-      } else {
-        toast(r.message || 'Nothing imported — all rows already exist or were blank.', { duration: 6000 });
-      }
-    },
-    onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Import failed'),
-  });
-
-  const onPickCsv = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = ''; // allow re-selecting the same file
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => importMut.mutate(String(reader.result || ''));
-    reader.onerror = () => toast.error('Could not read that file');
-    reader.readAsText(file);
-  };
 
   const createMut = useMutation({
     mutationFn: createSubscriber,
@@ -217,10 +194,9 @@ export default function SubscribersPage() {
           <p className="text-sm text-gray-500 mt-1">{(subscribers as Subscriber[]).length} total subscribers</p>
         </div>
         <div className="flex items-center gap-2">
-          <input ref={fileRef} type="file" accept=".csv,text/csv" className="hidden" onChange={onPickCsv} />
-          <button onClick={() => fileRef.current?.click()} disabled={importMut.isPending}
-            className="btn-secondary flex items-center gap-2 disabled:opacity-50" title="Import subscribers from a CSV file">
-            <Upload size={16} /> {importMut.isPending ? 'Importing…' : 'Import users'}
+          <button onClick={() => setImportOpen(true)}
+            className="btn-secondary flex items-center gap-2" title="Import subscribers from a CSV file">
+            <Upload size={16} /> Import users
           </button>
           <button onClick={openCreate} className="btn-primary flex items-center gap-2">
             <Plus size={16} /> Add Subscriber
@@ -308,6 +284,7 @@ export default function SubscribersPage() {
       </div>
 
       <SubscriberDetail subscriberId={detailId} onClose={() => setDetailId(null)} onEdit={openEditById} />
+      <ImportUsersModal open={importOpen} onClose={() => setImportOpen(false)} onImported={() => { qc.invalidateQueries({ queryKey: ['subscribers'] }); qc.invalidateQueries({ queryKey: ['packages'] }); qc.invalidateQueries({ queryKey: ['sidebar-counts'] }); }} />
 
       <Modal isOpen={modalOpen} onClose={closeModal} title={editing ? 'Edit Subscriber' : 'Add Subscriber'}>
         <form onSubmit={handleSubmit} className="space-y-4">

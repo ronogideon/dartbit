@@ -71,6 +71,53 @@ function parseFlexDate(v: string): Date | null {
   return isNaN(nat.getTime()) ? null : nat;
 }
 
+// Column detection shared by analyze + import.
+function detectCols(header: string[]) {
+  const col = (re: RegExp) => header.findIndex(h => re.test(h));
+  return {
+    iName: col(/name|customer|client/),
+    iUser: col(/user.?name|account|login|^user$|pppoe/),
+    iPhone: col(/phone|mobile|msisdn|contact|number|tel/),
+    iExpiry: col(/expir|expires|due|valid|end.?date|renew/),
+    iSecret: col(/password|secret|^pass|pin/),
+    iService: col(/service|type|plan.?type/),
+    iEmail: col(/e-?mail/),
+    iPackage: col(/package|^plan$|rate.?limit|bandwidth|profile|speed|tariff/),
+  };
+}
+
+// POST /subscribers/import/analyze — returns the distinct package/rate-limit values in the CSV so
+// the tenant can map each to a real Dartbit package before importing.
+router.post('/import/analyze', async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user?.tenantId) return sendError(res, 'No tenant', 400);
+    const csv = String(req.body?.csv || '');
+    if (!csv.trim()) return sendError(res, 'The CSV is empty', 400);
+    const rows = parseCsv(csv);
+    if (rows.length < 2) return sendError(res, 'The CSV needs a header row and at least one data row', 400);
+    const header = rows[0].map(h => h.trim().toLowerCase());
+    const cols = detectCols(header);
+    if (cols.iUser === -1 && cols.iName === -1) return sendError(res, 'Could not find a username or name column in the CSV', 400);
+
+    const counts = new Map<string, number>();
+    if (cols.iPackage >= 0) {
+      for (let r = 1; r < rows.length; r++) {
+        const v = (rows[r][cols.iPackage] || '').trim();
+        if (v) counts.set(v, (counts.get(v) || 0) + 1);
+      }
+    }
+    const values = [...counts.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
+    sendSuccess(res, {
+      totalRows: rows.length - 1,
+      packageColumn: cols.iPackage >= 0 ? rows[0][cols.iPackage].trim() : null,
+      values, // distinct package/rate-limit names to map
+      detected: { name: cols.iName >= 0, username: cols.iUser >= 0, phone: cols.iPhone >= 0, expiry: cols.iExpiry >= 0 },
+    });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Analyze failed', 500);
+  }
+});
+
 // POST /subscribers/import — bulk-create subscribers from a raw CSV in one swoop.
 router.post('/import', async (req: AuthRequest, res: Response) => {
   try {
@@ -83,20 +130,37 @@ router.post('/import', async (req: AuthRequest, res: Response) => {
     if (rows.length < 2) return sendError(res, 'The CSV needs a header row and at least one data row', 400);
 
     const header = rows[0].map(h => h.trim().toLowerCase());
-    const col = (re: RegExp) => header.findIndex(h => re.test(h));
-    const iName = col(/name|customer|client/);
-    const iUser = col(/user.?name|account|login|^user$|pppoe/);
-    const iPhone = col(/phone|mobile|msisdn|contact|number|tel/);
-    const iExpiry = col(/expir|expires|due|valid|end.?date|renew/);
-    const iSecret = col(/password|secret|^pass|pin/);
-    const iService = col(/service|type|plan.?type/);
-    const iEmail = col(/e-?mail/);
+    const { iName, iUser, iPhone, iExpiry, iSecret, iService, iEmail, iPackage } = detectCols(header);
     if (iUser === -1 && iName === -1) return sendError(res, 'Could not find a username or name column in the CSV', 400);
+
+    // mapping: { "<csv package value>": { packageId?, newPackage?: { name, speedDownKbps, speedUpKbps, price?, validityMinutes?, service? } } }
+    const mapping: Record<string, { packageId?: string; newPackage?: { name: string; speedDownKbps: number; speedUpKbps: number; price?: number; validityMinutes?: number; service?: string } }> = req.body?.mapping || {};
+    const resolvedPkg: Record<string, string> = {}; // lowercased csv value -> real packageId
+    const createdPackages: string[] = [];
+    for (const [csvVal, m] of Object.entries(mapping)) {
+      if (m?.packageId) {
+        resolvedPkg[csvVal.toLowerCase()] = m.packageId;
+      } else if (m?.newPackage?.name) {
+        const np = m.newPackage;
+        const pkg = await prisma.package.create({
+          data: {
+            tenantId, name: np.name,
+            service: (np.service === 'HOTSPOT' ? 'HOTSPOT' : 'PPPOE'),
+            speedDownKbps: Math.max(1, Math.round(np.speedDownKbps || 1024)),
+            speedUpKbps: Math.max(1, Math.round(np.speedUpKbps || 1024)),
+            validityMinutes: Math.max(1, Math.round(np.validityMinutes || 43200)), // default 30 days
+            price: Math.max(0, np.price || 0),
+          },
+        });
+        resolvedPkg[csvVal.toLowerCase()] = pkg.id;
+        createdPackages.push(np.name);
+      }
+    }
 
     const existing = new Set((await prisma.subscriber.findMany({ where: { tenantId }, select: { username: true } }))
       .map(s => s.username.toLowerCase()));
     const seen = new Set<string>();
-    const toCreate: Array<{ tenantId: string; username: string; secret: string; fullName: string; phone: string | null; email: string | null; service: 'PPPOE' | 'HOTSPOT'; expiresAt: Date | null; isActive: boolean }> = [];
+    const toCreate: Array<{ tenantId: string; username: string; secret: string; fullName: string; phone: string | null; email: string | null; service: 'PPPOE' | 'HOTSPOT'; expiresAt: Date | null; isActive: boolean; packageId: string | null }> = [];
     let skipped = 0, noExpiry = 0;
 
     for (let r = 1; r < rows.length; r++) {
@@ -111,6 +175,8 @@ router.post('/import', async (req: AuthRequest, res: Response) => {
       seen.add(key);
       const expiresAt = iExpiry >= 0 ? parseFlexDate(cell(iExpiry)) : null;
       if (iExpiry >= 0 && cell(iExpiry) && !expiresAt) noExpiry++;
+      const pkgVal = iPackage >= 0 ? cell(iPackage).toLowerCase() : '';
+      const packageId = (pkgVal && resolvedPkg[pkgVal]) || null;
       toCreate.push({
         tenantId, username,
         secret: (iSecret >= 0 && cell(iSecret)) || Math.random().toString(36).slice(2, 10),
@@ -118,7 +184,7 @@ router.post('/import', async (req: AuthRequest, res: Response) => {
         phone: (iPhone >= 0 && cell(iPhone)) || null,
         email: (iEmail >= 0 && cell(iEmail)) || null,
         service: (iService >= 0 && cell(iService).toUpperCase().includes('HOT')) ? 'HOTSPOT' : 'PPPOE',
-        expiresAt, isActive: true,
+        expiresAt, isActive: true, packageId,
       });
     }
 
@@ -137,7 +203,7 @@ router.post('/import', async (req: AuthRequest, res: Response) => {
       } catch { /* best-effort */ }
     })();
 
-    sendSuccess(res, { imported: result.count, skipped, unparsedExpiry: noExpiry, total: rows.length - 1 });
+    sendSuccess(res, { imported: result.count, skipped, unparsedExpiry: noExpiry, total: rows.length - 1, createdPackages });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Import failed', 500);
   }
