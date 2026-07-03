@@ -364,14 +364,17 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
     const ipArg = tx.clientIp ? ` ip=${tx.clientIp}` : '';
     const loginBatch = radiusManaged ? radiusLoginCmds : cmds;
     loginBatch.push(`:foreach b in=[/ip hotspot ip-binding find mac-address="${macUC}"] do={ /ip hotspot ip-binding remove \$b }`);
-    // Do NOT kick an existing session. After payment the device very often comes online on its own
-    // via RADIUS mac-auth (its radcheck now exists with the new expiry). So we WAIT first, then check
-    // — and only force a login if it is STILL not online after the wait. Checking after the delay
-    // (rather than before it) is the fix for the "connect → drop at ~2s → reconnect" flap: previously
-    // the check passed before the delay, then the explicit login fired into a session mac-auth had
-    // meanwhile established, colliding with it and kicking the user. Now, if it's already on, we leave
-    // it on; if it's not, one clean login brings it up. Either way it holds until expiry.
-    loginBatch.push(`:delay 2s ; :if ([:len [/ip hotspot active find mac-address="${macUC}"]] = 0) do={ :do { /ip hotspot active login user=${loginUser}${ipArg} mac-address=${macUC} } on-error={} }`);
+    if (!radiusManaged) {
+      // LOCAL mode only. Wait, then force a login as the local D-number user ONLY if the device is
+      // still offline — and never kick a session that's already up.
+      loginBatch.push(`:delay 2s ; :if ([:len [/ip hotspot active find mac-address="${macUC}"]] = 0) do={ :do { /ip hotspot active login user=${loginUser}${ipArg} mac-address=${macUC} } on-error={} }`);
+    }
+    // In RADIUS mode we do NOT issue an explicit login at all. The device authenticates itself —
+    // the portal (http-pap) or silent mac-auth — against the radcheck we just wrote (password
+    // "dartbit"). Forcing `/ip hotspot active login user=<D-number>` here runs WITHOUT a password, so
+    // RADIUS rejects it ("invalid username or password") AND it first resets ("admin reset") the live
+    // session the portal already established — which was the real post-payment kick. Leaving it to
+    // RADIUS mac-auth means the paid device comes up once and holds until expiry.
     // Clean up any leftover db-login script/scheduler from older versions.
     loginBatch.push(`:foreach s in=[/system scheduler find name="db-login"] do={ /system scheduler remove \$s }`);
     loginBatch.push(`:foreach s in=[/system script find name="db-login"] do={ /system script remove \$s }`);
