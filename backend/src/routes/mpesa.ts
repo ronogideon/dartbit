@@ -360,24 +360,17 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   // bypassed binding + active session for this MAC so the new rate-limited session takes hold.
   // No self-removing scheduler script (that produced "interrupted" log errors) — just direct cmds
   // delivered on the ~2s command poll.
-  if (macUC) {
+  if (macUC && !radiusManaged) {
+    // LOCAL mode only — in RADIUS mode we touch the session ZERO times (see below); the device
+    // authenticates itself via mac-auth/portal against the radcheck we write, so any command here
+    // (ip-binding removal, explicit login) can only disrupt a session that's already coming up.
     const ipArg = tx.clientIp ? ` ip=${tx.clientIp}` : '';
-    const loginBatch = radiusManaged ? radiusLoginCmds : cmds;
-    loginBatch.push(`:foreach b in=[/ip hotspot ip-binding find mac-address="${macUC}"] do={ /ip hotspot ip-binding remove \$b }`);
-    if (!radiusManaged) {
-      // LOCAL mode only. Wait, then force a login as the local D-number user ONLY if the device is
-      // still offline — and never kick a session that's already up.
-      loginBatch.push(`:delay 2s ; :if ([:len [/ip hotspot active find mac-address="${macUC}"]] = 0) do={ :do { /ip hotspot active login user=${loginUser}${ipArg} mac-address=${macUC} } on-error={} }`);
-    }
-    // In RADIUS mode we do NOT issue an explicit login at all. The device authenticates itself —
-    // the portal (http-pap) or silent mac-auth — against the radcheck we just wrote (password
-    // "dartbit"). Forcing `/ip hotspot active login user=<D-number>` here runs WITHOUT a password, so
-    // RADIUS rejects it ("invalid username or password") AND it first resets ("admin reset") the live
-    // session the portal already established — which was the real post-payment kick. Leaving it to
-    // RADIUS mac-auth means the paid device comes up once and holds until expiry.
+    cmds.push(`:foreach b in=[/ip hotspot ip-binding find mac-address="${macUC}"] do={ /ip hotspot ip-binding remove \$b }`);
+    // Wait, then force a login as the local D-number user ONLY if the device is still offline.
+    cmds.push(`:delay 2s ; :if ([:len [/ip hotspot active find mac-address="${macUC}"]] = 0) do={ :do { /ip hotspot active login user=${loginUser}${ipArg} mac-address=${macUC} } on-error={} }`);
     // Clean up any leftover db-login script/scheduler from older versions.
-    loginBatch.push(`:foreach s in=[/system scheduler find name="db-login"] do={ /system scheduler remove \$s }`);
-    loginBatch.push(`:foreach s in=[/system script find name="db-login"] do={ /system script remove \$s }`);
+    cmds.push(`:foreach s in=[/system scheduler find name="db-login"] do={ /system scheduler remove \$s }`);
+    cmds.push(`:foreach s in=[/system script find name="db-login"] do={ /system script remove \$s }`);
   }
 
   if (tx.routerId && cmds.length) await enqueueCommand(tx.routerId, cmds.join('\n'));
@@ -467,7 +460,11 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   if (radiusManaged && subscriberId) {
     try {
       const { radiusConfigured, syncSubscriberToRadius } = await import('../utils/radius');
-      if (radiusConfigured()) await syncSubscriberToRadius(subscriberId, { kickToApply: wasExpired });
+      // Never disconnect on a PURCHASE (even a renewal): writing the radcheck with the new expiry +
+      // full rate is enough — the device applies it on its next auth / interim-update. Passing
+      // kickToApply here sent a RADIUS CoA disconnect ("Radius disconnect with no ip provided") that
+      // kicked the just-paid device. No kick = seamless.
+      if (radiusConfigured()) await syncSubscriberToRadius(subscriberId);
     } catch (e) {
       console.error('radius hotspot sync error:', e instanceof Error ? e.message : e);
     }
