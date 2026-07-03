@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getSubscribers, createSubscriber, updateSubscriber, deleteSubscriber, getPackages, getRouters } from '@/lib/api';
+import { getSubscribers, createSubscriber, updateSubscriber, deleteSubscriber, getPackages, getRouters, bulkDeleteSubscribers } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
@@ -11,7 +11,7 @@ import { expiryBadge, timeAgo } from '@/lib/format';
 
 // Time-left pill colors: text close to the indicator, on a near-opaque tinted background.
 import toast from 'react-hot-toast';
-import { Plus, Edit2, Trash2, Search, Upload } from 'lucide-react';
+import { Plus, Edit2, Trash2, Search, Upload, CheckSquare, Square, Download, X } from 'lucide-react';
 
 interface Subscriber {
   id: string; username: string; fullName: string; phone?: string; email?: string;
@@ -58,6 +58,9 @@ export default function SubscribersPage() {
   const [editing, setEditing] = useState<Subscriber | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [importOpen, setImportOpen] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
 
   const { data: subscribers = [], isPending } = useQuery({ queryKey: ['subscribers'], queryFn: getSubscribers });
   const { data: packages = [] } = useQuery({ queryKey: ['packages'], queryFn: getPackages });
@@ -80,6 +83,20 @@ export default function SubscribersPage() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['subscribers'] }); toast.success('Subscriber deleted'); setDeleteId(null); },
     onError: () => toast.error('Failed to delete subscriber'),
   });
+
+  const bulkDeleteMut = useMutation({
+    mutationFn: () => bulkDeleteSubscribers(Array.from(selected)),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ['subscribers'] });
+      qc.invalidateQueries({ queryKey: ['sidebar-counts'] });
+      toast.success(`Deleted ${r.deleted} subscriber${r.deleted === 1 ? '' : 's'}`);
+      setSelected(new Set()); setConfirmBulkDelete(false); setSelectMode(false);
+    },
+    onError: () => toast.error('Bulk delete failed'),
+  });
+
+  const toggleSelect = (id: string) => setSelected(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const exitSelect = () => { setSelectMode(false); setSelected(new Set()); };
 
   const openCreate = () => { setEditing(null); setForm(emptyForm); setModalOpen(true); };
 
@@ -179,6 +196,22 @@ export default function SubscribersPage() {
      s.username.toLowerCase().includes(search.toLowerCase()))
   );
 
+  const allSelected = filtered.length > 0 && filtered.every(s => selected.has(s.id));
+  const toggleSelectAll = () => setSelected(allSelected ? new Set() : new Set(filtered.map(s => s.id)));
+  const exportSelected = () => {
+    const rows = filtered.filter(s => selected.has(s.id));
+    if (rows.length === 0) return;
+    const esc = (v: string) => /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+    const header = ['Name', 'Username', 'Phone', 'Service', 'Package', 'Expiry'];
+    const body = rows.map(s => [s.fullName, s.username, s.phone || '', s.service, s.package?.name || '', s.expiresAt ? new Date(s.expiresAt).toISOString() : ''].map(x => esc(String(x))).join(','));
+    const csv = [header.join(','), ...body].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `subscribers-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click(); URL.revokeObjectURL(url);
+  };
+
   const TABS = [
     { key: 'ALL' as const, label: 'All' },
     { key: 'PPPOE' as const, label: 'PPPoE' },
@@ -221,12 +254,36 @@ export default function SubscribersPage() {
       </div>
 
       <div className="card mb-6">
-        <div className="p-4 border-b border-gray-200 dark:border-gray-800">
-          <div className="relative">
-            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input value={search} onChange={e => setSearch(e.target.value)}
-              className="input pl-9" placeholder="Search subscribers..." />
+        <div className="p-4 border-b border-gray-200 dark:border-gray-800 space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input value={search} onChange={e => setSearch(e.target.value)}
+                className="input pl-9" placeholder="Search subscribers..." />
+            </div>
+            <button onClick={() => (selectMode ? exitSelect() : setSelectMode(true))}
+              className={`btn-secondary flex items-center gap-2 whitespace-nowrap ${selectMode ? 'text-blue-600 border-blue-400' : ''}`}>
+              <CheckSquare size={16} /> {selectMode ? 'Cancel' : 'Select multiple'}
+            </button>
           </div>
+          {selectMode && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <button onClick={toggleSelectAll} className="btn-secondary flex items-center gap-2 text-sm">
+                {allSelected ? <CheckSquare size={15} className="text-blue-600" /> : <Square size={15} />} Select all ({filtered.length})
+              </button>
+              <span className="text-sm text-gray-500">{selected.size} selected</span>
+              <div className="ml-auto flex items-center gap-2">
+                <button onClick={exportSelected} disabled={selected.size === 0}
+                  className="btn-secondary flex items-center gap-2 text-sm disabled:opacity-50">
+                  <Download size={15} /> Export selected
+                </button>
+                <button onClick={() => setConfirmBulkDelete(true)} disabled={selected.size === 0}
+                  className="btn-secondary flex items-center gap-2 text-sm text-red-600 border-red-300 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50">
+                  <Trash2 size={15} /> Delete selected
+                </button>
+              </div>
+            </div>
+          )}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full">
@@ -273,6 +330,11 @@ export default function SubscribersPage() {
                       <div className="flex items-center gap-2">
                         <button onClick={() => openEdit(s)} className="p-1.5 text-gray-400 hover:text-blue-600 transition-colors"><Edit2 size={15} /></button>
                         <button onClick={() => setDeleteId(s.id)} className="p-1.5 text-gray-400 hover:text-red-600 transition-colors"><Trash2 size={15} /></button>
+                        {selectMode && (
+                          <button onClick={() => toggleSelect(s.id)} className="p-1.5 text-gray-400 hover:text-blue-600 transition-colors" title="Select">
+                            {selected.has(s.id) ? <CheckSquare size={16} className="text-blue-600" /> : <Square size={16} />}
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -353,6 +415,12 @@ export default function SubscribersPage() {
         onConfirm={() => deleteId && deleteMut.mutate(deleteId)}
         loading={deleteMut.isPending}
         message="This will permanently delete the subscriber and all associated data."
+      />
+      <ConfirmDialog
+        isOpen={confirmBulkDelete} onClose={() => setConfirmBulkDelete(false)}
+        onConfirm={() => bulkDeleteMut.mutate()}
+        loading={bulkDeleteMut.isPending}
+        message={`This will permanently delete ${selected.size} selected subscriber${selected.size === 1 ? '' : 's'} and all their data. This cannot be undone.`}
       />
     </AppLayout>
   );

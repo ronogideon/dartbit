@@ -209,6 +209,29 @@ router.post('/import', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// POST /subscribers/bulk-delete — delete many subscribers at once (with RADIUS cleanup).
+router.post('/bulk-delete', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return sendError(res, 'No tenant', 400);
+    const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids.filter((x: unknown) => typeof x === 'string') : [];
+    if (!ids.length) return sendError(res, 'No subscribers selected', 400);
+    const subs = await prisma.subscriber.findMany({ where: { id: { in: ids }, tenantId } });
+    try {
+      const { radiusConfigured, removeSubscriberFromRadius } = await import('../utils/radius');
+      if (radiusConfigured()) {
+        for (const s of subs) {
+          if (s.service === 'PPPOE' || s.service === 'HOTSPOT') await removeSubscriberFromRadius(s as never).catch(() => {});
+        }
+      }
+    } catch { /* best-effort */ }
+    const result = await prisma.subscriber.deleteMany({ where: { id: { in: ids }, tenantId } });
+    sendSuccess(res, { deleted: result.count });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Bulk delete failed', 500);
+  }
+});
+
 // GET /subscribers/counts — lightweight tenant-scoped totals for the sidebar bubbles.
 router.get('/counts', async (req: AuthRequest, res: Response) => {
   try {
