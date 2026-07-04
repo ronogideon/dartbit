@@ -216,18 +216,39 @@ router.post('/bulk-delete', async (req: AuthRequest, res: Response) => {
     if (!tenantId) return sendError(res, 'No tenant', 400);
     const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids.filter((x: unknown) => typeof x === 'string') : [];
     if (!ids.length) return sendError(res, 'No subscribers selected', 400);
-    const subs = await prisma.subscriber.findMany({ where: { id: { in: ids }, tenantId } });
-    try {
-      const { radiusConfigured, removeSubscriberFromRadius } = await import('../utils/radius');
-      if (radiusConfigured()) {
-        for (const s of subs) {
-          if (s.service === 'PPPOE' || s.service === 'HOTSPOT') await removeSubscriberFromRadius(s as never).catch(() => {});
+
+    const subs = await prisma.subscriber.findMany({ where: { id: { in: ids }, tenantId }, select: { id: true, username: true, service: true, macAddress: true, routerId: true } });
+    if (subs.length === 0) return sendSuccess(res, { deleted: 0 });
+    const validIds = subs.map(s => s.id);
+    const usernames = subs.map(s => s.username);
+
+    // Same FK-safe teardown as a single delete, but for the whole batch in ONE transaction (no SSH,
+    // so it returns fast): drop live/history sessions, unlink payments, then delete the subscribers.
+    await prisma.$transaction([
+      prisma.onlineSession.deleteMany({ where: { subscriberId: { in: validIds } } }),
+      prisma.onlineSession.deleteMany({ where: { tenantId, username: { in: usernames } } }),
+      prisma.sessionRecord.deleteMany({ where: { subscriberId: { in: validIds } } }),
+      prisma.sessionRecord.deleteMany({ where: { tenantId, username: { in: usernames } } }),
+      prisma.payment.updateMany({ where: { subscriberId: { in: validIds } }, data: { subscriberId: null } }),
+      prisma.subscriber.deleteMany({ where: { id: { in: validIds } } }),
+    ]);
+
+    // RADIUS cleanup runs in the background so the response isn't held hostage to N SSH round-trips
+    // (which is what made bulk delete appear to "hang").
+    (async () => {
+      try {
+        const { radiusConfigured, removeSubscriberFromRadius } = await import('../utils/radius');
+        if (radiusConfigured()) {
+          for (const s of subs) {
+            if (s.service === 'PPPOE' || s.service === 'HOTSPOT') await removeSubscriberFromRadius(s as never).catch(() => {});
+          }
         }
-      }
-    } catch { /* best-effort */ }
-    const result = await prisma.subscriber.deleteMany({ where: { id: { in: ids }, tenantId } });
-    sendSuccess(res, { deleted: result.count });
+      } catch { /* best-effort */ }
+    })();
+
+    sendSuccess(res, { deleted: validIds.length });
   } catch (err) {
+    console.error('Bulk delete error:', err instanceof Error ? err.message : err);
     sendError(res, err instanceof Error ? err.message : 'Bulk delete failed', 500);
   }
 });
@@ -238,14 +259,15 @@ router.get('/counts', async (req: AuthRequest, res: Response) => {
     const tenantId = req.user?.tenantId;
     if (!tenantId) return sendSuccess(res, { total: 0, active: 0, routers: 0 });
     const now = new Date();
-    const [total, active, routers] = await Promise.all([
+    const [total, active, routers, online] = await Promise.all([
       prisma.subscriber.count({ where: { tenantId } }),
       prisma.subscriber.count({
         where: { tenantId, isActive: true, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
       }),
       prisma.mikrotikRouter.count({ where: { tenantId } }),
+      prisma.onlineSession.count({ where: { tenantId } }), // live "who's online" snapshot
     ]);
-    sendSuccess(res, { total, active, routers });
+    sendSuccess(res, { total, active, routers, online });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);
   }

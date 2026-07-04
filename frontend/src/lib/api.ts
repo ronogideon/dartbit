@@ -124,7 +124,7 @@ export const getAnalytics = (period: string) =>
   api.get(`/analytics/overview?period=${period}`).then((r) => r.data.data as TenantAnalytics);
 
 export const getTenants = () => api.get('/tenants').then((r) => r.data.data);
-export const getSidebarCounts = () => api.get('/subscribers/counts').then((r) => r.data.data as { total: number; active: number; routers: number });
+export const getSidebarCounts = () => api.get('/subscribers/counts').then((r) => r.data.data as { total: number; active: number; routers: number; online: number });
 export const getTenantStats = () => api.get('/tenants/stats').then((r) => r.data.data);
 export const createTenant = (data: unknown) => api.post('/tenants', data).then((r) => r.data.data);
 export const deleteTenant = (id: string) => api.delete(`/tenants/${id}`).then((r) => r.data.data);

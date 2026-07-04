@@ -62,7 +62,7 @@ export default function Sidebar({
   });
   const badgeFor = (href: string): number | null => {
     if (!counts) return null;
-    if (href === '/active-users') return counts.active;
+    if (href === '/active-users') return counts.online;
     if (href === '/subscribers') return counts.total;
     if (href === '/routers') return counts.routers;
     return null;
