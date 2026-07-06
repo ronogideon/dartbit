@@ -15,6 +15,11 @@ export const authenticate = (req: AuthRequest, res: Response, next: NextFunction
   try {
     const payload = verifyToken(token);
     req.user = payload;
+    // Technician role (TENANT_VIEWER) is strictly read-only: allow safe methods, block all writes.
+    // Password reset flows run on /auth (unauthenticated) so they're unaffected.
+    if (payload.role === 'TENANT_VIEWER' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+      return sendError(res, 'Read-only access: technicians can view but not make changes.', 403);
+    }
     next();
   } catch {
     return sendError(res, 'Invalid or expired token', 401);

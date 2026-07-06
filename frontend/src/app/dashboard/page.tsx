@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getSubscribers, getRouters, getPayments, getOnlineSessions, getSmsBalance, getExpenseSummary } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import DashboardAnalytics from '@/components/DashboardAnalytics';
+import { useAuth } from '@/lib/auth';
 import SearchInput from '@/components/ui/SearchInput';
 import SubscriberLink from '@/components/ui/SubscriberLink';
 import { Users, Router, Activity, Wallet, TrendingUp, MessageSquare, CreditCard, Receipt, Eye, EyeOff } from 'lucide-react';
@@ -30,6 +31,8 @@ function StatCard({ title, value, icon: Icon, color, sensitive, hidden }: {
 }
 
 export default function DashboardPage() {
+  const { user } = useAuth();
+  const isTechnician = user?.role === 'TENANT_VIEWER';
   const { data: subscribers = [] } = useQuery({ queryKey: ['subscribers'], queryFn: getSubscribers });
   const { data: routers = [] } = useQuery({ queryKey: ['routers'], queryFn: getRouters });
   const { data: payments = [] } = useQuery({ queryKey: ['payments'], queryFn: getPayments });
@@ -206,7 +209,7 @@ export default function DashboardPage() {
         />
       </div>
 
-      <DashboardAnalytics />
+      {!isTechnician && <DashboardAnalytics />}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Recent Payments */}

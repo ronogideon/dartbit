@@ -66,9 +66,13 @@ export default function DashboardAnalytics() {
               <ResponsiveContainer width="100%" height={220}>
                 <BarChart data={data.paymentTrend}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" className="dark:opacity-20" />
-                  <XAxis dataKey="label" fontSize={11} stroke="#9ca3af" interval="preserveStartEnd" minTickGap={16} />
-                  <YAxis fontSize={11} stroke="#9ca3af" />
-                  <Tooltip formatter={(v: number, name: string) => [`KES ${Number(v).toLocaleString()}`, name === 'hotspot' ? 'Hotspot' : 'PPPoE']} />
+                  <XAxis dataKey="label" fontSize={11} stroke="#9ca3af" tick={{ fill: '#6b7280', fontSize: 11, fontWeight: 500 }} interval="preserveStartEnd" minTickGap={16} />
+                  <YAxis fontSize={11} stroke="#9ca3af" tick={{ fill: '#6b7280', fontSize: 11 }} />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: '#ffffff', border: '1px solid #e5e7eb', borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+                    labelStyle={{ color: '#111827', fontWeight: 700, marginBottom: 4 }}
+                    itemStyle={{ fontWeight: 600 }}
+                    formatter={(v: number, name: string) => [`KES ${Number(v).toLocaleString()}`, name === 'hotspot' ? 'Hotspot' : 'PPPoE']} />
                   <Legend formatter={(val: string) => (val === 'hotspot' ? 'Hotspot' : 'PPPoE')} iconType="circle" wrapperStyle={{ fontSize: 12 }} />
                   <Bar dataKey="pppoe" stackId="pay" fill="#1d4ed8" />
                   <Bar dataKey="hotspot" stackId="pay" fill="#7dd3fc" radius={[4, 4, 0, 0]} />

@@ -84,7 +84,10 @@ export default function Sidebar({
     });
   };
 
-  const items = user?.role === 'SUPERADMIN' ? [...superAdminItems, ...navItems] : navItems;
+  // Technicians (read-only) only get the views relevant to them: dashboard, live users, subscribers, routers.
+  const TECH_ALLOWED = ['/dashboard', '/active-users', '/subscribers', '/routers'];
+  const baseItems = user?.role === 'TENANT_VIEWER' ? navItems.filter(i => TECH_ALLOWED.includes(i.href)) : navItems;
+  const items = user?.role === 'SUPERADMIN' ? [...superAdminItems, ...navItems] : baseItems;
 
   return (
     <>

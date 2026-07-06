@@ -988,10 +988,10 @@ function UsersTab() {
                       <select
                         value={u.role}
                         onChange={(e) => updateMut.mutate({ id: u.id, data: { role: e.target.value } })}
-                        className="bg-transparent border border-gray-200 dark:border-gray-700 rounded px-2 py-1 text-xs"
+                        className="bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-xs font-medium"
                       >
                         <option value="TENANT_ADMIN">Admin</option>
-                        <option value="TENANT_VIEWER">Viewer</option>
+                        <option value="TENANT_VIEWER">Technician</option>
                       </select>
                     </td>
                     <td className="py-3">
@@ -1027,7 +1027,7 @@ function UsersTab() {
           </div>
         )}
         <p className="text-xs text-gray-400 mt-4">
-          <span className="font-medium">Admin</span> has full access. <span className="font-medium">Viewer</span> can see data but not make changes.
+          <span className="font-medium">Admin</span> has full access. <span className="font-medium">Technician</span> gets a read-only view of Mikrotiks, users and their online/offline status and expiry — no editing.
         </p>
       </div>
 
@@ -1047,7 +1047,7 @@ function UsersTab() {
             <div>
               <label className="label">Role</label>
               <select className="input" value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value }))}>
-                <option value="TENANT_VIEWER">Viewer (read-only)</option>
+                <option value="TENANT_VIEWER">Technician (read-only)</option>
                 <option value="TENANT_ADMIN">Admin (full access)</option>
               </select>
             </div>
