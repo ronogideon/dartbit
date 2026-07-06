@@ -161,20 +161,24 @@ export default function DashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mb-8">
-        <StatCard
+        {!isTechnician && (
+          <StatCard
           title={`Earned in ${monthLabel}`}
           value={`KES ${earnedThisMonth.toLocaleString()}`}
           icon={TrendingUp}
           color="bg-green-600"
           sensitive hidden={hideMoney}
         />
-        <StatCard
+        )}
+        {!isTechnician && (
+          <StatCard
           title="SMS Balance"
           value={smsBalance ? (smsBalance.mode === 'WALLET' ? `KES ${(smsBalance.balanceKES ?? 0).toLocaleString()}` : (smsBalance.balance != null ? smsBalance.balance.toLocaleString() : "—")) : '—'}
           icon={MessageSquare}
           color="bg-indigo-600"
           sensitive hidden={hideMoney}
         />
+        )}
         <StatCard
           title="Active / Total Subscribers"
           value={`${activeSubscribers} / ${subscribers.length}`}
@@ -193,20 +197,24 @@ export default function DashboardPage() {
           icon={Router}
           color="bg-orange-600"
         />
-        <StatCard
+        {!isTechnician && (
+          <StatCard
           title={`Expenses in ${monthLabel}`}
           value={`KES ${expensesThisMonth.toLocaleString()}`}
           icon={Receipt}
           color="bg-rose-600"
           sensitive hidden={hideMoney}
         />
-        <StatCard
+        )}
+        {!isTechnician && (
+          <StatCard
           title={`Profit in ${monthLabel}`}
           value={`KES ${profit.toLocaleString()}`}
           icon={Wallet}
           color={profit >= 0 ? 'bg-emerald-600' : 'bg-red-600'}
           sensitive hidden={hideMoney}
         />
+        )}
       </div>
 
       {!isTechnician && <DashboardAnalytics />}

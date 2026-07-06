@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getRouters, linkRouter, updateRouter, deleteRouter, getProvisionConfig, saveProvisionConfig, rebootRouter, changeRouterIdentity, updateRouterLanPorts, getRouterInterfaces, reprovisionRouter, getRouterZtpCommand, getRouterVpn, provisionRouterVpn, openWinbox, closeWinbox, getRouterOverview, getSubscribers } from '@/lib/api';
+import { useAuth } from '@/lib/auth';
 import LinkWizard from '@/components/LinkWizard';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
@@ -710,6 +711,8 @@ function RouterDetailModal({ router, isOpen, onClose }: { router: { id: string; 
 }
 
 export default function RoutersPage() {
+  const { user: authUser } = useAuth();
+  const isTechnician = authUser?.role === 'TENANT_VIEWER';
   const qc = useQueryClient();
   const [modalOpen, setModalOpen] = useState(false);
   const [bootstrapModal, setBootstrapModal] = useState<{ apiKey: string; command: string; routerId: string } | null>(null);
@@ -767,9 +770,11 @@ export default function RoutersPage() {
           <h1 className="text-2xl font-bold">Routers</h1>
           <p className="text-sm text-gray-500 mt-1">{allRouters.length} router{allRouters.length !== 1 ? 's' : ''} configured</p>
         </div>
-        <button onClick={() => { setEditing(null); setModalOpen(true); }} className="btn-primary flex items-center gap-2">
-          <Plus size={16} /> Link Router
-        </button>
+        {!isTechnician && (
+          <button onClick={() => { setEditing(null); setModalOpen(true); }} className="btn-primary flex items-center gap-2">
+            <Plus size={16} /> Link Router
+          </button>
+        )}
       </div>
 
       <div className="mb-4 max-w-md">
@@ -793,7 +798,7 @@ export default function RoutersPage() {
           <Terminal size={40} className="mx-auto text-gray-300 mb-3" />
           <p className="font-medium text-gray-500">No routers linked yet</p>
           <p className="text-sm text-gray-400 mt-1">Click "Link Router" to connect your first MikroTik</p>
-          <button onClick={() => setModalOpen(true)} className="btn-primary mt-4 inline-flex items-center gap-2"><Plus size={16} /> Link Router</button>
+          {!isTechnician && <button onClick={() => setModalOpen(true)} className="btn-primary mt-4 inline-flex items-center gap-2"><Plus size={16} /> Link Router</button>}
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -807,12 +812,14 @@ export default function RoutersPage() {
                 </div>
                 <div className="flex items-center gap-2 ml-2 shrink-0">
                   <span className={r.status === 'ONLINE' ? 'badge-green' : r.status === 'OFFLINE' ? 'badge-red' : 'badge-yellow'}>{r.status}</span>
-                  <RouterOptionsMenu
-                    router={r}
-                    onReboot={() => rebootMut.mutate(r.id)}
-                    onEdit={() => openEdit(r)}
-                    onDelete={() => setDeleteId(r.id)}
-                  />
+                  {!isTechnician && (
+                    <RouterOptionsMenu
+                      router={r}
+                      onReboot={() => rebootMut.mutate(r.id)}
+                      onEdit={() => openEdit(r)}
+                      onDelete={() => setDeleteId(r.id)}
+                    />
+                  )}
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-2 mb-2 cursor-pointer" onClick={() => setDetailRouter(r)}>

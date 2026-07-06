@@ -7,6 +7,7 @@ import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import SubscriberDetail from '@/components/SubscriberDetail';
 import ImportUsersModal from '@/components/ImportUsersModal';
+import { useAuth } from '@/lib/auth';
 import { expiryBadge, timeAgo } from '@/lib/format';
 
 // Time-left pill colors: text close to the indicator, on a near-opaque tinted background.
@@ -57,6 +58,8 @@ export default function SubscribersPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [editing, setEditing] = useState<Subscriber | null>(null);
   const [form, setForm] = useState(emptyForm);
+  const { user } = useAuth();
+  const isTechnician = user?.role === 'TENANT_VIEWER';
   const [importOpen, setImportOpen] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -226,15 +229,17 @@ export default function SubscribersPage() {
           <h1 className="text-2xl font-bold">Subscribers</h1>
           <p className="text-sm text-gray-500 mt-1">{(subscribers as Subscriber[]).length} total subscribers</p>
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => setImportOpen(true)}
-            className="btn-secondary flex items-center gap-2" title="Import subscribers from a CSV file">
-            <Upload size={16} /> Import users
-          </button>
-          <button onClick={openCreate} className="btn-primary flex items-center gap-2">
-            <Plus size={16} /> Add Subscriber
-          </button>
-        </div>
+        {!isTechnician && (
+          <div className="flex items-center gap-2">
+            <button onClick={() => setImportOpen(true)}
+              className="btn-secondary flex items-center gap-2" title="Import subscribers from a CSV file">
+              <Upload size={16} /> Import users
+            </button>
+            <button onClick={openCreate} className="btn-primary flex items-center gap-2">
+              <Plus size={16} /> Add Subscriber
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Service tabs with count bubbles */}
@@ -277,10 +282,12 @@ export default function SubscribersPage() {
                   className="btn-secondary flex items-center gap-2 text-sm disabled:opacity-50">
                   <Download size={15} /> Export selected
                 </button>
-                <button onClick={() => setConfirmBulkDelete(true)} disabled={selected.size === 0}
-                  className="btn-secondary flex items-center gap-2 text-sm text-red-600 border-red-300 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50">
-                  <Trash2 size={15} /> Delete selected
-                </button>
+                {!isTechnician && (
+                  <button onClick={() => setConfirmBulkDelete(true)} disabled={selected.size === 0}
+                    className="btn-secondary flex items-center gap-2 text-sm text-red-600 border-red-300 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50">
+                    <Trash2 size={15} /> Delete selected
+                  </button>
+                )}
               </div>
             </div>
           )}
@@ -328,8 +335,12 @@ export default function SubscribersPage() {
                     </td>
                     <td className="table-td">
                       <div className="flex items-center gap-2">
-                        <button onClick={() => openEdit(s)} className="p-1.5 text-gray-400 hover:text-blue-600 transition-colors"><Edit2 size={15} /></button>
-                        <button onClick={() => setDeleteId(s.id)} className="p-1.5 text-gray-400 hover:text-red-600 transition-colors"><Trash2 size={15} /></button>
+                        {!isTechnician && (
+                          <>
+                            <button onClick={() => openEdit(s)} className="p-1.5 text-gray-400 hover:text-blue-600 transition-colors"><Edit2 size={15} /></button>
+                            <button onClick={() => setDeleteId(s.id)} className="p-1.5 text-gray-400 hover:text-red-600 transition-colors"><Trash2 size={15} /></button>
+                          </>
+                        )}
                         {selectMode && (
                           <button onClick={() => toggleSelect(s.id)} className="p-1.5 text-gray-400 hover:text-blue-600 transition-colors" title="Select">
                             {selected.has(s.id) ? <CheckSquare size={16} className="text-blue-600" /> : <Square size={16} />}
