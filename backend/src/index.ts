@@ -94,8 +94,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.97', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.97', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.10.98', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.10.98', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -127,7 +127,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.10.97 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.10.98 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -857,6 +857,9 @@ async function patchDatabase() {
     await safeExec(prisma, 'Disbursement conv idx', `CREATE INDEX IF NOT EXISTS "Disbursement_conversationId_idx" ON "Disbursement"("conversationId")`);
     await safeExec(prisma, 'Router provisionedAt', `ALTER TABLE "MikrotikRouter" ADD COLUMN IF NOT EXISTS "provisionedAt" TIMESTAMP(3)`);
     await safeExec(prisma, 'User mustChangePassword', `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "mustChangePassword" BOOLEAN NOT NULL DEFAULT false`);
+    // One-time backfill: tenant admins created before phones were saved on the User record get their
+    // phone from the tenant they signed up with (so password-reset SMS has a number to use).
+    await safeExec(prisma, 'Backfill admin phones', `UPDATE "User" u SET phone = t.phone FROM "Tenant" t WHERE u."tenantId" = t.id AND u.role = 'TENANT_ADMIN' AND (u.phone IS NULL OR u.phone = '') AND t.phone IS NOT NULL AND t.phone <> ''`);
     await safeExec(prisma, 'Announcement table', `CREATE TABLE IF NOT EXISTS "Announcement" (
         "id" TEXT PRIMARY KEY,
         "title" TEXT NOT NULL,

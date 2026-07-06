@@ -136,8 +136,8 @@ export const getBillingHistory = () => api.get('/billing/history').then((r) => r
 export const billingCheckout = () => api.post('/billing/checkout', {}).then((r) => r.data.data);
 export const billingVerify = (reference: string) => api.get(`/billing/verify/${reference}`).then((r) => r.data.data);
 export const getSystemUsers = () => api.get('/users').then((r) => r.data.data);
-export const createSystemUser = (data: { name: string; email: string; role: string }) => api.post('/users', data).then((r) => r.data.data);
-export const updateSystemUser = (id: string, data: { name?: string; role?: string; isActive?: boolean }) => api.put(`/users/${id}`, data).then((r) => r.data.data);
+export const createSystemUser = (data: { name: string; email: string; phone?: string; role: string }) => api.post('/users', data).then((r) => r.data.data);
+export const updateSystemUser = (id: string, data: { name?: string; phone?: string; role?: string; isActive?: boolean }) => api.put(`/users/${id}`, data).then((r) => r.data.data);
 export const resetSystemUserPassword = (id: string) => api.post(`/users/${id}/reset-password`, {}).then((r) => r.data.data);
 export const changeSystemUserPassword = (id: string, newPassword: string, currentPassword?: string) =>
   api.post(`/users/${id}/change-password`, { newPassword, currentPassword }).then((r) => r.data.data);

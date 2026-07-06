@@ -83,6 +83,7 @@ router.post('/', async (req: Request, res: Response) => {
           email,
           password: hashedPassword,
           name: adminName,
+          phone,
           role: 'TENANT_ADMIN',
           tenantId: tenant.id,
         },

@@ -899,7 +899,7 @@ function UsersTab() {
   const qc = useQueryClient();
   const { data: users, isLoading } = useQuery({ queryKey: ['system-users'], queryFn: getSystemUsers });
   const [showAdd, setShowAdd] = useState(false);
-  const [form, setForm] = useState({ name: '', email: '', role: 'TENANT_VIEWER' });
+  const [form, setForm] = useState({ name: '', email: '', phone: '', role: 'TENANT_VIEWER' });
   const [tempPassword, setTempPassword] = useState<{ email: string; password: string } | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -910,14 +910,14 @@ function UsersTab() {
     onSuccess: (res: { user: { email: string }; tempPassword: string }) => {
       invalidate();
       setShowAdd(false);
-      setForm({ name: '', email: '', role: 'TENANT_VIEWER' });
+      setForm({ name: '', email: '', phone: '', role: 'TENANT_VIEWER' });
       setTempPassword({ email: res.user.email, password: res.tempPassword });
     },
     onError: (e: { response?: { data?: { error?: string } } }) => toast.error(e?.response?.data?.error || 'Failed to create user'),
   });
 
   const updateMut = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: { role?: string; isActive?: boolean } }) => updateSystemUser(id, data),
+    mutationFn: ({ id, data }: { id: string; data: { name?: string; phone?: string; role?: string; isActive?: boolean } }) => updateSystemUser(id, data),
     onSuccess: () => { invalidate(); toast.success('Updated'); },
     onError: (e: { response?: { data?: { error?: string } } }) => toast.error(e?.response?.data?.error || 'Failed'),
   });
@@ -980,10 +980,18 @@ function UsersTab() {
                 </tr>
               </thead>
               <tbody>
-                {users.map((u: { id: string; name: string; email: string; role: string; isActive: boolean }) => (
+                {users.map((u: { id: string; name: string; email: string; phone?: string | null; role: string; isActive: boolean }) => (
                   <tr key={u.id} className="border-b border-gray-100 dark:border-gray-800/50">
                     <td className="py-3 font-medium">{u.name}</td>
-                    <td className="py-3 text-gray-500">{u.email}</td>
+                    <td className="py-3 text-gray-500">
+                      <div>{u.email}</div>
+                      <input
+                        defaultValue={u.phone || ''}
+                        onBlur={(e) => { const v = e.target.value.trim(); if (v !== (u.phone || '')) updateMut.mutate({ id: u.id, data: { phone: v } }); }}
+                        placeholder="+ add phone (for reset SMS)"
+                        className="mt-1 bg-transparent border border-gray-200 dark:border-gray-700 rounded px-2 py-0.5 text-xs w-40 focus:border-blue-400 outline-none"
+                      />
+                    </td>
                     <td className="py-3">
                       <select
                         value={u.role}
@@ -1043,6 +1051,10 @@ function UsersTab() {
             <div>
               <label className="label">Email</label>
               <input className="input" type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="jane@example.com" />
+            </div>
+            <div>
+              <label className="label">Phone <span className="text-gray-400 font-normal">(for password-reset SMS)</span></label>
+              <input className="input" type="tel" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="07XX XXX XXX" />
             </div>
             <div>
               <label className="label">Role</label>

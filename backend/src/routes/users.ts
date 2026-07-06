@@ -35,7 +35,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     if (!tenantId) return sendError(res, 'No tenant', 400);
     const users = await prisma.user.findMany({
       where: { tenantId, role: { in: ['TENANT_ADMIN', 'TENANT_VIEWER'] } },
-      select: { id: true, email: true, name: true, role: true, isActive: true, createdAt: true },
+      select: { id: true, email: true, name: true, phone: true, role: true, isActive: true, createdAt: true },
       orderBy: { createdAt: 'asc' },
     });
     sendSuccess(res, users);
@@ -47,6 +47,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 const createSchema = z.object({
   name: z.string().min(2),
   email: z.string().email(),
+  phone: z.string().optional(),
   role: z.enum(['TENANT_ADMIN', 'TENANT_VIEWER']),
 });
 
@@ -59,7 +60,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
 
     const parsed = createSchema.safeParse(req.body);
     if (!parsed.success) return sendError(res, parsed.error.errors[0].message, 400);
-    const { name, email, role } = parsed.data;
+    const { name, email, phone, role } = parsed.data;
 
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) return sendError(res, 'A user with that email already exists', 409);
@@ -67,8 +68,8 @@ router.post('/', async (req: AuthRequest, res: Response) => {
     const tempPassword = genTempPassword();
     const hashed = await bcrypt.hash(tempPassword, 10);
     const user = await prisma.user.create({
-      data: { name, email, role, tenantId, password: hashed, isActive: true },
-      select: { id: true, email: true, name: true, role: true, isActive: true, createdAt: true },
+      data: { name, email, phone: phone || null, role, tenantId, password: hashed, isActive: true },
+      select: { id: true, email: true, name: true, phone: true, role: true, isActive: true, createdAt: true },
     });
 
     // Return the temp password ONCE so the admin can share it. Never stored in plain text.
@@ -80,6 +81,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
 
 const updateSchema = z.object({
   name: z.string().min(2).optional(),
+  phone: z.string().optional(),
   role: z.enum(['TENANT_ADMIN', 'TENANT_VIEWER']).optional(),
   isActive: z.boolean().optional(),
 });
@@ -103,7 +105,7 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
     const user = await prisma.user.update({
       where: { id: target.id },
       data: parsed.data,
-      select: { id: true, email: true, name: true, role: true, isActive: true, createdAt: true },
+      select: { id: true, email: true, name: true, phone: true, role: true, isActive: true, createdAt: true },
     });
     sendSuccess(res, user);
   } catch (err) {
