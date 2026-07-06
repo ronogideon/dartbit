@@ -24,6 +24,7 @@ export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
   const panelRef = useRef<HTMLDivElement>(null);
 
   const isTenantAdmin = user?.role === 'TENANT_ADMIN';
+  const isTechnician = user?.role === 'TENANT_VIEWER';
   const { data: tenant } = useQuery({
     queryKey: ['tenant-info'],
     queryFn: getTenantInfo,
@@ -107,13 +108,15 @@ export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
 
               {/* Account links */}
               <div className="p-1.5">
-                <Link
-                  href="/settings"
-                  onClick={() => setAccountOpen(false)}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
-                >
-                  <SettingsIcon size={16} /> Tenant account &amp; settings
-                </Link>
+                {!isTechnician && (
+                  <Link
+                    href="/settings"
+                    onClick={() => setAccountOpen(false)}
+                    className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
+                  >
+                    <SettingsIcon size={16} /> Tenant account &amp; settings
+                  </Link>
+                )}
                 {isTenantAdmin && (
                   <Link
                     href="/settings/appearance"

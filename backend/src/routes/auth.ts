@@ -176,14 +176,16 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
     if (scope === 'STAFF') {
       // Staff passwords are hashed (can't be resent) — issue a TEMPORARY password and force a change.
       const user = await prisma.user.findUnique({ where: { email: identifier.toLowerCase().trim() } });
-      if (!user || !user.tenantId || !user.phone) return generic();
+      if (!user) { console.log('[forgot-password] STAFF: no account for', identifier); return generic(); }
+      if (!user.tenantId || !user.phone) { console.log(`[forgot-password] STAFF ${user.email}: cannot SMS — tenantId=${!!user.tenantId} phone=${user.phone ? 'set' : 'MISSING'}`); return generic(); }
       const temp = crypto.randomBytes(4).toString('hex'); // 8-char temporary password
       await prisma.user.update({ where: { id: user.id }, data: { password: await bcrypt.hash(temp, 10) } });
       await prisma.$executeRawUnsafe(`UPDATE "User" SET "mustChangePassword"=true WHERE id=$1`, user.id);
-      await sendNotification({
+      const r = await sendNotification({
         tenantId: user.tenantId, phone: user.phone, category: 'OTHER', force: true,
         body: `Your temporary Dartbit password is: ${temp}\nLog in with it, then set a new password.`,
-      }).catch(() => {});
+      }).catch(e => ({ ok: false, reason: e instanceof Error ? e.message : String(e) }));
+      console.log(`[forgot-password] STAFF ${user.email} → SMS ...${user.phone.slice(-4)}:`, JSON.stringify(r));
       return generic();
     }
 
@@ -195,13 +197,15 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
     }
     if (!tenantId) return generic();
     const subscriber = await prisma.subscriber.findFirst({ where: { username: identifier.trim(), tenantId } });
-    if (!subscriber || !subscriber.phone) return generic();
+    if (!subscriber) { console.log('[forgot-password] CUSTOMER: no subscriber for', identifier); return generic(); }
+    if (!subscriber.phone) { console.log(`[forgot-password] CUSTOMER ${subscriber.username}: no phone on account`); return generic(); }
     const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true } });
-    await sendNotification({
+    const r = await sendNotification({
       tenantId, phone: subscriber.phone, subscriberId: subscriber.id, username: subscriber.username,
       category: 'OTHER', force: true,
       body: `${tenant?.name || 'Internet'} login\nUsername: ${subscriber.username}\nPassword: ${subscriber.secret}`,
-    }).catch(() => {});
+    }).catch(e => ({ ok: false, reason: e instanceof Error ? e.message : String(e) }));
+    console.log(`[forgot-password] CUSTOMER ${subscriber.username} → SMS ...${subscriber.phone.slice(-4)}:`, JSON.stringify(r));
     return generic();
   } catch {
     return sendSuccess(res, { ok: true, message: 'If the account exists, your password has been sent by SMS.' });
