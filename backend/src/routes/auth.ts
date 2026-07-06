@@ -59,7 +59,7 @@ router.post('/login', async (req: Request, res: Response) => {
 
     sendSuccess(res, {
       token,
-      user: { id: user.id, email: user.email, name: user.name, role: user.role, tenantId: user.tenantId },
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, tenantId: user.tenantId, mustChangePassword: user.mustChangePassword },
       subdomain,
     });
   } catch {
@@ -165,49 +165,46 @@ const forgotSchema = z.object({
 });
 
 router.post('/forgot-password', async (req: Request, res: Response) => {
-  const generic = () => sendSuccess(res, { ok: true, message: 'If the account exists, a reset code has been sent.' });
+  const generic = () => sendSuccess(res, { ok: true, message: 'If the account exists, your password has been sent by SMS.' });
   try {
     const parsed = forgotSchema.safeParse(req.body);
     if (!parsed.success) return generic();
     const { scope, identifier } = parsed.data;
     let tenantId = parsed.data.tenantId || undefined;
-    let subjectId = '';
-    let phone: string | null | undefined;
+    const { sendNotification } = await import('../utils/notifications');
 
     if (scope === 'STAFF') {
+      // Staff passwords are hashed (can't be resent) — issue a TEMPORARY password and force a change.
       const user = await prisma.user.findUnique({ where: { email: identifier.toLowerCase().trim() } });
-      if (!user || !user.tenantId || !user.phone) return generic(); // need a tenant gateway + a phone
-      subjectId = user.id; phone = user.phone; tenantId = user.tenantId;
-    } else {
-      if (!tenantId) {
-        const sub = extractSubdomain(req);
-        if (sub) tenantId = (await prisma.tenant.findUnique({ where: { subdomain: sub } }))?.id;
-      }
-      if (!tenantId) return generic();
-      const subscriber = await prisma.subscriber.findFirst({ where: { username: identifier.trim(), tenantId } });
-      if (!subscriber || !subscriber.phone) return generic();
-      subjectId = subscriber.id; phone = subscriber.phone;
+      if (!user || !user.tenantId || !user.phone) return generic();
+      const temp = crypto.randomBytes(4).toString('hex'); // 8-char temporary password
+      await prisma.user.update({ where: { id: user.id }, data: { password: await bcrypt.hash(temp, 10) } });
+      await prisma.$executeRawUnsafe(`UPDATE "User" SET "mustChangePassword"=true WHERE id=$1`, user.id);
+      await sendNotification({
+        tenantId: user.tenantId, phone: user.phone, category: 'OTHER', force: true,
+        body: `Your temporary Dartbit password is: ${temp}\nLog in with it, then set a new password.`,
+      }).catch(() => {});
+      return generic();
     }
 
-    const code = genResetCode();
-    const codeHash = await bcrypt.hash(code, 10);
-    await prisma.$executeRawUnsafe(`UPDATE "PasswordResetCode" SET "usedAt"=NOW() WHERE scope=$1 AND "subjectId"=$2 AND "usedAt" IS NULL`, scope, subjectId);
-    await prisma.$executeRawUnsafe(
-      `INSERT INTO "PasswordResetCode" (id, scope, "subjectId", "codeHash", "expiresAt", "createdAt") VALUES ($1,$2,$3,$4,$5,NOW())`,
-      crypto.randomUUID(), scope, subjectId, codeHash, new Date(Date.now() + 15 * 60 * 1000),
-    );
-
-    const { sendNotification } = await import('../utils/notifications');
+    // CUSTOMER: never change the secret — that needs router/RADIUS reconfiguration and would drop
+    // their connection. Just re-send the existing password (it's stored in the clear for RADIUS).
+    if (!tenantId) {
+      const sub = extractSubdomain(req);
+      if (sub) tenantId = (await prisma.tenant.findUnique({ where: { subdomain: sub } }))?.id;
+    }
+    if (!tenantId) return generic();
+    const subscriber = await prisma.subscriber.findFirst({ where: { username: identifier.trim(), tenantId } });
+    if (!subscriber || !subscriber.phone) return generic();
+    const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true } });
     await sendNotification({
-      tenantId: tenantId!,
-      phone: phone!,
-      body: `Use this code to reset your password: ${code}`,
-      category: 'OTHER',
+      tenantId, phone: subscriber.phone, subscriberId: subscriber.id, username: subscriber.username,
+      category: 'OTHER', force: true,
+      body: `${tenant?.name || 'Internet'} login\nUsername: ${subscriber.username}\nPassword: ${subscriber.secret}`,
     }).catch(() => {});
-
     return generic();
   } catch {
-    return sendSuccess(res, { ok: true, message: 'If the account exists, a reset code has been sent.' });
+    return sendSuccess(res, { ok: true, message: 'If the account exists, your password has been sent by SMS.' });
   }
 });
 

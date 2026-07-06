@@ -172,6 +172,7 @@ router.post('/:id/change-password', async (req: AuthRequest, res: Response) => {
       }
     }
     await prisma.user.update({ where: { id: target.id }, data: { password: await bcrypt.hash(newPassword, 10) } });
+    await prisma.$executeRawUnsafe(`UPDATE "User" SET "mustChangePassword"=false WHERE id=$1`, target.id).catch(() => {});
     return sendSuccess(res, { ok: true });
   } catch (err) {
     return sendError(res, err instanceof Error ? err.message : 'Failed', 500);

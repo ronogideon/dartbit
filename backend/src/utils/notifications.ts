@@ -14,6 +14,7 @@ export interface SendNotifyArgs {
   phone: string;                  // any common Kenyan format; will be normalized
   body: string;
   category: Category;
+  force?: boolean;                // bypass the category-enabled check (transactional/auth messages)
   dedupKey?: string;              // if set, skip when a Message with this key already exists
   subscriberId?: string | null;
   username?: string | null;
@@ -49,8 +50,9 @@ export async function sendNotification(args: SendNotifyArgs): Promise<NotifyResu
   const { tenantId, phone, category, dedupKey, subscriberId, username } = args;
   let body = args.body;
 
-  // Category-level enabled check.
-  if (!(await isCategoryEnabled(tenantId, category))) {
+  // Category-level enabled check. `force` bypasses it for transactional messages (e.g. password
+  // reset) that must always send regardless of the tenant's category preferences.
+  if (!args.force && !(await isCategoryEnabled(tenantId, category))) {
     return { ok: false, skipped: true, reason: 'category disabled' };
   }
 

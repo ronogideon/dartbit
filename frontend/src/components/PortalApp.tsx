@@ -221,10 +221,10 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
                     className="w-full px-3 py-2 mb-3 border border-gray-700 rounded-lg bg-gray-800 text-white text-sm" />
                   <button type="button" disabled={fpLoading || !fpId} onClick={async () => {
                     setFpLoading(true);
-                    try { await forgotPassword(fpId.includes('@') ? 'STAFF' : 'CUSTOMER', fpId.trim()); toast.success('If the account exists, a code was sent by SMS.'); setFpStep(2); }
+                    try { const isStaff = fpId.includes('@'); await forgotPassword(isStaff ? 'STAFF' : 'CUSTOMER', fpId.trim()); toast.success(isStaff ? 'A temporary password was sent by SMS. Log in with it, then set a new one.' : 'Your password was sent by SMS.', { duration: 7000 }); setFpOpen(false); setFpId(''); }
                     catch { toast.error('Could not send code'); } finally { setFpLoading(false); }
                   }} className="w-full text-white py-2 rounded-lg text-sm disabled:opacity-50" style={{ background: accent }}>
-                    {fpLoading ? 'Sending…' : 'Send code'}
+                    {fpLoading ? 'Sending…' : 'Send my password'}
                   </button>
                 </>
               ) : (

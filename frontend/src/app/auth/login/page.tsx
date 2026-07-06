@@ -171,11 +171,11 @@ export default function LoginPage() {
                   setFpLoading(true);
                   try {
                     await forgotPassword(fpId.includes('@') ? 'STAFF' : 'CUSTOMER', fpId.trim());
-                    toast.success('If the account exists, a code was sent by SMS.');
-                    setFpStep(2);
+                    toast.success(fpId.includes('@') ? 'A temporary password was sent by SMS. Log in with it, then set a new one.' : 'Your password was sent by SMS.', { duration: 7000 });
+                    setFpOpen(false); setFpId('');
                   } catch { toast.error('Could not send code'); } finally { setFpLoading(false); }
                 }} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg text-sm disabled:opacity-50">
-                  {fpLoading ? 'Sending…' : 'Send code'}
+                  {fpLoading ? 'Sending…' : 'Send my password'}
                 </button>
               </>
             ) : (
