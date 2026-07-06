@@ -157,13 +157,20 @@ router.get('/packages', authSubscriber, async (req: SubReq, res: Response) => {
     const { tid, sid } = req.sub!;
     // Show only packages matching the subscriber's account type. Hotspot accounts see HOTSPOT
     // packages; PPPoE/Static accounts see wired packages (PPPOE + STATIC) — never cross-type.
-    const sub = await prisma.subscriber.findUnique({ where: { id: sid }, select: { service: true } });
+    const sub = await prisma.subscriber.findUnique({ where: { id: sid }, select: { service: true, packageId: true, package: { select: { id: true, price: true } } } });
     const allowedServices = sub?.service === 'HOTSPOT' ? ['HOTSPOT'] : ['PPPOE', 'STATIC'];
-    const pkgs = await prisma.package.findMany({
+    let pkgs = await prisma.package.findMany({
       where: { tenantId: tid, isActive: true, service: { in: allowedServices as ('PPPOE' | 'STATIC' | 'HOTSPOT')[] } },
       select: { id: true, name: true, price: true, validityMinutes: true, speedDownKbps: true, speedUpKbps: true, service: true },
       orderBy: { price: 'asc' },
     });
+    // Wired (PPPoE/Static) accounts: only offer the CURRENT package plus UPGRADES (higher price) —
+    // no mid-cycle downgrades. Hotspot accounts still see the full menu.
+    if (sub?.service !== 'HOTSPOT' && sub?.package) {
+      const floor = sub.package.price;
+      const currentId = sub.package.id;
+      pkgs = pkgs.filter(p => p.id === currentId || p.price > floor);
+    }
     res.json({ success: true, packages: pkgs });
   } catch {
     res.status(500).json({ success: false, error: 'Failed' });

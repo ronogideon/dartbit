@@ -298,10 +298,12 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
           <h2 className="text-sm font-semibold mb-3 text-gray-300 flex items-center gap-1.5"><Zap size={15} /> Renew / Buy a Package</h2>
           <div className="space-y-2 mb-3">
             {packages.map(p => (
-              <button key={p.id} onClick={() => setRenewPkg(p)} className={`w-full text-left p-3 rounded-xl border transition-colors ${renewPkg?.id === p.id ? 'border-blue-500 bg-blue-900/20' : 'border-gray-700 hover:border-gray-600'}`}>
+              <button key={p.id} onClick={() => setRenewPkg(p)}
+                style={renewPkg?.id === p.id ? { borderColor: accent, backgroundColor: `${accent}1a` } : undefined}
+                className={`w-full text-left p-3 rounded-xl border transition-colors ${renewPkg?.id === p.id ? '' : 'border-gray-700 hover:border-gray-600'}`}>
                 <div className="flex items-center justify-between">
                   <span className="font-medium">{p.name}</span>
-                  <span className="font-bold text-blue-400">KES {p.price.toFixed(0)}</span>
+                  <span className="font-bold" style={{ color: accent }}>KES {p.price.toFixed(0)}</span>
                 </div>
                 <div className="text-xs text-gray-500">{fmtDur(p.validityMinutes)} • {Math.round(p.speedDownKbps/1024)}Mbps</div>
               </button>
