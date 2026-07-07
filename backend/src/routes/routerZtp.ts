@@ -117,6 +117,11 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
       add(`:foreach p in=[/interface bridge port find interface="${port}"] do={ :local b [/interface bridge port get $p bridge]; :if ($b != "${bridge}") do={ /interface bridge port remove $p; :log info ("Dartbit: moved ${port} from " . $b . " to ${bridge}") } }`);
       add(`:if ([:len [/interface bridge port find interface="${port}" bridge="${bridge}"]] = 0) do={ /interface bridge port add bridge=${bridge} interface=${port} comment="Dartbit LAN port" }`);
     }
+    // Safety net: add every remaining LAN-side interface that isn't on ANY bridge yet — all ethernet
+    // except the WAN uplink, plus any wireless — into the bridge. Error-safe, so a freshly installed
+    // router ends up with every AP/LAN port on the one bridge even if not all were enumerated.
+    add(`:foreach i in=[/interface ethernet find where name!="${wan}"] do={ :local n [/interface ethernet get $i name]; :if ([:len [/interface bridge port find interface=$n]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$n comment="Dartbit LAN (auto)" } on-error={} } }`);
+    add(`:foreach w in=[/interface find where type="wlan"] do={ :local n [/interface get $w name]; :if ([:len [/interface bridge port find interface=$n]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$n comment="Dartbit WLAN (auto)" } on-error={} } }`);
     add('');
 
     // 2. LAN gateway IP
@@ -276,7 +281,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     //     captive portal can reach Dartbit without being caught by the force-redirect.
     add('# 6c. Backend whitelisting (must come before force-redirect rules)');
     // Add backend IPs to a firewall address list — used by the force-redirect rules below
-    add(`:foreach a in=[/ip firewall address-list find list="dartbit-backend"] do={ /ip firewall address-list remove $a }`);
+    add(`:do { /ip firewall address-list remove [find list="dartbit-backend"] } on-error={}`);
     for (const ip of allowIps) {
       add(`/ip firewall address-list add list=dartbit-backend address=${ip} comment="Dartbit backend"`);
     }
