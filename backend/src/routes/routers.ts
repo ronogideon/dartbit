@@ -426,7 +426,7 @@ router.get('/:id/link-status', async (req: AuthRequest, res: Response) => {
       lastSeenAt: r.lastSeenAt,
       interfaces: r.interfaces
         .filter(i => i.type === 'ether' || i.type === 'wlan' || i.type === 'vlan')
-        .map(i => ({ name: i.name, type: i.type })),
+        .map(i => ({ name: i.name, type: i.type, isWan: i.name === (r.wanInterface || 'ether1') })),
     });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);

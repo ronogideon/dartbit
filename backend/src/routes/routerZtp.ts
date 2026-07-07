@@ -551,6 +551,10 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // 13. Provisioning-complete signal — a clear log line on the router AND a callback so the
     // dashboard can confirm the reprovision actually FINISHED (not merely that it was delivered).
     add('# 13. Provisioning complete');
+    // Fire the heartbeat and interface report ONCE right now so the dashboard updates the moment the
+    // script finishes — the schedulers then take over (heartbeat first at +30s, interfaces at +60s).
+    add(`:do { /system script run dartbit-heartbeat } on-error={}`);
+    add(`:do { /system script run dartbit-interfaces } on-error={}`);
     add(`:log info "Dartbit: PROVISIONING COMPLETE"`);
     add(`:do { /tool fetch url="${backendUrl}/router/provision-done?apiKey=${apiKey}"${fetchFlags} output=none as-value } on-error={}`);
     add('');

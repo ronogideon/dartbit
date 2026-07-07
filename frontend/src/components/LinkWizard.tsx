@@ -114,12 +114,17 @@ export default function LinkWizard({ routerId, command, onDone }: { routerId: st
               <p className="text-sm text-gray-400 col-span-full">No selectable interfaces reported.</p>
             ) : interfaces.map(i => {
               const on = selected.includes(i.name);
+              const isWan = (i as { isWan?: boolean }).isWan;
               return (
-                <button key={i.name} onClick={() => toggle(i.name)}
-                  className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border text-sm transition ${on ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20' : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'}`}>
+                <button key={i.name} onClick={() => { if (!isWan) toggle(i.name); }} disabled={isWan}
+                  title={isWan ? 'WAN / uplink port — cannot be added to the bridge (it carries the internet)' : ''}
+                  className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border text-sm transition ${
+                    isWan ? 'border-gray-200 dark:border-gray-800 bg-gray-100 dark:bg-gray-800/50 text-gray-400 opacity-60 cursor-not-allowed'
+                      : on ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20'
+                        : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'}`}>
                   {i.type === 'wlan' ? <Wifi size={14} /> : <Cable size={14} />}
                   <span className="font-medium truncate">{i.name}</span>
-                  {on && <Check size={14} className="ml-auto text-blue-600" />}
+                  {isWan ? <span className="ml-auto text-[10px] uppercase tracking-wide">uplink</span> : on && <Check size={14} className="ml-auto text-blue-600" />}
                 </button>
               );
             })}
