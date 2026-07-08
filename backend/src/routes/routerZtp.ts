@@ -111,16 +111,20 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // 1. Bridge
     add('# 1. Bridge');
     add(`:if ([:len [/interface bridge find name="${bridge}"]] = 0) do={ /interface bridge add name=${bridge} comment="Dartbit LAN" }`);
+    // Runtime WAN detection: the interface carrying the active default route (resolving "gw%iface"
+    // notation and PPPoE-client WANs to the physical port). Used to keep the live uplink out of the
+    // bridge even if the stored config names a different port.
+    add(`:local wandet ""; :do { :local rt [/ip route find where dst-address="0.0.0.0/0" and active]; :if ([:len $rt] > 0) do={ :local gw [/ip route get [:pick $rt 0] immediate-gw]; :if ([:typeof $gw] = "str") do={ :local p [:find $gw "%"]; :if ([:typeof $p] = "num") do={ :set wandet [:pick $gw ($p+1) [:len $gw]] } else={ :set wandet $gw } } } } on-error={}; :do { :if ([:len [/interface pppoe-client find name=$wandet]] > 0) do={ :set wandet [/interface pppoe-client get [find name=$wandet] interface] } } on-error={}`);
     for (const port of lanInterfaces) {
       // First remove the port from ANY other bridge it might be on (this is the fix —
       // RouterOS silently rejects adding a port that's already on another bridge).
       add(`:foreach p in=[/interface bridge port find interface="${port}"] do={ :local b [/interface bridge port get $p bridge]; :if ($b != "${bridge}") do={ /interface bridge port remove $p; :log info ("Dartbit: moved ${port} from " . $b . " to ${bridge}") } }`);
-      add(`:if ([:len [/interface bridge port find interface="${port}" bridge="${bridge}"]] = 0) do={ /interface bridge port add bridge=${bridge} interface=${port} comment="Dartbit LAN port" }`);
+      add(`:if ("${port}" != $wandet && [:len [/interface bridge port find interface="${port}" bridge="${bridge}"]] = 0) do={ /interface bridge port add bridge=${bridge} interface=${port} comment="Dartbit LAN port" }`);
     }
     // Safety net: add every remaining LAN-side interface that isn't on ANY bridge yet — all ethernet
     // except the WAN uplink, plus any wireless — into the bridge. Error-safe, so a freshly installed
     // router ends up with every AP/LAN port on the one bridge even if not all were enumerated.
-    add(`:foreach i in=[/interface ethernet find where name!="${wan}"] do={ :local n [/interface ethernet get $i name]; :if ([:len [/interface bridge port find interface=$n]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$n comment="Dartbit LAN (auto)" } on-error={} } }`);
+    add(`:foreach i in=[/interface ethernet find where name!="${wan}"] do={ :local n [/interface ethernet get $i name]; :if ($n != $wandet && [:len [/interface bridge port find interface=$n]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$n comment="Dartbit LAN (auto)" } on-error={} } }`);
     add(`:foreach w in=[/interface find where type="wlan"] do={ :local n [/interface get $w name]; :if ([:len [/interface bridge port find interface=$n]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$n comment="Dartbit WLAN (auto)" } on-error={} } }`);
     add('');
 
@@ -483,7 +487,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add('# 9c. Interfaces reporter');
     add(`:foreach s in=[/system scheduler find comment="Dartbit interfaces"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-interfaces"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-interfaces policy=read,write,test source={:local data ""; :foreach i in=[/interface find where !disabled && (type=ether || type=wlan || type=vlan || type=bridge)] do={ :local n [/interface get \$i name]; :local t [/interface get \$i type]; :set data (\$data . \$n . ":" . \$t . ","); }; :local url ("${backendUrl}/router/interfaces?apiKey=${apiKey}&data=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
+    add(`/system script add name=dartbit-interfaces policy=read,write,test source={:local data ""; :foreach i in=[/interface find where !disabled && (type=ether || type=wlan || type=vlan || type=bridge)] do={ :local n [/interface get \$i name]; :local t [/interface get \$i type]; :set data (\$data . \$n . ":" . \$t . ","); }; :local wan ""; :do { :local rt [/ip route find where dst-address="0.0.0.0/0" and active]; :if ([:len \$rt] > 0) do={ :local gw [/ip route get [:pick \$rt 0] immediate-gw]; :if ([:typeof \$gw] = "str") do={ :local p [:find \$gw "%"]; :if ([:typeof \$p] = "num") do={ :set wan [:pick \$gw (\$p+1) [:len \$gw]] } else={ :set wan \$gw } } } } on-error={}; :do { :if ([:len [/interface pppoe-client find name=\$wan]] > 0) do={ :set wan [/interface pppoe-client get [find name=\$wan] interface] } } on-error={}; :local url ("${backendUrl}/router/interfaces?apiKey=${apiKey}&wan=" . \$wan . "&data=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
     add(`/system scheduler add name=dartbit-interfaces interval=60s on-event="/system script run dartbit-interfaces" comment="Dartbit interfaces"`);
     add('');
 
@@ -661,6 +665,20 @@ router.all('/interfaces', async (req: Request, res: Response) => {
     // Parse "name:type,name:type,"
     const raw = String(req.query.data || req.body?.data || '').replace(/[^a-zA-Z0-9_\-\.,:]/g, '');
     const entries = raw.split(',').filter(Boolean);
+
+    // Auto-detected WAN (the interface carrying the active default route, reported by the router).
+    // Persist it so the ZTP bridge-exclusion and the wizard's isWan flag always protect the right port.
+    const detectedWan = String(req.query.wan || req.body?.wan || '').replace(/[^a-zA-Z0-9_\-\.]/g, '');
+    if (detectedWan) {
+      const cfg = await prisma.routerProvisioningConfig.findUnique({ where: { routerId: r.id } });
+      if (!cfg) {
+        await prisma.routerProvisioningConfig.create({ data: { routerId: r.id, wanInterface: detectedWan } });
+        console.log(`[interfaces] router ${r.name}: WAN auto-detected as ${detectedWan}`);
+      } else if (cfg.wanInterface !== detectedWan) {
+        await prisma.routerProvisioningConfig.update({ where: { routerId: r.id }, data: { wanInterface: detectedWan } });
+        console.log(`[interfaces] router ${r.name}: WAN updated ${cfg.wanInterface} → ${detectedWan} (auto-detected)`);
+      }
+    }
 
     // Wipe and rewrite — interfaces change rarely so this is fine
     await prisma.routerInterface.deleteMany({ where: { routerId: r.id } });

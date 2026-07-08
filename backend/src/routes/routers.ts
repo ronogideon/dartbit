@@ -415,10 +415,11 @@ router.get('/:id/link-status', async (req: AuthRequest, res: Response) => {
     const tenantId = req.user?.tenantId;
     const r = await prisma.mikrotikRouter.findUnique({
       where: { id: req.params.id },
-      include: { interfaces: true },
+      include: { interfaces: true, provConfig: true },
     });
     if (!r) return sendError(res, 'Router not found', 404);
     if (tenantId && r.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
+    const wan = r.provConfig?.wanInterface || 'ether1';
     sendSuccess(res, {
       stage: r.setupStage,
       status: r.status,
@@ -426,7 +427,7 @@ router.get('/:id/link-status', async (req: AuthRequest, res: Response) => {
       lastSeenAt: r.lastSeenAt,
       interfaces: r.interfaces
         .filter(i => i.type === 'ether' || i.type === 'wlan' || i.type === 'vlan')
-        .map(i => ({ name: i.name, type: i.type, isWan: i.name === (r.wanInterface || 'ether1') })),
+        .map(i => ({ name: i.name, type: i.type, isWan: i.name === wan })),
     });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);
