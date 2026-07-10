@@ -187,7 +187,7 @@ export function buildMikrotikWgConfig(opts: { wgIp: string; privateKey: string; 
     // failover script: prefer the v6 endpoint whenever the droplet is reachable over v6, fall back
     // to v4 when it isn't. Checked every 5 minutes and once immediately.
     lines.push(
-      `:do { /ipv6 settings set disable-ipv6=no } on-error={}`,
+      `:do { /ipv6 settings set disable-ipv6=no accept-router-advertisements=yes } on-error={}`,
       `:do { :if ([:len [/ipv6 dhcp-client find interface="${wan}"]] = 0) do={ /ipv6 dhcp-client add interface=${wan} request=address,prefix add-default-route=yes comment="Dartbit v6 uplink" } } on-error={}`,
       `:foreach s in=[/system script find name="dartbit-wg6"] do={ /system script remove \$s }`,
       `:foreach s in=[/system scheduler find name="dartbit-wg6"] do={ /system scheduler remove \$s }`,
