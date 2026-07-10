@@ -124,8 +124,8 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // Safety net: add every remaining LAN-side interface that isn't on ANY bridge yet — all ethernet
     // except the WAN uplink, plus any wireless — into the bridge. Error-safe, so a freshly installed
     // router ends up with every AP/LAN port on the one bridge even if not all were enumerated.
-    add(`:foreach i in=[/interface ethernet find where name!="${wan}"] do={ :local n [/interface ethernet get $i name]; :if ($n != $wandet && [:len [/interface bridge port find interface=$n]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$n comment="Dartbit LAN (auto)" } on-error={} } }`);
-    add(`:foreach w in=[/interface find where type="wlan"] do={ :local n [/interface get $w name]; :if ([:len [/interface bridge port find interface=$n]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$n comment="Dartbit WLAN (auto)" } on-error={} } }`);
+    add(`:foreach i in=[/interface ethernet find where name!="${wan}"] do={ :local n [/interface ethernet get $i name]; :if ($n != $wandet && [:len [/interface bridge port find interface=$n]] = 0 && [:len [/ip address find interface=$n]] = 0 && [:len [/ip dhcp-client find interface=$n]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$n comment="Dartbit LAN (auto)" } on-error={} } }`);
+    add(`:foreach w in=[/interface find where type="wlan"] do={ :local n [/interface get $w name]; :if ([:len [/interface bridge port find interface=$n]] = 0 && [:len [/ip address find interface=$n]] = 0 && [:len [/ip dhcp-client find interface=$n]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$n comment="Dartbit WLAN (auto)" } on-error={} } }`);
     add('');
 
     // 2. LAN gateway IP
@@ -397,7 +397,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
           add(`:foreach p in=[/interface wireguard peers find comment="Dartbit VPN"] do={ /interface wireguard peers remove $p }`);
           add(`:foreach i in=[/interface wireguard find name="dartbit-vpn"] do={ /interface wireguard remove $i }`);
           add(`:foreach a in=[/ip address find comment="Dartbit VPN"] do={ /ip address remove $a }`);
-          add(buildMikrotikWgConfig({ wgIp: prov.wgIp, privateKey: priv }));
+          add(buildMikrotikWgConfig({ wgIp: prov.wgIp, privateKey: priv, wanInterface: wan }));
           add('');
         }
       }

@@ -506,7 +506,8 @@ router.post('/:id/vpn/provision', async (req: AuthRequest, res: Response) => {
     const fresh = await prisma.mikrotikRouter.findUnique({ where: { id: router_.id } });
     const { decryptApiKey } = await import('../utils/blessedtexts');
     const privPlain = fresh?.wgPrivateKey ? decryptApiKey(fresh.wgPrivateKey) : '';
-    const mikrotikConfig = buildMikrotikWgConfig({ wgIp: result.wgIp, privateKey: privPlain });
+    const cfgWan1 = (await prisma.routerProvisioningConfig.findUnique({ where: { routerId: router_.id } }))?.wanInterface;
+    const mikrotikConfig = buildMikrotikWgConfig({ wgIp: result.wgIp, privateKey: privPlain, wanInterface: cfgWan1 });
     sendSuccess(res, { wgIp: result.wgIp, endpoint: result.endpoint, mikrotikConfig });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'VPN provisioning failed';
@@ -526,7 +527,8 @@ router.get('/:id/vpn', async (req: AuthRequest, res: Response) => {
     let mikrotikConfig: string | null = null;
     if (router_.wgIp && router_.wgPrivateKey) {
       const { decryptApiKey } = await import('../utils/blessedtexts');
-      mikrotikConfig = buildMikrotikWgConfig({ wgIp: router_.wgIp, privateKey: decryptApiKey(router_.wgPrivateKey) });
+      const cfgWan2 = (await prisma.routerProvisioningConfig.findUnique({ where: { routerId: router_.id } }))?.wanInterface;
+      mikrotikConfig = buildMikrotikWgConfig({ wgIp: router_.wgIp, privateKey: decryptApiKey(router_.wgPrivateKey), wanInterface: cfgWan2 });
     }
     // "VPN online" = a handshake within the last ~3 minutes.
     const online = router_.wgLastHandshake ? (Date.now() - new Date(router_.wgLastHandshake).getTime() < 3 * 60 * 1000) : false;

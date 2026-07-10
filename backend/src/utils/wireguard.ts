@@ -28,6 +28,10 @@ function normalizeKey(raw: string): string {
 const WG_KEY = normalizeKey(process.env.DARTBIT_WG_SSH_KEY || '');
 const WG_SERVER_PUBKEY = process.env.DARTBIT_WG_SERVER_PUBKEY || '';
 const WG_ENDPOINT = process.env.DARTBIT_WG_ENDPOINT || 'vpn.dartbittech.com:1198';
+// Optional: the droplet's global IPv6 address (address only, no brackets/port — the port is taken
+// from WG_ENDPOINT). When set, provisioning configures IPv6 on the router's WAN and prefers the v6
+// endpoint for WireGuard, escaping Starlink/CGNAT entirely; v4 remains the automatic fallback.
+const WG_ENDPOINT6 = (process.env.DARTBIT_WG_ENDPOINT6 || '').trim();
 const WG_SUBNET = process.env.DARTBIT_WG_SUBNET || '10.8.0.0/24';
 
 export function wgConfigured(): boolean {
@@ -168,15 +172,31 @@ export async function deprovisionRouterWg(routerId: string): Promise<void> {
 
 // Build the RouterOS commands a router runs ONCE to join the VPN. The router keeps its own private
 // key; it dials the droplet endpoint and gets its fixed 10.8.0.x address.
-export function buildMikrotikWgConfig(opts: { wgIp: string; privateKey: string }): string {
+export function buildMikrotikWgConfig(opts: { wgIp: string; privateKey: string; wanInterface?: string }): string {
   const serverHost = WG_ENDPOINT.split(':')[0];
   const serverPort = WG_ENDPOINT.split(':')[1] || '51820';
-  return [
+  const lines = [
     `/interface wireguard add name=dartbit-vpn private-key="${opts.privateKey}" listen-port=13231`,
     `/ip address add address=${opts.wgIp}/24 interface=dartbit-vpn comment="Dartbit VPN"`,
     `/interface wireguard peers add interface=dartbit-vpn public-key="${WG_SERVER_PUBKEY}" endpoint-address=${serverHost} endpoint-port=${serverPort} allowed-address=${WG_SUBNET} persistent-keepalive=25s comment="Dartbit VPN"`,
     `/ip firewall filter add chain=input src-address=${WG_SUBNET} action=accept comment="Dartbit VPN mgmt" place-before=0`,
-  ].join('\n');
+  ];
+  if (WG_ENDPOINT6) {
+    const wan = opts.wanInterface || 'ether1';
+    // Enable IPv6 + DHCPv6 on the WAN (harmless no-ops where the uplink has no v6), then install a
+    // failover script: prefer the v6 endpoint whenever the droplet is reachable over v6, fall back
+    // to v4 when it isn't. Checked every 5 minutes and once immediately.
+    lines.push(
+      `:do { /ipv6 settings set disable-ipv6=no } on-error={}`,
+      `:do { :if ([:len [/ipv6 dhcp-client find interface="${wan}"]] = 0) do={ /ipv6 dhcp-client add interface=${wan} request=address,prefix add-default-route=yes comment="Dartbit v6 uplink" } } on-error={}`,
+      `:foreach s in=[/system script find name="dartbit-wg6"] do={ /system script remove \$s }`,
+      `:foreach s in=[/system scheduler find name="dartbit-wg6"] do={ /system scheduler remove \$s }`,
+      `/system script add name=dartbit-wg6 policy=read,write,test source={:do { :local v6 "${WG_ENDPOINT6}"; :local v4 "${serverHost}"; :local cur [/interface wireguard peers get [find comment="Dartbit VPN"] endpoint-address]; :local up false; :do { :if ([/ping \$v6 count=2 interval=1s] > 0) do={ :set up true } } on-error={}; :if (\$up = true && \$cur != \$v6) do={ /interface wireguard peers set [find comment="Dartbit VPN"] endpoint-address=\$v6; :log info "Dartbit: WireGuard endpoint switched to IPv6" }; :if (\$up = false && \$cur = \$v6) do={ /interface wireguard peers set [find comment="Dartbit VPN"] endpoint-address=\$v4; :log info "Dartbit: WireGuard endpoint fell back to IPv4" } } on-error={}}`,
+      `/system scheduler add name=dartbit-wg6 interval=5m on-event="/system script run dartbit-wg6" comment="Dartbit WG IPv6 preference"`,
+      `:do { /system script run dartbit-wg6 } on-error={}`,
+    );
+  }
+  return lines.join('\n');
 }
 
 // Fetch live VPN status (last handshake per peer) from the droplet and update routers.
