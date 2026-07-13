@@ -237,7 +237,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     //     the hotspot serves its BUILT-IN DEFAULT page instead (dartbit.login -> MikroTik login).
     add('# 6a. Install Dartbit captive portal HTML');
     add(`:local hdir "hotspot"; :if ([:len [/file find where name="flash"]] > 0) do={ :set hdir "flash/hotspot" }`);
-    add(`:do { /ip hotspot profile set [find name="hsprof-dartbit"] html-directory=$hdir } on-error={}`);
+    add(`:do { /ip hotspot profile set [find name="hsprof-dartbit"] html-directory=$hdir; :local got [/ip hotspot profile get [find name="hsprof-dartbit"] html-directory]; :if ($got != $hdir) do={ /ip hotspot profile set [find name="hsprof-dartbit"] html-directory="hotspot" } } on-error={}`);
     // Download our login.html — it's a tiny redirect page to the Dartbit-hosted portal
     add(`/tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=($hdir . "/login.html")${fetchFlags}`);
     add(`:delay 1s`);
@@ -509,7 +509,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add('# 10b. Captive-portal refresh');
     add(`:foreach s in=[/system scheduler find comment="Dartbit portal"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-portal"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-portal policy=read,write,test source={:local hdir "hotspot"; :if ([:len [/file find where name="flash"]] > 0) do={ :set hdir "flash/hotspot" }; :do { /ip hotspot profile set [find name="hsprof-dartbit"] html-directory=\$hdir } on-error={}; /tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=(\$hdir . "/login.html")${fetchFlags}; /tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=(\$hdir . "/alogin.html")${fetchFlags}}`);
+    add(`/system script add name=dartbit-portal policy=read,write,test source={:local hdir "hotspot"; :if ([:len [/file find where name="flash"]] > 0) do={ :set hdir "flash/hotspot" }; :do { /ip hotspot profile set [find name="hsprof-dartbit"] html-directory=\$hdir; :local got [/ip hotspot profile get [find name="hsprof-dartbit"] html-directory]; :if (\$got != \$hdir) do={ /ip hotspot profile set [find name="hsprof-dartbit"] html-directory="hotspot" } } on-error={}; /tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=(\$hdir . "/login.html")${fetchFlags}; /tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=(\$hdir . "/alogin.html")${fetchFlags}}`);
     add(`/system scheduler add name=dartbit-portal interval=3m on-event="/system script run dartbit-portal" comment="Dartbit portal"`);
     add('');
 
