@@ -231,17 +231,18 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // Diagnostic logging
     add('');
 
-    // 6a. Replace MikroTik's default login.html with one that redirects to Dartbit's portal
-    //     RouterOS hotspot serves files from /hotspot/ directory (created automatically).
-    //     We download our redirect HTML and overwrite the default login page.
+    // 6a. Replace MikroTik's default login.html with one that redirects to Dartbit's portal.
+    //     On models WITH flash storage (hAP, hEX, most ARM boards) the persistent filesystem lives
+    //     under flash/, so the HTML must go to flash/hotspot — writing to hotspot/ lands in RAM and
+    //     the hotspot serves its BUILT-IN DEFAULT page instead (dartbit.login -> MikroTik login).
     add('# 6a. Install Dartbit captive portal HTML');
-    // Make sure the hotspot/ directory exists by triggering hotspot to create defaults
-    add(`:do { /ip hotspot profile set [find name="hsprof-dartbit"] html-directory=hotspot } on-error={}`);
+    add(`:local hdir "hotspot"; :if ([:len [/file find where name="flash"]] > 0) do={ :set hdir "flash/hotspot" }`);
+    add(`:do { /ip hotspot profile set [find name="hsprof-dartbit"] html-directory=$hdir } on-error={}`);
     // Download our login.html — it's a tiny redirect page to the Dartbit-hosted portal
-    add(`/tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=hotspot/login.html${fetchFlags}`);
+    add(`/tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=($hdir . "/login.html")${fetchFlags}`);
     add(`:delay 1s`);
     // Also overwrite alogin.html which is shown on successful login
-    add(`/tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=hotspot/alogin.html${fetchFlags}`);
+    add(`/tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=($hdir . "/alogin.html")${fetchFlags}`);
     add(`:delay 1s`);
     add('');
 
@@ -508,7 +509,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add('# 10b. Captive-portal refresh');
     add(`:foreach s in=[/system scheduler find comment="Dartbit portal"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-portal"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-portal policy=read,write,test source={:do { /ip hotspot profile set [find name="hsprof-dartbit"] html-directory=hotspot } on-error={}; /tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=hotspot/login.html${fetchFlags}; /tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=hotspot/alogin.html${fetchFlags}}`);
+    add(`/system script add name=dartbit-portal policy=read,write,test source={:local hdir "hotspot"; :if ([:len [/file find where name="flash"]] > 0) do={ :set hdir "flash/hotspot" }; :do { /ip hotspot profile set [find name="hsprof-dartbit"] html-directory=\$hdir } on-error={}; /tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=(\$hdir . "/login.html")${fetchFlags}; /tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=(\$hdir . "/alogin.html")${fetchFlags}}`);
     add(`/system scheduler add name=dartbit-portal interval=3m on-event="/system script run dartbit-portal" comment="Dartbit portal"`);
     add('');
 
@@ -1035,8 +1036,9 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     // free-trial one-tap flow) deploy WITHOUT requiring a reprovision. Best-effort; ignored on error.
     {
       const portalBackend = (process.env.BACKEND_URL || `https://${req.get('host')}`).replace(/\/$/, '');
-      add(`:do { /tool fetch url="${portalBackend}/hotspot-html/login?apiKey=${apiKey}" dst-path=hotspot/login.html mode=https check-certificate=no } on-error={}`);
-      add(`:do { /tool fetch url="${portalBackend}/hotspot-html/login?apiKey=${apiKey}" dst-path=hotspot/alogin.html mode=https check-certificate=no } on-error={}`);
+      add(`:local phdir "hotspot"; :if ([:len [/file find where name="flash"]] > 0) do={ :set phdir "flash/hotspot" }`);
+      add(`:do { /tool fetch url="${portalBackend}/hotspot-html/login?apiKey=${apiKey}" dst-path=($phdir . "/login.html") mode=https check-certificate=no } on-error={}`);
+      add(`:do { /tool fetch url="${portalBackend}/hotspot-html/login?apiKey=${apiKey}" dst-path=($phdir . "/alogin.html") mode=https check-certificate=no } on-error={}`);
     }
     add('');
 
