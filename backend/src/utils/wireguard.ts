@@ -188,7 +188,7 @@ export function buildMikrotikWgConfig(opts: { wgIp: string; privateKey: string; 
     // to v4 when it isn't. Checked every 5 minutes and once immediately.
     lines.push(
       `:do { /ipv6 settings set disable-ipv6=no accept-router-advertisements=yes } on-error={}`,
-      `:do { :if ([:len [/ipv6 dhcp-client find interface="${wan}"]] = 0) do={ /ipv6 dhcp-client add interface=${wan} request=address,prefix add-default-route=yes comment="Dartbit v6 uplink" } } on-error={}`,
+      `:do { :if ([:len [/ipv6 dhcp-client find interface="${wan}"]] = 0) do={ /ipv6 dhcp-client add interface=${wan} request=address,prefix pool-name=dartbit6 pool-prefix-length=64 add-default-route=yes comment="Dartbit v6 uplink" } } on-error={}`,
       `:foreach s in=[/system script find name="dartbit-wg6"] do={ /system script remove \$s }`,
       `:foreach s in=[/system scheduler find name="dartbit-wg6"] do={ /system scheduler remove \$s }`,
       `/system script add name=dartbit-wg6 policy=read,write,test source={:do { :local v6 "${WG_ENDPOINT6}"; :local v4 "${serverHost}"; :local cur [/interface wireguard peers get [find comment="Dartbit VPN"] endpoint-address]; :local up false; :do { :if ([/ping \$v6 count=2 interval=1s] > 0) do={ :set up true } } on-error={}; :if (\$up = true && \$cur != \$v6) do={ /interface wireguard peers set [find comment="Dartbit VPN"] endpoint-address=\$v6; :log info "Dartbit: WireGuard endpoint switched to IPv6" }; :if (\$up = false && \$cur = \$v6) do={ /interface wireguard peers set [find comment="Dartbit VPN"] endpoint-address=\$v4; :log info "Dartbit: WireGuard endpoint fell back to IPv4" } } on-error={}}`,
