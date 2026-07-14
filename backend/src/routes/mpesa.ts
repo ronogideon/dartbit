@@ -214,6 +214,7 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
     const sub = await prisma.subscriber.findUnique({ where: { id: boundSubId } });
     if (sub) {
       const mins = tx.durationMinutes || pkg?.validityMinutes || 60;
+      const wasLapsed = !sub.expiresAt || sub.expiresAt <= new Date();
       const base = sub.expiresAt && sub.expiresAt > new Date() ? sub.expiresAt : new Date();
       const newExpiry = new Date(base.getTime() + mins * 60_000);
       await prisma.subscriber.update({
@@ -246,6 +247,16 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
           } else {
             await enqueueCommand(sub.routerId, `:foreach s in=[/ppp secret find name="${sub.username}"] do={ /ppp secret set $s disabled=no }`);
           }
+        }
+      } catch { /* best-effort */ }
+      // A wired (PPPoE/Static) user who was EXPIRED is currently connected on the walled-garden
+      // "dartbit-expired" profile — its dynamic address-list entry blocks their forwarding. The new
+      // expiry alone doesn't free the LIVE session, so drop it: PPPoE re-dials within seconds and
+      // lands on the full-service profile. (Hotspot is untouched — its seamless no-kick path stays.)
+      try {
+        if (wasLapsed && sub.service !== 'HOTSPOT' && sub.routerId) {
+          const { enqueueCommand } = await import('../utils/commandQueue');
+          await enqueueCommand(sub.routerId, `:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove \$a }`);
         }
       } catch { /* best-effort */ }
       await prisma.mpesaTransaction.update({ where: { id: tx.id }, data: { status: 'PAID', mpesaReceipt: receipt } });

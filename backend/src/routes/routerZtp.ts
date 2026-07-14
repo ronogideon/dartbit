@@ -164,7 +164,11 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
 
     // 4. NAT
     add('# 4. NAT for WAN');
-    add(`:if ([:len [/interface find name="${wan}"]] > 0 && [:len [/ip firewall nat find comment="Dartbit WAN NAT"]] = 0) do={ /ip firewall nat add chain=srcnat out-interface=${wan} action=masquerade comment="Dartbit WAN NAT" }`);
+    // NAT must follow the REAL uplink: prefer the runtime-detected default-route interface
+    // (wandet, from section 1) over the configured value, and self-correct an existing rule that
+    // points at the wrong port (e.g. provisioned before detection, or the uplink moved).
+    add(`:local natif "${wan}"; :if ([:len $wandet] > 0) do={ :set natif $wandet }`);
+    add(`:if ([:len [/ip firewall nat find comment="Dartbit WAN NAT"]] = 0) do={ /ip firewall nat add chain=srcnat out-interface=$natif action=masquerade comment="Dartbit WAN NAT" } else={ :if ([/ip firewall nat get [find comment="Dartbit WAN NAT"] out-interface] != $natif) do={ /ip firewall nat set [find comment="Dartbit WAN NAT"] out-interface=$natif; :log info ("Dartbit: WAN NAT moved to " . $natif) } }`);
     add('');
 
     // 4b. ANTI-TETHERING (block hotspot/USB sharing) — TTL based, DISABLED BY DEFAULT.
