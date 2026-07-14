@@ -18,7 +18,12 @@ export const authenticate = (req: AuthRequest, res: Response, next: NextFunction
     // Technician role (TENANT_VIEWER) is strictly read-only: allow safe methods, block all writes.
     // Password reset flows run on /auth (unauthenticated) so they're unaffected.
     if (payload.role === 'TENANT_VIEWER' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
-      return sendError(res, 'Read-only access: technicians can view but not make changes.', 403);
+      // Exception: the network map is field-tech territory — technicians record equipment,
+      // cables and maintenance there (admin-only actions are enforced inside those routes).
+      const url = req.originalUrl || req.url || '';
+      if (!url.startsWith('/network')) {
+        return sendError(res, 'Read-only access: technicians can view but not make changes.', 403);
+      }
     }
     next();
   } catch {

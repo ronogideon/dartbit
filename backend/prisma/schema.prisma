@@ -588,3 +588,54 @@ model Disbursement {
   @@index([tenantId, status])
   @@index([conversationId])
 }
+
+model NetworkElement {
+  id        String   @id
+  tenantId  String
+  type      String   // OLT | DOME | FAT | PATCH_CORD | MIKROTIK | CUSTOMER
+  name      String
+  lat       Float
+  lng       Float
+  meta      String?  // JSON: FAT → { ratio, inputCore, inputPowerDbm, outputPowerDbm }, etc.
+  parentId  String?
+  createdBy String?
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+}
+
+model NetworkCable {
+  id            String   @id
+  tenantId      String
+  fromId        String
+  toId          String?
+  toLat         Float?
+  toLng         Float?
+  lengthM       Float
+  cores         Int
+  powerStartDbm Float?
+  powerEndDbm   Float?
+  isDrop        Boolean  @default(false)
+  label         String?
+  status        String   @default("ACTIVE")
+  createdBy     String?
+  createdAt     DateTime @default(now())
+
+  @@index([tenantId])
+}
+
+model NetworkMaintenance {
+  id         String    @id
+  tenantId   String
+  cableId    String?
+  elementId  String?
+  kind       String    // CABLE_RERUN | ROUTER_REISSUE | OTHER
+  note       String?
+  newLengthM Float?
+  status     String    @default("PENDING")
+  createdBy  String?
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+
+  @@index([tenantId])
+}

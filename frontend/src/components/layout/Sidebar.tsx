@@ -7,8 +7,7 @@ import { getTenantInfo, getSidebarCounts } from '@/lib/api';
 import {
   LayoutDashboard, Users, Package, CreditCard, MessageSquare,
   Router, Activity, Zap, Wifi, Building2, Ticket, Receipt,
-  ChevronLeft, ChevronRight, X
-} from 'lucide-react';
+  ChevronLeft, ChevronRight, X, Map } from 'lucide-react';
 import clsx from 'clsx';
 import { useState, useEffect } from 'react';
 
@@ -22,6 +21,7 @@ const navItems = [
   { href: '/expenses', label: 'Expenses', icon: Receipt },
   { href: '/messages', label: 'Messages', icon: MessageSquare },
   { href: '/routers', label: 'Routers', icon: Router },
+  { href: '/network', label: 'Network Map', icon: Map },
   // Settings intentionally removed — it now lives behind the gear icon in the top bar.
 ];
 
@@ -85,7 +85,7 @@ export default function Sidebar({
   };
 
   // Technicians (read-only) only get the views relevant to them: dashboard, live users, subscribers, routers.
-  const TECH_ALLOWED = ['/dashboard', '/active-users', '/subscribers', '/routers'];
+  const TECH_ALLOWED = ['/dashboard', '/active-users', '/subscribers', '/routers', '/network'];
   const baseItems = user?.role === 'TENANT_VIEWER' ? navItems.filter(i => TECH_ALLOWED.includes(i.href)) : navItems;
   const items = user?.role === 'SUPERADMIN' ? [...superAdminItems, ...navItems] : baseItems;
 

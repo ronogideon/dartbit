@@ -23,6 +23,7 @@ import signupRoutes from './routes/signup';
 import adminRoutes from './routes/admin';
 import voucherRoutes from './routes/vouchers';
 import billingRoutes from './routes/billing';
+import networkRoutes from './routes/network';
 import usersRoutes from './routes/users';
 import paymentConfigRoutes from './routes/paymentConfig';
 import webhookRoutes from './routes/webhooks';
@@ -94,8 +95,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.5', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.5', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.6', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.6', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -114,6 +115,7 @@ app.use('/tenants', tenantRoutes);
 app.use('/settings', settingsRoutes);
 app.use('/vouchers', voucherRoutes);
 app.use('/billing', billingRoutes);
+app.use('/network', networkRoutes);
 app.use('/users', usersRoutes);
 app.use('/payment-config', paymentConfigRoutes);
 app.use('/hotspot', mpesaRoutes);
@@ -127,7 +129,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.5 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.11.6 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -859,6 +861,23 @@ async function patchDatabase() {
     await safeExec(prisma, 'User mustChangePassword', `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "mustChangePassword" BOOLEAN NOT NULL DEFAULT false`);
     // One-time backfill: tenant admins created before phones were saved on the User record get their
     // phone from the tenant they signed up with (so password-reset SMS has a number to use).
+    await safeExec(prisma, 'NetworkElement table', `CREATE TABLE IF NOT EXISTS "NetworkElement" (
+      id TEXT PRIMARY KEY, "tenantId" TEXT NOT NULL, type TEXT NOT NULL, name TEXT NOT NULL,
+      lat DOUBLE PRECISION NOT NULL, lng DOUBLE PRECISION NOT NULL, meta TEXT, "parentId" TEXT,
+      "createdBy" TEXT, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+    await safeExec(prisma, 'NetworkElement idx', `CREATE INDEX IF NOT EXISTS "NetworkElement_tenantId_idx" ON "NetworkElement"("tenantId")`);
+    await safeExec(prisma, 'NetworkCable table', `CREATE TABLE IF NOT EXISTS "NetworkCable" (
+      id TEXT PRIMARY KEY, "tenantId" TEXT NOT NULL, "fromId" TEXT NOT NULL, "toId" TEXT,
+      "toLat" DOUBLE PRECISION, "toLng" DOUBLE PRECISION, "lengthM" DOUBLE PRECISION NOT NULL,
+      cores INTEGER NOT NULL, "powerStartDbm" DOUBLE PRECISION, "powerEndDbm" DOUBLE PRECISION,
+      "isDrop" BOOLEAN NOT NULL DEFAULT false, label TEXT, status TEXT NOT NULL DEFAULT 'ACTIVE',
+      "createdBy" TEXT, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+    await safeExec(prisma, 'NetworkCable idx', `CREATE INDEX IF NOT EXISTS "NetworkCable_tenantId_idx" ON "NetworkCable"("tenantId")`);
+    await safeExec(prisma, 'NetworkMaintenance table', `CREATE TABLE IF NOT EXISTS "NetworkMaintenance" (
+      id TEXT PRIMARY KEY, "tenantId" TEXT NOT NULL, "cableId" TEXT, "elementId" TEXT,
+      kind TEXT NOT NULL, note TEXT, "newLengthM" DOUBLE PRECISION, status TEXT NOT NULL DEFAULT 'PENDING',
+      "createdBy" TEXT, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "resolvedAt" TIMESTAMP(3))`);
+    await safeExec(prisma, 'NetworkMaintenance idx', `CREATE INDEX IF NOT EXISTS "NetworkMaintenance_tenantId_idx" ON "NetworkMaintenance"("tenantId")`);
     await safeExec(prisma, 'Backfill admin phones', `UPDATE "User" u SET phone = t.phone FROM "Tenant" t WHERE u."tenantId" = t.id AND u.role = 'TENANT_ADMIN' AND (u.phone IS NULL OR u.phone = '') AND t.phone IS NOT NULL AND t.phone <> ''`);
     await safeExec(prisma, 'Announcement table', `CREATE TABLE IF NOT EXISTS "Announcement" (
         "id" TEXT PRIMARY KEY,

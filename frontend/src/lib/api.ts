@@ -288,3 +288,17 @@ export const broadcastMessage = (data: { body: string; routerIds?: string[]; ser
 
 export interface Announcement { id: string; title: string; body: string; level: 'INFO' | 'WARNING' | 'CRITICAL'; createdAt: string; }
 export const getAnnouncements = () => api.get('/announcements').then((r) => r.data.data as Announcement[]);
+
+// ---- Network map + plant inventory ----
+export interface NetElement { id: string; type: string; name: string; lat: number; lng: number; meta: string | null; parentId: string | null; createdAt: string }
+export interface NetCable { id: string; fromId: string; toId: string | null; toLat: number | null; toLng: number | null; lengthM: number; cores: number; powerStartDbm: number | null; powerEndDbm: number | null; isDrop: boolean; label: string | null; status: string; createdAt: string }
+export interface NetMaintenance { id: string; cableId: string | null; elementId: string | null; kind: string; note: string | null; newLengthM: number | null; status: string; createdAt: string; createdByName?: string | null }
+export const getNetwork = () => api.get('/network').then((r) => r.data.data as { elements: NetElement[]; cables: NetCable[]; maintenance: NetMaintenance[] });
+export const addNetElement = (data: { type: string; name?: string; lat: number; lng: number; meta?: Record<string, unknown>; parentId?: string }) => api.post('/network/elements', data).then((r) => r.data.data as { id: string });
+export const updateNetElement = (id: string, data: { name?: string; lat?: number; lng?: number; meta?: Record<string, unknown> }) => api.patch(`/network/elements/${id}`, data).then((r) => r.data.data);
+export const deleteNetElement = (id: string) => api.delete(`/network/elements/${id}`).then((r) => r.data.data);
+export const addNetCable = (data: { fromId: string; toId?: string; toLat?: number; toLng?: number; lengthM: number; cores: number; powerStartDbm?: number; powerEndDbm?: number; isDrop?: boolean; label?: string }) => api.post('/network/cables', data).then((r) => r.data.data as { id: string });
+export const deleteNetCable = (id: string) => api.delete(`/network/cables/${id}`).then((r) => r.data.data);
+export const addNetMaintenance = (data: { kind: string; cableId?: string; elementId?: string; note?: string; newLengthM?: number }) => api.post('/network/maintenance', data).then((r) => r.data.data);
+export const resolveNetMaintenance = (id: string, status: 'CONFIRMED' | 'REJECTED') => api.patch(`/network/maintenance/${id}`, { status }).then((r) => r.data.data);
+export const getNetInventory = () => api.get('/network/inventory').then((r) => r.data.data as { routers: number; mikrotiksOnMap: number; olts: number; domes: number; fats: number; patchCords: number; customers: number; cableByCores: { cores: number; runs: number; meters: number }[]; totalCableMeters: number; customerDrops: { count: number; meters: number }; pendingMaintenance: number });
