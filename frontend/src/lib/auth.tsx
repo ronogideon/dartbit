@@ -7,12 +7,14 @@ interface User {
   name: string;
   role: string;
   tenantId?: string;
+  mustChangePassword?: boolean;
 }
 
 interface AuthContextType {
   user: User | null;
   token: string | null;
   setAuth: (user: User, token: string) => void;
+  clearMustChangePassword: () => void;
   logout: () => void;
   isLoading: boolean;
 }
@@ -41,6 +43,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(token);
   };
 
+  // Called once the user sets a new password (or skips) so the prompt doesn't reappear this session.
+  const clearMustChangePassword = () => {
+    setUser(prev => {
+      if (!prev) return prev;
+      const next = { ...prev, mustChangePassword: false };
+      localStorage.setItem('dartbit_user', JSON.stringify(next));
+      return next;
+    });
+  };
+
   const logout = () => {
     localStorage.removeItem('dartbit_token');
     localStorage.removeItem('dartbit_user');
@@ -50,7 +62,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, setAuth, logout, isLoading }}>
+    <AuthContext.Provider value={{ user, token, setAuth, clearMustChangePassword, logout, isLoading }}>
       {children}
     </AuthContext.Provider>
   );

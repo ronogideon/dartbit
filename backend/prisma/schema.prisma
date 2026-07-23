@@ -596,7 +596,8 @@ model NetworkElement {
   name      String
   lat       Float
   lng       Float
-  meta      String?  // JSON: FAT → { ratio, inputCore, inputPowerDbm, outputPowerDbm }, etc.
+  meta      String?  // JSON: FAT → { ratio, inputCore, inputPowerDbm, outputPowerDbm }, CUSTOMER → { subscriberId }
+  photo     String?  // downscaled JPEG data URL taken in the field
   parentId  String?
   createdBy String?
   createdAt DateTime @default(now())

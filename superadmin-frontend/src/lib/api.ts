@@ -11,6 +11,30 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// When the session token has expired or is otherwise invalid, the backend answers 401 on every
+// authenticated call — previously that just made individual widgets fail to load, with nothing
+// telling the person WHY. Instead: broadcast one global event the first time this happens, and a
+// full-screen lock (SessionExpiredLock, mounted in layout.tsx) catches it and blocks all further
+// interaction until they sign back in. The /auth/login request itself is excluded — a wrong
+// password there is a normal login failure, not an expired session, and is handled locally.
+let sessionLockFired = false;
+api.interceptors.response.use(
+  (res) => res,
+  (error) => {
+    const status = error?.response?.status;
+    const url = String(error?.config?.url || '');
+    if (status === 401 && !url.includes('/auth/login') && typeof window !== 'undefined' && !sessionLockFired) {
+      sessionLockFired = true;
+      window.dispatchEvent(new CustomEvent('dartbit:session-expired'));
+    }
+    return Promise.reject(error);
+  },
+);
+
+// Called once the person successfully signs back in from the lock screen, so a later expiry
+// (in a future session) can trigger the lock again.
+export function resetSessionLock() { sessionLockFired = false; }
+
 export default api;
 
 export const login = (email: string, password: string) =>

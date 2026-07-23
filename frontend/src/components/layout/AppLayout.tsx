@@ -7,6 +7,7 @@ import { getTenantInfo } from '@/lib/api';
 import Sidebar from '@/components/layout/Sidebar';
 import TopBar from '@/components/layout/TopBar';
 import AnnouncementBanner from '@/components/AnnouncementBanner';
+import ForcePasswordChange from '@/components/ForcePasswordChange';
 import TrialBanner from '@/components/ui/TrialBanner';
 import PayNowBanner from '@/components/ui/PayNowBanner';
 import Paywall from '@/components/ui/Paywall';
@@ -55,6 +56,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-gray-950 overflow-hidden">
       {verifier}
+      <ForcePasswordChange />
       <Sidebar mobileOpen={mobileOpen} onMobileClose={() => setMobileOpen(false)} />
       <div className="flex-1 flex flex-col min-w-0">
         <TopBar onMenuClick={() => setMobileOpen(true)} />

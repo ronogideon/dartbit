@@ -21,7 +21,8 @@ export const authenticate = (req: AuthRequest, res: Response, next: NextFunction
       // Exception: the network map is field-tech territory — technicians record equipment,
       // cables and maintenance there (admin-only actions are enforced inside those routes).
       const url = req.originalUrl || req.url || '';
-      if (!url.startsWith('/network')) {
+      const isOwnPasswordChange = /^\/users\/[^/]+\/change-password/.test(url) && url.includes(payload.userId);
+      if (!url.startsWith('/network') && !isOwnPasswordChange) {
         return sendError(res, 'Read-only access: technicians can view but not make changes.', 403);
       }
     }

@@ -6,7 +6,7 @@ import { useAuth } from '@/lib/auth';
 import toast from 'react-hot-toast';
 import {
   getNetwork, addNetElement, deleteNetElement, addNetCable, deleteNetCable,
-  addNetMaintenance, resolveNetMaintenance, getNetInventory, getRouters,
+  addNetMaintenance, resolveNetMaintenance, getNetInventory, getRouters, getSubscribers,
   type NetElement, type NetCable,
 } from '@/lib/api';
 import 'leaflet/dist/leaflet.css';
@@ -16,6 +16,30 @@ import type LType from 'leaflet';
 const CORE_COLORS: Record<number, string> = { 1: '#9ca3af', 2: '#3b82f6', 4: '#22c55e', 6: '#f97316', 8: '#ef4444', 12: '#a855f7', 24: '#92400e', 48: '#111827', 96: '#0ea5e9' };
 const coreColor = (c: number) => CORE_COLORS[c] || '#64748b';
 const CORE_OPTIONS = [1, 2, 4, 6, 8, 12, 24, 48, 96];
+
+// Field photos: downscale in the browser so a phone snap becomes ~50-100KB instead of 4MB.
+async function downscalePhoto(file: File, maxPx = 900, quality = 0.6): Promise<string> {
+  const dataUrl: string = await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result || ''));
+    r.onerror = () => reject(new Error('read failed'));
+    r.readAsDataURL(file);
+  });
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = () => reject(new Error('decode failed'));
+    i.src = dataUrl;
+  });
+  const scale = Math.min(1, maxPx / Math.max(img.width, img.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(img.width * scale);
+  canvas.height = Math.round(img.height * scale);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return dataUrl;
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', quality);
+}
 
 const TYPE_STYLE: Record<string, { label: string; letter: string; color: string }> = {
   OLT: { label: 'OLT', letter: 'O', color: '#dc2626' },
@@ -28,7 +52,7 @@ const TYPE_STYLE: Record<string, { label: string; letter: string; color: string 
 
 type Mode = 'view' | 'place' | 'cable-start' | 'cable-end';
 
-interface ElementForm { type: string; name: string; lat: number; lng: number; ratio: string; inputCore: string; inputPowerDbm: string; outputPowerDbm: string; routerId: string; notes: string }
+interface ElementForm { type: string; name: string; lat: number; lng: number; ratio: string; inputCore: string; inputPowerDbm: string; outputPowerDbm: string; routerId: string; notes: string; subscriberId: string; photo: string }
 interface CableForm { fromId: string; fromName: string; toId?: string; toName?: string; toLat?: number; toLng?: number; lengthM: string; cores: number; powerStartDbm: string; powerEndDbm: string; isDrop: boolean; label: string }
 
 export default function NetworkMapPage() {
@@ -38,6 +62,7 @@ export default function NetworkMapPage() {
   const { data: net } = useQuery({ queryKey: ['network'], queryFn: getNetwork, refetchInterval: 30000 });
   const { data: inv } = useQuery({ queryKey: ['net-inventory'], queryFn: getNetInventory, refetchInterval: 60000 });
   const { data: routers = [] } = useQuery({ queryKey: ['routers'], queryFn: getRouters });
+  const { data: subscribers = [] } = useQuery({ queryKey: ['subscribers'], queryFn: getSubscribers });
 
   const mapRef = useRef<LType.Map | null>(null);
   const LRef = useRef<typeof LType | null>(null);
@@ -78,7 +103,7 @@ export default function NetworkMapPage() {
       map.on('click', (e: LType.LeafletMouseEvent) => {
         const m = modeRef.current;
         if (m === 'place') {
-          setElementForm(f => f ? { ...f, lat: e.latlng.lat, lng: e.latlng.lng } : { type: 'FAT', name: '', lat: e.latlng.lat, lng: e.latlng.lng, ratio: '1x8', inputCore: '', inputPowerDbm: '', outputPowerDbm: '', routerId: '', notes: '' });
+          setElementForm(f => f ? { ...f, lat: e.latlng.lat, lng: e.latlng.lng } : { type: 'FAT', name: '', lat: e.latlng.lat, lng: e.latlng.lng, ratio: '1x8', inputCore: '', inputPowerDbm: '', outputPowerDbm: '', routerId: '', notes: '', subscriberId: '', photo: '' });
         } else if (m === 'cable-end') {
           const cf = cableFormRef.current;
           if (cf) setCableForm({ ...cf, toId: undefined, toName: `point (${e.latlng.lat.toFixed(5)}, ${e.latlng.lng.toFixed(5)})`, toLat: e.latlng.lat, toLng: e.latlng.lng });
@@ -137,15 +162,40 @@ export default function NetworkMapPage() {
           else if (m.notes) metaHtml = `${m.notes}<br/>`;
         }
       } catch { /* ignore bad meta */ }
+
+      // Splitter occupancy — how many of the 1xN ports are taken, and a warning when it's full.
+      let portHtml = '';
+      let ring = '#fff';
+      if (el.ports) {
+        const { total, used, free } = el.ports;
+        const full = free <= 0;
+        if (full) ring = '#dc2626'; else if (free <= 2) ring = '#f59e0b';
+        portHtml = `<span style="color:${full ? '#dc2626' : free <= 2 ? '#b45309' : '#16a34a'};font-weight:600">${used}/${total} ports used${full ? ' — FULL' : ` • ${free} free`}</span><br/>`;
+      }
+
+      // Linked subscriber — the premise is coloured by live status so the map doubles as a
+      // service view: green = online, amber = offline, red = expired/disabled.
+      let subHtml = '';
+      let bg = st.color;
+      if (el.subscriber) {
+        const sub = el.subscriber;
+        const state = !sub.isActive || sub.expired ? 'expired' : sub.online ? 'online' : 'offline';
+        bg = state === 'online' ? '#16a34a' : state === 'offline' ? '#f59e0b' : '#dc2626';
+        subHtml = `<span style="color:#6b7280">${sub.fullName} (${sub.username})</span><br/>
+          <span style="font-weight:600;color:${bg}">${state === 'online' ? '● Online' : state === 'offline' ? '○ Offline' : '✕ Expired / disabled'}</span><br/>`;
+      }
+
+      const photoHtml = el.photo ? `<img src="${el.photo}" alt="" style="width:100%;max-height:130px;object-fit:cover;border-radius:6px;margin:4px 0"/>` : '';
+
       const icon = L.divIcon({
         className: '',
-        html: `<div style="width:26px;height:26px;border-radius:${el.type === 'CUSTOMER' ? '4px' : '50%'};background:${st.color};color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)">${st.letter}</div>`,
+        html: `<div style="width:26px;height:26px;border-radius:${el.type === 'CUSTOMER' ? '4px' : '50%'};background:${bg};color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;border:2px solid ${ring};box-shadow:0 1px 4px rgba(0,0,0,.4)">${st.letter}</div>`,
         iconSize: [26, 26], iconAnchor: [13, 13],
       });
       const marker = L.marker([el.lat, el.lng], { icon });
       marker.bindPopup(`
-        <div style="min-width:190px">
-          <b>${el.name}</b><br/><span style="color:#6b7280">${st.label}</span><br/>${metaHtml}
+        <div style="min-width:200px">
+          <b>${el.name}</b><br/><span style="color:#6b7280">${st.label}</span><br/>${subHtml}${portHtml}${metaHtml}${photoHtml}
           <a href="#" data-cable-from="${el.id}">Run cable from here</a><br/>
           <a href="#" data-maint-el="${el.id}">Log maintenance</a>
           ${isAdmin ? `<br/><a href="#" data-del-el="${el.id}" style="color:#dc2626">Delete</a>` : ''}
@@ -204,7 +254,7 @@ export default function NetworkMapPage() {
 
   const startPlacing = () => {
     setMode('place');
-    setElementForm({ type: 'FAT', name: '', lat: 0, lng: 0, ratio: '1x8', inputCore: '', inputPowerDbm: '', outputPowerDbm: '', routerId: '', notes: '' });
+    setElementForm({ type: 'FAT', name: '', lat: 0, lng: 0, ratio: '1x8', inputCore: '', inputPowerDbm: '', outputPowerDbm: '', routerId: '', notes: '', subscriberId: '', photo: '' });
     toast('Tap the map to position the equipment, or use "My GPS".', { duration: 4000 });
   };
 
@@ -219,8 +269,9 @@ export default function NetworkMapPage() {
       if (elementForm.outputPowerDbm) meta.outputPowerDbm = Number(elementForm.outputPowerDbm);
     }
     if (elementForm.type === 'MIKROTIK' && elementForm.routerId) meta.routerId = elementForm.routerId;
+    if (elementForm.type === 'CUSTOMER' && elementForm.subscriberId) meta.subscriberId = elementForm.subscriberId;
     if (elementForm.notes) meta.notes = elementForm.notes;
-    addElementMut.mutate({ type: elementForm.type, name: elementForm.name || undefined, lat: elementForm.lat, lng: elementForm.lng, meta });
+    addElementMut.mutate({ type: elementForm.type, name: elementForm.name || undefined, lat: elementForm.lat, lng: elementForm.lng, meta, photo: elementForm.photo || undefined });
   };
 
   const submitCable = () => {
@@ -280,6 +331,15 @@ export default function NetworkMapPage() {
             ))}
           </div>
           <p className="mt-1 text-gray-400">dashed = customer drop</p>
+          <div className="mt-1.5 pt-1.5 border-t border-gray-200 dark:border-gray-700">
+            <p className="font-semibold mb-1">Customer premise</p>
+            <div className="flex flex-wrap gap-x-2 gap-y-0.5">
+              <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: '#16a34a' }} />online</span>
+              <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: '#f59e0b' }} />offline</span>
+              <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: '#dc2626' }} />expired</span>
+            </div>
+            <p className="text-gray-400 mt-1">red ring on a FAT = full</p>
+          </div>
         </div>
       </div>
 
@@ -328,6 +388,44 @@ export default function NetworkMapPage() {
               </select>
             </div>
           )}
+          {elementForm.type === 'CUSTOMER' && (
+            <div className="mb-2">
+              <label className="label text-xs">Link to subscriber (plots their live status)</label>
+              <select className="input text-sm" value={elementForm.subscriberId} onChange={e => {
+                const sub = (subscribers as { id: string; fullName: string; username: string }[]).find(x => x.id === e.target.value);
+                setElementForm(f => f && ({ ...f, subscriberId: e.target.value, name: f.name || (sub ? sub.fullName : '') }));
+              }}>
+                <option value="">— not linked —</option>
+                {(subscribers as { id: string; fullName: string; username: string }[]).map(sub => (
+                  <option key={sub.id} value={sub.id}>{sub.fullName} ({sub.username})</option>
+                ))}
+              </select>
+              <p className="text-[11px] text-gray-400 mt-1">Linked premises turn green when online, amber when offline, red when expired.</p>
+            </div>
+          )}
+
+          <label className="label text-xs">Photo</label>
+          <div className="flex items-center gap-2 mb-3">
+            <input id="net-photo" type="file" accept="image/*" capture="environment" className="hidden"
+              onChange={async e => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (!file) return;
+                try {
+                  const small = await downscalePhoto(file);
+                  setElementForm(f => f && ({ ...f, photo: small }));
+                } catch { toast.error('Could not read that photo'); }
+              }} />
+            <label htmlFor="net-photo" className="btn-secondary text-xs cursor-pointer">📷 {elementForm.photo ? 'Retake' : 'Take photo'}</label>
+            {elementForm.photo && (
+              <>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={elementForm.photo} alt="" className="w-12 h-12 rounded object-cover border border-gray-200 dark:border-gray-700" />
+                <button onClick={() => setElementForm(f => f && ({ ...f, photo: '' }))} className="text-xs text-red-500">Remove</button>
+              </>
+            )}
+          </div>
+
           <label className="label text-xs">Notes</label>
           <input className="input text-sm mb-3" value={elementForm.notes} onChange={e => setElementForm(f => f && ({ ...f, notes: e.target.value }))} placeholder="optional" />
           <div className="flex justify-end gap-2">
@@ -436,6 +534,22 @@ export default function NetworkMapPage() {
             {inv.cableByCores.length === 0 && <p className="text-sm text-gray-400">No cables recorded yet.</p>}
           </div>
           <p className="text-xs text-gray-500 mt-3">Customer drops: {inv.customerDrops.count} ({Math.round(inv.customerDrops.meters).toLocaleString()} m) • Pending maintenance: {inv.pendingMaintenance}</p>
+
+          {inv.splitterPorts.total > 0 && (
+            <div className="mt-4 pt-3 border-t border-gray-200 dark:border-gray-800">
+              <p className="text-sm font-medium mb-2">Splitter capacity</p>
+              <div className="flex items-center gap-3 mb-2">
+                <div className="flex-1 h-2.5 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                  <div className="h-full rounded-full bg-blue-600" style={{ width: `${Math.min(100, (inv.splitterPorts.used / inv.splitterPorts.total) * 100)}%` }} />
+                </div>
+                <span className="text-sm font-medium whitespace-nowrap">{inv.splitterPorts.used} / {inv.splitterPorts.total} ports</span>
+              </div>
+              <p className="text-xs text-gray-500">{inv.splitterPorts.free} ports free across the plant — capacity for {inv.splitterPorts.free} more connections.</p>
+              {inv.fullFats.length > 0 && (
+                <p className="text-xs text-red-600 mt-1">Full ({inv.fullFats.length}): {inv.fullFats.map(f => f.name).join(', ')} — add a splitter before promising new connections here.</p>
+              )}
+            </div>
+          )}
         </div>
       )}
     </AppLayout>

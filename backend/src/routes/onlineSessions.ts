@@ -7,6 +7,20 @@ import { sendSuccess, sendError } from '../utils/response';
 const router = Router();
 router.use(authenticate);
 
+// RouterOS reports session duration as e.g. "45s", "3m12s", "1h23m45s", "2d3h", "1w2d3h4m5s".
+// This is the ONLY reliable source of "how long has this session been up": the OnlineSession row
+// itself is deleted and recreated on every ~3s sync (see /router/sessions), so its own
+// createdAt/updatedAt reset constantly and can't be used for duration.
+function parseRouterUptime(u: string | null | undefined): number {
+  if (!u) return Number.MAX_SAFE_INTEGER; // unknown duration sorts last (treated as "longest")
+  const re = /(\d+)([wdhms])/g;
+  const mult: Record<string, number> = { w: 604800, d: 86400, h: 3600, m: 60, s: 1 };
+  let total = 0, matched = false;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(u)) !== null) { total += Number(m[1]) * mult[m[2]]; matched = true; }
+  return matched ? total : Number.MAX_SAFE_INTEGER;
+}
+
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user?.tenantId;
@@ -26,7 +40,13 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       const expired = sub.expiresAt ? new Date(sub.expiresAt).getTime() <= now : false;
       return sub.isActive && !expired;
     });
-    sendSuccess(res, visible);
+    // Shortest online time first (just-connected users at the top), longest at the bottom —
+    // using the router's own reported uptime, not our DB timestamps (see parseRouterUptime).
+    const sorted = visible
+      .map(s => ({ s, secs: parseRouterUptime(s.uptime) }))
+      .sort((a, b) => a.secs - b.secs)
+      .map(x => x.s);
+    sendSuccess(res, sorted);
   } catch {
     sendError(res, 'Failed to fetch sessions', 500);
   }

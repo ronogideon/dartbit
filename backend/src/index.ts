@@ -95,8 +95,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.7', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.7', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.8', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.8', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -129,11 +129,12 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.7 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.11.8 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
   startExpiryWatcher();
+  startRouterOfflineWatcher();
   startWgStatusRefresher();
   startAutoDeleteScheduler();
   startFreeradiusHealthCheck();
@@ -181,6 +182,29 @@ function startSessionCleanup() {
   };
   run();
   setInterval(run, 60 * 60 * 1000); // hourly
+}
+
+// Router status was a one-way ratchet: heartbeat set it ONLINE, but nothing ever flipped it back,
+// so a router unplugged/unreachable stayed "ONLINE" on the dashboard forever. Heartbeat fires every
+// 30s, so 90s of silence (3 missed beats) is a safe, fast-reacting cutoff — long enough to absorb a
+// single dropped packet, short enough that OFFLINE means something within ~1.5 minutes of real loss.
+function startRouterOfflineWatcher() {
+  const prisma = new PrismaClient();
+  const STALE_MS = 90 * 1000;
+  const run = async () => {
+    try {
+      const cutoff = new Date(Date.now() - STALE_MS);
+      const result = await prisma.mikrotikRouter.updateMany({
+        where: { status: 'ONLINE', lastSeenAt: { lt: cutoff } },
+        data: { status: 'OFFLINE' },
+      });
+      if (result.count > 0) console.log(`📡 Marked ${result.count} router(s) OFFLINE (no heartbeat in ${STALE_MS / 1000}s)`);
+    } catch (err) {
+      console.error('Router offline watcher error:', err instanceof Error ? err.message : err);
+    }
+  };
+  run();
+  setInterval(run, 15 * 1000); // check every 15s so OFFLINE shows up quickly
 }
 
 // Update each tenant's billingStatus based on their due date:
@@ -865,6 +889,7 @@ async function patchDatabase() {
       id TEXT PRIMARY KEY, "tenantId" TEXT NOT NULL, type TEXT NOT NULL, name TEXT NOT NULL,
       lat DOUBLE PRECISION NOT NULL, lng DOUBLE PRECISION NOT NULL, meta TEXT, "parentId" TEXT,
       "createdBy" TEXT, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+    await safeExec(prisma, 'NetworkElement photo', `ALTER TABLE "NetworkElement" ADD COLUMN IF NOT EXISTS photo TEXT`);
     await safeExec(prisma, 'NetworkElement idx', `CREATE INDEX IF NOT EXISTS "NetworkElement_tenantId_idx" ON "NetworkElement"("tenantId")`);
     await safeExec(prisma, 'NetworkCable table', `CREATE TABLE IF NOT EXISTS "NetworkCable" (
       id TEXT PRIMARY KEY, "tenantId" TEXT NOT NULL, "fromId" TEXT NOT NULL, "toId" TEXT,
