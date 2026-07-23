@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
 import { promises as dns } from 'dns';
 import prisma from '../utils/prisma';
 import { sendError } from '../utils/response';
@@ -735,7 +736,11 @@ router.all('/sessions', async (req: Request, res: Response) => {
 
     const pppoeStr = String(req.query.pppoe || '').replace(/[^a-zA-Z0-9_\-\.,:|\/]/g, '');
 
-    await prisma.onlineSession.deleteMany({ where: { routerId: r.id } });
+    // NOTE: no longer wiping all sessions here — see the upsert/targeted-delete below. Blanket
+    // delete-then-recreate every ~3s destroyed every row's identity each cycle, which (a) reset
+    // any "how long online" tracking to zero for EVERY session on EVERY poll, and (b) made the
+    // active-users list visibly flicker/reflow on the frontend each refresh instead of updating
+    // quietly in place.
 
     if (pppoeStr) {
       const entries = pppoeStr.split(',').filter(Boolean);
@@ -888,8 +893,40 @@ router.all('/sessions', async (req: Request, res: Response) => {
         .filter(s => { const sid = (s as { subscriberId?: string }).subscriberId; return !(sid && hiddenSubIds.has(sid)); })
         .map(({ service: _svc, ...rest }) => rest);
 
+      const reportedUsernames = onlineRows.map(s => s.username).filter(Boolean);
+
       if (onlineRows.length > 0) {
-        await prisma.onlineSession.createMany({ data: onlineRows });
+        // Upsert every reported session in ONE batched multi-row query. This is what keeps an
+        // ongoing session's row STABLE (same id, same startedAt) across the ~3s poll cycle instead
+        // of destroying and recreating it every time — startedAt is set only on first INSERT and
+        // is never touched by the ON CONFLICT branch, so it's a true "since when has this session
+        // been continuously online" anchor for the active-users page to sort on.
+        const cols = ['id', 'username', '"ipAddress"', '"macAddress"', '"uploadSpeed"', '"downloadSpeed"', 'uptime', '"routerId"', '"subscriberId"', '"tenantId"', '"startedAt"', '"createdAt"', '"updatedAt"'];
+        const values: unknown[] = [];
+        const rowsSql: string[] = [];
+        onlineRows.forEach((s, i) => {
+          const b = i * 10;
+          rowsSql.push(`($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10},NOW(),NOW(),NOW())`);
+          values.push(
+            crypto.randomUUID(), s.username, s.ipAddress || null, s.macAddress || null,
+            s.uploadSpeed ?? null, s.downloadSpeed ?? null, s.uptime || null, r.id,
+            (s as { subscriberId?: string }).subscriberId || null, r.tenantId,
+          );
+        });
+        await prisma.$executeRawUnsafe(
+          `INSERT INTO "OnlineSession" (${cols.join(',')}) VALUES ${rowsSql.join(',')}
+           ON CONFLICT ("routerId","username") DO UPDATE SET
+             "ipAddress"=EXCLUDED."ipAddress", "macAddress"=EXCLUDED."macAddress",
+             "uploadSpeed"=EXCLUDED."uploadSpeed", "downloadSpeed"=EXCLUDED."downloadSpeed",
+             uptime=EXCLUDED.uptime, "subscriberId"=EXCLUDED."subscriberId", "updatedAt"=NOW()`,
+          ...values,
+        );
+
+        // Targeted delete: only sessions genuinely no longer reported (i.e. actually ended) are
+        // removed — everything still being reported keeps its row, id, and startedAt untouched.
+        await prisma.onlineSession.deleteMany({
+          where: { routerId: r.id, username: { notIn: reportedUsernames } },
+        });
 
         for (const s of onlineRows) {
           if (!s.username) continue;
@@ -898,12 +935,16 @@ router.all('/sessions', async (req: Request, res: Response) => {
             data: { lastOnlineAt: new Date(), ipAddress: s.ipAddress || undefined, routerId: r.id },
           });
         }
+      } else {
+        // Nothing reported at all — every session on this router has genuinely ended.
+        await prisma.onlineSession.deleteMany({ where: { routerId: r.id } });
       }
 
       // === Persistent session history (SessionRecord) ===
       await recordSessionHistory(r.id, r.tenantId, sessionsWithIds, subByUsername, now);
     } else {
-      // Empty poll = no active sessions. End all currently-tracked sessions for this router.
+      // Empty poll = no active sessions at all. End all currently-tracked sessions for this router.
+      await prisma.onlineSession.deleteMany({ where: { routerId: r.id } });
       await recordSessionHistory(r.id, r.tenantId, [], {}, Date.now());
     }
 

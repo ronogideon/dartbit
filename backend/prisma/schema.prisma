@@ -347,8 +347,14 @@ model OnlineSession {
   subscriberId  String?
   subscriber    Subscriber?    @relation(fields: [subscriberId], references: [id], onDelete: SetNull)
   tenantId      String
+  startedAt     DateTime       @default(now()) // set ONCE when the session first appears; never
+                                                // touched again while it stays reported — this is
+                                                // the durable "how long have they really been
+                                                // online" anchor (see /router/sessions upsert).
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
+
+  @@unique([routerId, username])
 }
 
 // Persistent record of completed (and in-progress) sessions.

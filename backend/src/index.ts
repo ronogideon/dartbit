@@ -95,8 +95,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.8', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.8', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.9', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.9', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -129,7 +129,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.8 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.11.9 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -890,6 +890,11 @@ async function patchDatabase() {
       lat DOUBLE PRECISION NOT NULL, lng DOUBLE PRECISION NOT NULL, meta TEXT, "parentId" TEXT,
       "createdBy" TEXT, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
     await safeExec(prisma, 'NetworkElement photo', `ALTER TABLE "NetworkElement" ADD COLUMN IF NOT EXISTS photo TEXT`);
+    await safeExec(prisma, 'OnlineSession startedAt', `ALTER TABLE "OnlineSession" ADD COLUMN IF NOT EXISTS "startedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP`);
+    // Defensive: drop any duplicate (routerId, username) rows before the unique index below, so a
+    // stray leftover from the old wipe-and-recreate era can never make the index creation fail.
+    await safeExec(prisma, 'OnlineSession dedupe', `DELETE FROM "OnlineSession" a USING "OnlineSession" b WHERE a.id < b.id AND a."routerId" = b."routerId" AND a.username = b.username`);
+    await safeExec(prisma, 'OnlineSession router+username unique', `CREATE UNIQUE INDEX IF NOT EXISTS "OnlineSession_routerId_username_key" ON "OnlineSession"("routerId","username")`);
     await safeExec(prisma, 'NetworkElement idx', `CREATE INDEX IF NOT EXISTS "NetworkElement_tenantId_idx" ON "NetworkElement"("tenantId")`);
     await safeExec(prisma, 'NetworkCable table', `CREATE TABLE IF NOT EXISTS "NetworkCable" (
       id TEXT PRIMARY KEY, "tenantId" TEXT NOT NULL, "fromId" TEXT NOT NULL, "toId" TEXT,
