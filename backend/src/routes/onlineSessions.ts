@@ -7,11 +7,30 @@ import { sendSuccess, sendError } from '../utils/response';
 const router = Router();
 router.use(authenticate);
 
-// RouterOS reports session duration as e.g. "45s", "3m12s", "1h23m45s", "2d3h", "1w2d3h4m5s" — kept
-// only for DISPLAY in the table. Sorting uses OnlineSession.startedAt instead: since sessions are
-// now upserted in place (not wiped every ~3s — see /router/sessions), startedAt is a stable,
-// database-anchored "since when has this session been continuously online", set once on first
-// insert and never touched again while the session keeps being reported.
+// How long has a session actually been up?
+//
+// Two sources, in order of trustworthiness:
+//  1. `uptime` as reported by the router itself — the real session age. RouterOS sends compound
+//     durations ("45s", "3m12s", "1h23m45s", "2d3h", "1w2d3h4m5s"); the RADIUS watcher sends a
+//     plain seconds count ("3600"); hotspot bypass devices send the literal "bypass".
+//  2. `startedAt` — when Dartbit FIRST saw the session. Only a fallback, because it is not the
+//     true session age: rows backfilled by the migration all share one timestamp (so they tie and
+//     order arbitrarily), and it resets if a session momentarily drops out of a poll.
+function sessionSeconds(uptime: string | null | undefined, startedAt: Date | null | undefined, now: number): number {
+  const u = (uptime || '').trim();
+  if (u && u !== 'bypass') {
+    // Plain seconds count (RADIUS path).
+    if (/^\d+$/.test(u)) return Number(u);
+    // RouterOS compound duration.
+    const mult: Record<string, number> = { w: 604800, d: 86400, h: 3600, m: 60, s: 1 };
+    const re = /(\d+)([wdhms])/g;
+    let total = 0, matched = false, m: RegExpExecArray | null;
+    while ((m = re.exec(u)) !== null) { total += Number(m[1]) * mult[m[2]]; matched = true; }
+    if (matched) return total;
+  }
+  if (startedAt) return Math.max(0, Math.floor((now - new Date(startedAt).getTime()) / 1000));
+  return Number.MAX_SAFE_INTEGER; // unknown duration sorts last
+}
 
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
@@ -20,8 +39,6 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     const sessions = await prisma.onlineSession.findMany({
       where,
       include: { subscriber: true, router: true },
-      // Shortest online time first (just-connected users at the top), longest at the bottom.
-      orderBy: { startedAt: 'desc' },
     });
     // Hide expired subscribers from the active page. Expired PPPoE/static devices are deliberately
     // kept connected (portal-only) so they can reach tenant.dartbittech.com to renew — but they
@@ -33,7 +50,14 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       const expired = sub.expiresAt ? new Date(sub.expiresAt).getTime() <= now : false;
       return sub.isActive && !expired;
     });
-    sendSuccess(res, visible);
+    // Shortest online time first (just-connected at the top), longest at the bottom. Ties break on
+    // id so the order is deterministic between polls — otherwise equal-duration rows would swap
+    // places on every refresh and the table would look like it was shuffling itself.
+    const sorted = visible
+      .map(s => ({ s, secs: sessionSeconds(s.uptime, (s as { startedAt?: Date }).startedAt, now) }))
+      .sort((a, b) => (a.secs - b.secs) || a.s.id.localeCompare(b.s.id))
+      .map(x => ({ ...x.s, onlineSeconds: x.secs === Number.MAX_SAFE_INTEGER ? null : x.secs }));
+    sendSuccess(res, sorted);
   } catch {
     sendError(res, 'Failed to fetch sessions', 500);
   }

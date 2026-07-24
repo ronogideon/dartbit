@@ -304,3 +304,9 @@ export const deleteNetCable = (id: string) => api.delete(`/network/cables/${id}`
 export const addNetMaintenance = (data: { kind: string; cableId?: string; elementId?: string; note?: string; newLengthM?: number }) => api.post('/network/maintenance', data).then((r) => r.data.data);
 export const resolveNetMaintenance = (id: string, status: 'CONFIRMED' | 'REJECTED') => api.patch(`/network/maintenance/${id}`, { status }).then((r) => r.data.data);
 export const getNetInventory = () => api.get('/network/inventory').then((r) => r.data.data as { routers: number; mikrotiksOnMap: number; olts: number; domes: number; fats: number; patchCords: number; customers: number; cableByCores: { cores: number; runs: number; meters: number }[]; totalCableMeters: number; customerDrops: { count: number; meters: number }; pendingMaintenance: number; splitterPorts: { total: number; used: number; free: number }; fullFats: { id: string; name: string }[] });
+
+// ---- Tenant-initiated M-Pesa prompt (STK push to a subscriber) ----
+export interface PromptTarget { subscriberId: string; fullName: string; username: string; phone: string; expired: boolean; expiresAt: string | null; packageId: string | null; packageName: string | null; amount: number | null; hasPackage: boolean }
+export const getPromptTarget = (subscriberId: string) => api.get(`/payments/prompt-target/${subscriberId}`).then((r) => r.data.data as PromptTarget);
+export const promptPayment = (data: { subscriberId: string; phone?: string; amount?: number }) => api.post('/payments/prompt', data).then((r) => r.data.data as { transactionId: string; phone: string; amount: number; message: string });
+export const getPromptStatus = (txId: string) => api.get(`/payments/prompt-status/${txId}`).then((r) => r.data.data as { status: string; message?: string | null; receipt?: string | null; amount?: number });

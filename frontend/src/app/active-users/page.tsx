@@ -10,7 +10,7 @@ import SearchInput from '@/components/ui/SearchInput';
 
 interface Session {
   id: string; username: string; ipAddress?: string; macAddress?: string;
-  uploadSpeed?: number; downloadSpeed?: number; uptime?: string;
+  uploadSpeed?: number; downloadSpeed?: number; uptime?: string; onlineSeconds?: number | null;
   router?: { name: string };
   subscriber?: { id: string; fullName: string; expiresAt?: string; service?: string };
 }
@@ -18,6 +18,18 @@ interface Session {
 function formatSpeed(kbps?: number) {
   if (!kbps || kbps === 0) return '0 Kbps';
   return kbps >= 1024 ? `${(kbps / 1024).toFixed(2)} Mbps` : `${kbps} Kbps`;
+}
+
+// The list is ordered by the backend (shortest session first). `onlineSeconds` is the backend's
+// normalised duration — RouterOS compound strings, RADIUS raw seconds and "bypass" all reduced to
+// one number — so the column reads consistently no matter which path reported the session.
+function formatOnline(secs?: number | null, fallback?: string) {
+  if (secs === null || secs === undefined) return fallback || '-';
+  if (secs < 60) return `${secs}s`;
+  const m = Math.floor(secs / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  if (d > 0) return `${d}d ${h % 24}h`;
+  if (h > 0) return `${h}h ${m % 60}m`;
+  return `${m}m ${secs % 60}s`;
 }
 
 function timeUntilExpiry(expiresAt?: string): { text: string; color: string } {
@@ -160,7 +172,7 @@ export default function ActiveUsersPage() {
                   <td className="table-td"><span className="badge-blue">{s.router?.name || '-'}</span></td>
                   <td className="table-td text-blue-600 font-mono text-sm">{formatSpeed(s.uploadSpeed)}</td>
                   <td className="table-td text-green-600 font-mono text-sm">{formatSpeed(s.downloadSpeed)}</td>
-                  <td className="table-td text-gray-500 text-sm">{s.uptime || '-'}</td>
+                  <td className="table-td text-gray-500 text-sm">{formatOnline(s.onlineSeconds, s.uptime)}</td>
                 </tr>
               );
             })}

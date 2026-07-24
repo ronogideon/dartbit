@@ -1,13 +1,13 @@
 'use client';
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getPayments, createPayment, editPayment, deletePayment, getSubscribers } from '@/lib/api';
+import { getPayments, createPayment, editPayment, deletePayment, getSubscribers, getPromptTarget, promptPayment, getPromptStatus, type PromptTarget } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import SubscriberLink from '@/components/ui/SubscriberLink';
 import toast from 'react-hot-toast';
-import { Plus, Trash2, Edit2, Lock } from 'lucide-react';
+import { Plus, Trash2, Edit2, Lock, Smartphone } from 'lucide-react';
 import SearchInput from '@/components/ui/SearchInput';
 
 interface Payment {
@@ -26,6 +26,81 @@ function isAutomatic(p: Payment): boolean {
 
 export default function PaymentsPage() {
   const qc = useQueryClient();
+  // --- Prompt payment (tenant-initiated M-Pesa STK push) ---
+  const [promptOpen, setPromptOpen] = useState(false);
+  const [promptSubId, setPromptSubId] = useState('');
+  const [promptTarget, setPromptTarget] = useState<PromptTarget | null>(null);
+  const [promptPhone, setPromptPhone] = useState('');
+  const [promptAmount, setPromptAmount] = useState('');
+  const [promptLoading, setPromptLoading] = useState(false);
+  const [promptSending, setPromptSending] = useState(false);
+  const [promptStatus, setPromptStatus] = useState<string | null>(null);
+
+  const resetPrompt = () => {
+    setPromptOpen(false); setPromptSubId(''); setPromptTarget(null);
+    setPromptPhone(''); setPromptAmount(''); setPromptStatus(null); setPromptSending(false);
+  };
+
+  // Pull the subscriber's saved phone and their package price to prefill the dialog. The tenant can
+  // still edit both before sending — e.g. a relative paying on someone else's behalf.
+  const loadPromptTarget = async (subId: string) => {
+    setPromptSubId(subId);
+    setPromptTarget(null); setPromptPhone(''); setPromptAmount(''); setPromptStatus(null);
+    if (!subId) return;
+    setPromptLoading(true);
+    try {
+      const t = await getPromptTarget(subId);
+      setPromptTarget(t);
+      setPromptPhone(t.phone || '');
+      setPromptAmount(t.amount != null ? String(t.amount) : '');
+    } catch {
+      toast.error('Could not load that subscriber');
+    } finally {
+      setPromptLoading(false);
+    }
+  };
+
+  const sendPrompt = async () => {
+    if (!promptSubId) return toast.error('Choose a subscriber');
+    if (!promptPhone.trim()) return toast.error('Enter the phone number to prompt');
+    const amt = Number(promptAmount);
+    if (!amt || amt <= 0) return toast.error('Enter an amount');
+    setPromptSending(true);
+    setPromptStatus('Sending request to the phone…');
+    try {
+      const r = await promptPayment({ subscriberId: promptSubId, phone: promptPhone.trim(), amount: amt });
+      setPromptStatus(`Request sent to ${r.phone} — waiting for them to enter their M-Pesa PIN…`);
+      // Poll until the customer completes or cancels (STK prompts expire after about a minute).
+      const started = Date.now();
+      const poll = async (): Promise<void> => {
+        if (Date.now() - started > 90_000) { setPromptStatus('No response yet — you can check the Payments list shortly.'); setPromptSending(false); return; }
+        await new Promise(res => setTimeout(res, 3000));
+        try {
+          const st = await getPromptStatus(r.transactionId);
+          if (st.status === 'PAID') {
+            toast.success('Payment received — subscriber renewed');
+            qc.invalidateQueries({ queryKey: ['payments'] });
+            qc.invalidateQueries({ queryKey: ['subscribers'] });
+            resetPrompt();
+            return;
+          }
+          if (st.status === 'FAILED' || st.status === 'CANCELLED') {
+            setPromptStatus(st.message || 'The customer did not complete the payment.');
+            setPromptSending(false);
+            return;
+          }
+        } catch { /* keep polling */ }
+        return poll();
+      };
+      void poll();
+    } catch (e) {
+      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Could not send the request';
+      setPromptStatus(msg);
+      toast.error(msg);
+      setPromptSending(false);
+    }
+  };
+
   const [tab, setTab] = useState<'AUTOMATIC' | 'MANUAL'>('AUTOMATIC');
   const [modalOpen, setModalOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -92,7 +167,10 @@ export default function PaymentsPage() {
           <h1 className="text-2xl font-bold">Payments</h1>
           <p className="text-sm text-gray-500 mt-1">Total collected: KES {total.toLocaleString()}</p>
         </div>
-        <button onClick={() => setModalOpen(true)} className="btn-primary flex items-center gap-2"><Plus size={16} /> Record Payment</button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setPromptOpen(true)} className="btn-secondary flex items-center gap-2"><Smartphone size={16} /> Prompt Payment</button>
+          <button onClick={() => setModalOpen(true)} className="btn-primary flex items-center gap-2"><Plus size={16} /> Record Payment</button>
+        </div>
       </div>
 
       {/* Automatic vs Manual tabs */}
@@ -197,6 +275,79 @@ export default function PaymentsPage() {
             <button type="submit" className="btn-primary" disabled={createMut.isPending}>Record Payment</button>
           </div>
         </form>
+      </Modal>
+
+      {/* Prompt payment — tenant-initiated M-Pesa STK push to the subscriber's phone */}
+      <Modal isOpen={promptOpen} onClose={resetPrompt} title="Prompt Payment">
+        <div className="space-y-4">
+          <p className="text-sm text-gray-500">
+            Sends an M-Pesa request to the subscriber&apos;s phone. They approve it with their PIN and the
+            renewal is applied automatically.
+          </p>
+
+          <div>
+            <label className="label">Subscriber</label>
+            <select className="input" value={promptSubId} onChange={e => loadPromptTarget(e.target.value)} disabled={promptSending}>
+              <option value="">Select a subscriber…</option>
+              {(subscribers as Subscriber[]).map(sub => (
+                <option key={sub.id} value={sub.id}>{sub.fullName} ({sub.username})</option>
+              ))}
+            </select>
+          </div>
+
+          {promptLoading && <p className="text-sm text-gray-400">Loading their details…</p>}
+
+          {promptTarget && (
+            <>
+              <div className="rounded-lg bg-gray-50 dark:bg-gray-800/60 p-3 text-sm">
+                {promptTarget.hasPackage ? (
+                  <p>
+                    Package: <span className="font-medium">{promptTarget.packageName}</span>
+                    {promptTarget.expired
+                      ? <span className="text-red-500"> · expired — charging their previous package</span>
+                      : <span className="text-green-600"> · active</span>}
+                  </p>
+                ) : (
+                  <p className="text-amber-600">No package assigned — enter an amount manually.</p>
+                )}
+              </div>
+
+              <div>
+                <label className="label">Phone to prompt</label>
+                <input className="input" value={promptPhone} onChange={e => setPromptPhone(e.target.value)}
+                  placeholder="07XXXXXXXX" disabled={promptSending} />
+                <p className="text-[11px] text-gray-400 mt-1">
+                  {promptTarget.phone ? 'From their saved details — edit if someone else is paying.' : 'No number saved for this subscriber.'}
+                </p>
+              </div>
+
+              <div>
+                <label className="label">Amount (KES)</label>
+                <input className="input" type="number" min={1} value={promptAmount}
+                  onChange={e => setPromptAmount(e.target.value)} disabled={promptSending} />
+                {promptTarget.amount != null && (
+                  <p className="text-[11px] text-gray-400 mt-1">Their package price — edit to charge a different amount.</p>
+                )}
+              </div>
+            </>
+          )}
+
+          {promptStatus && (
+            <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-3 text-sm">
+              {promptStatus}
+            </div>
+          )}
+
+          <div className="flex gap-3 justify-end pt-2">
+            <button type="button" onClick={resetPrompt} className="btn-secondary">
+              {promptSending ? 'Close' : 'Cancel'}
+            </button>
+            <button type="button" onClick={sendPrompt} className="btn-primary flex items-center gap-2"
+              disabled={promptSending || !promptTarget}>
+              <Smartphone size={16} /> {promptSending ? 'Waiting…' : 'Send request'}
+            </button>
+          </div>
+        </div>
       </Modal>
 
       {/* Edit manual payment — amount + notes only */}
