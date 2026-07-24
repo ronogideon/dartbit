@@ -7,6 +7,16 @@ import { enqueueCommand, dequeueAll, clearQueue } from '../utils/commandQueue';
 
 const router = Router();
 
+// Gate for the OnlineSession schema self-heal in /sessions: at most one attempt per minute per
+// process, so a heal that can't succeed (e.g. deeper DB problem) doesn't stampede on every poll.
+let lastSessionHealAt = 0;
+function canAttemptSessionHeal(): boolean {
+  const now = Date.now();
+  if (now - lastSessionHealAt < 60_000) return false;
+  lastSessionHealAt = now;
+  return true;
+}
+
 async function findRouter(apiKey: string) {
   return prisma.mikrotikRouter.findUnique({
     where: { apiKey },
@@ -917,14 +927,33 @@ router.all('/sessions', async (req: Request, res: Response) => {
             (s as { subscriberId?: string }).subscriberId || null, r.tenantId, sessionKeyOf(s),
           );
         });
-        await prisma.$executeRawUnsafe(
+        const upsertSql =
           `INSERT INTO "OnlineSession" (${cols.join(',')}) VALUES ${rowsSql.join(',')}
            ON CONFLICT ("routerId","sessionKey") DO UPDATE SET
              username=EXCLUDED.username, "ipAddress"=EXCLUDED."ipAddress", "macAddress"=EXCLUDED."macAddress",
              "uploadSpeed"=EXCLUDED."uploadSpeed", "downloadSpeed"=EXCLUDED."downloadSpeed",
-             uptime=EXCLUDED.uptime, "subscriberId"=EXCLUDED."subscriberId", "updatedAt"=NOW()`,
-          ...values,
-        );
+             uptime=EXCLUDED.uptime, "subscriberId"=EXCLUDED."subscriberId", "updatedAt"=NOW()`;
+        try {
+          await prisma.$executeRawUnsafe(upsertSql, ...values);
+        } catch (upErr) {
+          const msg = upErr instanceof Error ? upErr.message : String(upErr);
+          // Self-heal: if the sessionKey column or its unique index is missing (e.g. the boot-time
+          // migration lost a race against the OLD container still inserting sessionKey='' rows
+          // during the zero-downtime deploy overlap — safeExec swallows that failure), repair the
+          // schema right here and retry once, instead of 500ing every 3s poll until the next deploy.
+          if (/ON CONFLICT|no unique|sessionKey.*does not exist|column .* does not exist/i.test(msg) && canAttemptSessionHeal()) {
+            console.warn(`[sessions] upsert failed ("${msg.slice(0, 140)}") — self-healing OnlineSession schema and retrying`);
+            await prisma.$executeRawUnsafe(`ALTER TABLE "OnlineSession" ADD COLUMN IF NOT EXISTS "startedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP`).catch(() => {});
+            await prisma.$executeRawUnsafe(`ALTER TABLE "OnlineSession" ADD COLUMN IF NOT EXISTS "sessionKey" TEXT NOT NULL DEFAULT ''`).catch(() => {});
+            await prisma.$executeRawUnsafe(`UPDATE "OnlineSession" SET "sessionKey" = COALESCE(NULLIF("macAddress",''), username) WHERE "sessionKey" = ''`).catch(() => {});
+            await prisma.$executeRawUnsafe(`DELETE FROM "OnlineSession" a USING "OnlineSession" b WHERE a.id < b.id AND a."routerId" = b."routerId" AND a."sessionKey" = b."sessionKey"`).catch(() => {});
+            await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "OnlineSession_routerId_sessionKey_key" ON "OnlineSession"("routerId","sessionKey")`).catch(() => {});
+            await prisma.$executeRawUnsafe(upsertSql, ...values);
+            console.log('[sessions] self-heal succeeded — upsert retry OK');
+          } else {
+            throw upErr;
+          }
+        }
 
         // Targeted delete: only DEVICES genuinely no longer reported (i.e. actually disconnected)
         // are removed — everything still being reported keeps its row, id, and startedAt untouched.
