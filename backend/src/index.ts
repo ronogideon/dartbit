@@ -500,7 +500,12 @@ function startRadiusSessionSync() {
       }
 
       const now = Date.now();
-      const perRouter = new Map<string, Array<Record<string, unknown>>>();
+      interface RadiusSessionRow {
+        username: string; ipAddress: string | null; macAddress: string | null;
+        uploadSpeed: number; downloadSpeed: number; uptime: string;
+        routerId: string; subscriberId: string | null; tenantId: string; sessionKey: string;
+      }
+      const perRouter = new Map<string, RadiusSessionRow[]>();
       const matchedSubs = new Set<string>();
       for (const row of rows) {
         const r = byWgIp.get(row.nasIp);
