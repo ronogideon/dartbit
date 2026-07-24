@@ -107,6 +107,16 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach s in=[/system scheduler find where name~"dartbit"] do={ :local n [/system scheduler get $s name]; :if ($n != "dartbit-cmd" && $n != "dartbit-cmd-upd") do={ /system scheduler remove $s } }`);
     add(`:foreach s in=[/system scheduler find where comment~"Dartbit"] do={ :local n [/system scheduler get $s name]; :if ($n != "dartbit-cmd" && $n != "dartbit-cmd-upd") do={ /system scheduler remove $s } }`);
     add(`:foreach s in=[/system script find where name~"dartbit"] do={ :local n [/system script get $s name]; :if ($n != "dartbit-cmd" && $n != "dartbit-cmd-upd") do={ /system script remove $s } }`);
+    // Re-establish the heartbeat IMMEDIATELY, before any other section runs. The cleanup above has
+    // just deleted it, and everything that follows (bridge, hotspot, WireGuard, RADIUS, portal) can
+    // fail — a runtime error, or a parse error that aborts /import outright. If that happens after
+    // the wipe but before section 9, the router keeps forwarding traffic but goes permanently mute:
+    // the backend never sees a heartbeat, the dashboard shows it OFFLINE forever, and the only cure
+    // is a manual visit. Creating it here means a partially-applied provision still reports in and
+    // stays remotely recoverable. Section 9 removes and re-adds these idempotently, so no dupes.
+    add(`/system script add name=dartbit-heartbeat policy=read,write,test source={/tool fetch url="${backendUrl}/router/heartbeat?apiKey=${apiKey}"${fetchFlags} keep-result=no}`);
+    add(`/system scheduler add name=dartbit-heartbeat interval=30s on-event="/system script run dartbit-heartbeat" comment="Dartbit heartbeat"`);
+    add(`:do { /system script run dartbit-heartbeat } on-error={}`);
     // NOTE: we do NOT remove /radius entries here. Section 8e removes+re-adds them atomically when
     // RADIUS is active. Stripping them unconditionally here would wipe a working router's RADIUS
     // config whenever the backend's RADIUS env switch is momentarily off — and never restore it,
@@ -125,17 +135,17 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // Runtime WAN detection: the interface carrying the active default route (resolving "gw%iface"
     // notation and PPPoE-client WANs to the physical port). Used to keep the live uplink out of the
     // bridge even if the stored config names a different port.
-    add(`:local wandet ""; :do { :local rt [/ip route find where dst-address="0.0.0.0/0" and active]; :if ([:len $rt] > 0) do={ :local gw [/ip route get [:pick $rt 0] immediate-gw]; :if ([:typeof $gw] = "str") do={ :local p [:find $gw "%"]; :if ([:typeof $p] = "num") do={ :set wandet [:pick $gw ($p+1) [:len $gw]] } else={ :set wandet $gw } } } } on-error={}; :do { :if ([:len [/interface pppoe-client find name=$wandet]] > 0) do={ :set wandet [/interface pppoe-client get [find name=$wandet] interface] } } on-error={}`);
+    add(`:global wandet ""; :do { :local rt [/ip route find where dst-address="0.0.0.0/0" and active]; :if ([:len $rt] > 0) do={ :local gw [/ip route get [:pick $rt 0] immediate-gw]; :if ([:typeof $gw] = "str") do={ :local p [:find $gw "%"]; :if ([:typeof $p] = "num") do={ :set wandet [:pick $gw ($p+1) [:len $gw]] } else={ :set wandet $gw } } } } on-error={}; :do { :if ([:len [/interface pppoe-client find name=$wandet]] > 0) do={ :set wandet [/interface pppoe-client get [find name=$wandet] interface] } } on-error={}`);
     for (const port of lanInterfaces) {
       // First remove the port from ANY other bridge it might be on (this is the fix —
       // RouterOS silently rejects adding a port that's already on another bridge).
       add(`:foreach p in=[/interface bridge port find interface="${port}"] do={ :local b [/interface bridge port get $p bridge]; :if ($b != "${bridge}") do={ /interface bridge port remove $p; :log info ("Dartbit: moved ${port} from " . $b . " to ${bridge}") } }`);
-      add(`:if ("${port}" != $wandet && [:len [/interface bridge port find interface="${port}" bridge="${bridge}"]] = 0) do={ /interface bridge port add bridge=${bridge} interface=${port} comment="Dartbit LAN port" }`);
+      add(`:global wandet; :if ("${port}" != $wandet && [:len [/interface bridge port find interface="${port}" bridge="${bridge}"]] = 0) do={ /interface bridge port add bridge=${bridge} interface=${port} comment="Dartbit LAN port" }`);
     }
     // Safety net: add every remaining LAN-side interface that isn't on ANY bridge yet — all ethernet
     // except the WAN uplink, plus any wireless — into the bridge. Error-safe, so a freshly installed
     // router ends up with every AP/LAN port on the one bridge even if not all were enumerated.
-    add(`:foreach i in=[/interface ethernet find where name!="${wan}"] do={ :local n [/interface ethernet get $i name]; :if ($n != $wandet && [:len [/interface bridge port find interface=$n]] = 0 && [:len [/ip address find interface=$n]] = 0 && [:len [/ip dhcp-client find interface=$n]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$n comment="Dartbit LAN (auto)" } on-error={} } }`);
+    add(`:global wandet; :foreach i in=[/interface ethernet find where name!="${wan}"] do={ :local n [/interface ethernet get $i name]; :if ($n != $wandet && [:len [/interface bridge port find interface=$n]] = 0 && [:len [/ip address find interface=$n]] = 0 && [:len [/ip dhcp-client find interface=$n]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$n comment="Dartbit LAN (auto)" } on-error={} } }`);
     add(`:foreach w in=[/interface find where type="wlan"] do={ :local n [/interface get $w name]; :if ([:len [/interface bridge port find interface=$n]] = 0 && [:len [/ip address find interface=$n]] = 0 && [:len [/ip dhcp-client find interface=$n]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$n comment="Dartbit WLAN (auto)" } on-error={} } }`);
     add('');
 
@@ -175,11 +185,18 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
 
     // 4. NAT
     add('# 4. NAT for WAN');
-    // NAT must follow the REAL uplink: prefer the runtime-detected default-route interface
-    // (wandet, from section 1) over the configured value, and self-correct an existing rule that
-    // points at the wrong port (e.g. provisioned before detection, or the uplink moved).
-    add(`:local natif "${wan}"; :if ([:len $wandet] > 0) do={ :set natif $wandet }`);
-    add(`:if ([:len [/ip firewall nat find comment="Dartbit WAN NAT"]] = 0) do={ /ip firewall nat add chain=srcnat out-interface=$natif action=masquerade comment="Dartbit WAN NAT" } else={ :if ([/ip firewall nat get [find comment="Dartbit WAN NAT"] out-interface] != $natif) do={ /ip firewall nat set [find comment="Dartbit WAN NAT"] out-interface=$natif; :log info ("Dartbit: WAN NAT moved to " . $natif) } }`);
+    // Self-contained on ONE line by design. RouterOS does not reliably carry `:local` variables
+    // across separate top-level statements in an imported .rsc, so relying on $wandet set in an
+    // earlier section silently yielded an EMPTY value here — the rule fell back to the stored
+    // wanInterface (often ether1) and was written against the wrong port.
+    //
+    // It also resolves a bridge-slave uplink to its MASTER. On a bridged WAN (uplink physically on
+    // ether1 but the IP/default route living on a bridge), RouterOS refuses an out-interface that
+    // is a slave port and flags the rule INVALID: "in/out-interface matcher not possible when
+    // interface (ether1) is slave - use master instead (bridgeLocal)". An invalid masquerade means
+    // client traffic leaves un-NATted — subscribers authenticate fine but get no internet.
+    // Wrapped in on-error so a bad value can never abort the whole import.
+    add(`:do { :local gw ""; :local rt [/ip route find where dst-address="0.0.0.0/0" and active]; :if ([:len $rt] > 0) do={ :set gw [/ip route get [:pick $rt 0] immediate-gw] }; :local wanif "${wan}"; :if ([:typeof $gw] = "str" && [:len $gw] > 0) do={ :local p [:find $gw "%"]; :if ([:typeof $p] = "num") do={ :set wanif [:pick $gw ($p+1) [:len $gw]] } }; :do { :if ([:len [/interface pppoe-client find name=$wanif]] > 0) do={ :set wanif [/interface pppoe-client get [find name=$wanif] interface] } } on-error={}; :do { :local bp [/interface bridge port find interface=$wanif]; :if ([:len $bp] > 0) do={ :set wanif [/interface bridge port get [:pick $bp 0] bridge] } } on-error={}; :if ([:len [/ip firewall nat find comment="Dartbit WAN NAT"]] = 0) do={ /ip firewall nat add chain=srcnat out-interface=$wanif action=masquerade comment="Dartbit WAN NAT"; :log info ("Dartbit: WAN NAT created on " . $wanif) } else={ :if ([/ip firewall nat get [find comment="Dartbit WAN NAT"] out-interface] != $wanif) do={ /ip firewall nat set [find comment="Dartbit WAN NAT"] out-interface=$wanif; :log info ("Dartbit: WAN NAT moved to " . $wanif) } } } on-error={:log warning "Dartbit: WAN NAT setup failed"}`);
     add('');
 
     // 4b. ANTI-TETHERING (block hotspot/USB sharing) — TTL based, DISABLED BY DEFAULT.
