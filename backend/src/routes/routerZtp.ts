@@ -907,9 +907,23 @@ router.all('/sessions', async (req: Request, res: Response) => {
       // correct for a subscriber with multiple devices on one hotspot account), else username
       // (correct for PPPoE, which is one session per username by construction).
       const sessionKeyOf = (s: { username: string; macAddress?: string }) => s.macAddress || s.username;
-      const reportedKeys = onlineRows.map(sessionKeyOf).filter(Boolean);
 
-      if (onlineRows.length > 0) {
+      // Collapse duplicates BEFORE building the batch. A single poll can legitimately contain the
+      // same device twice — a stale hotspot host alongside its live session, a device present in
+      // both the hotspot and PPPoE lists, or two entries that resolve to the same key. Postgres
+      // rejects a multi-row INSERT ... ON CONFLICT that proposes the same conflict target twice
+      // ("ON CONFLICT DO UPDATE command cannot affect row a second time", SQLSTATE 21000), which
+      // failed the WHOLE batch → 500 on every poll for that router. Later entries win, so the most
+      // recently parsed reading for a device is the one kept.
+      const dedupedByKey = new Map<string, (typeof onlineRows)[number]>();
+      for (const s of onlineRows) {
+        const k = sessionKeyOf(s);
+        if (k) dedupedByKey.set(k, s);
+      }
+      const uniqueRows = Array.from(dedupedByKey.values());
+      const reportedKeys = Array.from(dedupedByKey.keys());
+
+      if (uniqueRows.length > 0) {
         // Upsert every reported session in ONE batched multi-row query. This is what keeps an
         // ongoing session's row STABLE (same id, same startedAt) across the ~3s poll cycle instead
         // of destroying and recreating it every time — startedAt is set only on first INSERT and
@@ -918,7 +932,7 @@ router.all('/sessions', async (req: Request, res: Response) => {
         const cols = ['id', 'username', '"ipAddress"', '"macAddress"', '"uploadSpeed"', '"downloadSpeed"', 'uptime', '"routerId"', '"subscriberId"', '"tenantId"', '"sessionKey"', '"startedAt"', '"createdAt"', '"updatedAt"'];
         const values: unknown[] = [];
         const rowsSql: string[] = [];
-        onlineRows.forEach((s, i) => {
+        uniqueRows.forEach((s, i) => {
           const b = i * 11;
           rowsSql.push(`($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10},$${b + 11},NOW(),NOW(),NOW())`);
           values.push(
@@ -937,11 +951,13 @@ router.all('/sessions', async (req: Request, res: Response) => {
           await prisma.$executeRawUnsafe(upsertSql, ...values);
         } catch (upErr) {
           const msg = upErr instanceof Error ? upErr.message : String(upErr);
-          // Self-heal: if the sessionKey column or its unique index is missing (e.g. the boot-time
-          // migration lost a race against the OLD container still inserting sessionKey='' rows
-          // during the zero-downtime deploy overlap — safeExec swallows that failure), repair the
-          // schema right here and retry once, instead of 500ing every 3s poll until the next deploy.
-          if (/ON CONFLICT|no unique|sessionKey.*does not exist|column .* does not exist/i.test(msg) && canAttemptSessionHeal()) {
+          // Self-heal ONLY for genuine schema gaps (missing column / missing unique index), e.g. if
+          // the boot-time migration lost a race during a zero-downtime deploy overlap. Deliberately
+          // does NOT match SQLSTATE 21000 ("cannot affect row a second time"), which is a DATA
+          // problem — duplicate keys within one batch — and is prevented by the dedupe above.
+          // Matching it here previously masked the real cause behind a pointless schema repair.
+          const isSchemaGap = /no unique or exclusion constraint|does not exist|undefined column/i.test(msg);
+          if (isSchemaGap && canAttemptSessionHeal()) {
             console.warn(`[sessions] upsert failed ("${msg.slice(0, 140)}") — self-healing OnlineSession schema and retrying`);
             await prisma.$executeRawUnsafe(`ALTER TABLE "OnlineSession" ADD COLUMN IF NOT EXISTS "startedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP`).catch(() => {});
             await prisma.$executeRawUnsafe(`ALTER TABLE "OnlineSession" ADD COLUMN IF NOT EXISTS "sessionKey" TEXT NOT NULL DEFAULT ''`).catch(() => {});
@@ -962,7 +978,7 @@ router.all('/sessions', async (req: Request, res: Response) => {
           r.id, ...reportedKeys,
         );
 
-        for (const s of onlineRows) {
+        for (const s of uniqueRows) {
           if (!s.username) continue;
           await prisma.subscriber.updateMany({
             where: { tenantId: r.tenantId, username: s.username },
