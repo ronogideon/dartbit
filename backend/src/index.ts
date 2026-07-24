@@ -518,15 +518,27 @@ function startRadiusSessionSync() {
           ipAddress: row.framedIp || null, macAddress: row.mac || null,
           uploadSpeed: up, downloadSpeed: down, uptime: String(row.sessionSecs),
           routerId: r.id, subscriberId: sub?.id || null, tenantId: r.tenantId,
+          sessionKey: row.mac || sub?.username || row.username,
         });
         perRouter.set(r.id, arr);
       }
 
-      // Replace the snapshot for every RADIUS router (clears routers that now have no sessions).
+      // Upsert each session (stable id/startedAt across cycles — matches the discipline used for
+      // directly-reported sessions in routerZtp.ts) rather than wiping and recreating every poll;
+      // only sessions no longer present in this snapshot are removed.
       for (const r of routers) {
-        await prisma.onlineSession.deleteMany({ where: { routerId: r.id } });
-        const list = perRouter.get(r.id);
-        if (list && list.length) { for (const d of list) await prisma.onlineSession.create({ data: d as never }); }
+        const list = perRouter.get(r.id) || [];
+        const keys = list.map(d => d.sessionKey).filter(Boolean);
+        await prisma.onlineSession.deleteMany({
+          where: { routerId: r.id, sessionKey: keys.length ? { notIn: keys } : undefined },
+        });
+        for (const d of list) {
+          await prisma.onlineSession.upsert({
+            where: { routerId_sessionKey: { routerId: r.id, sessionKey: d.sessionKey } },
+            update: { username: d.username, ipAddress: d.ipAddress, macAddress: d.macAddress, uploadSpeed: d.uploadSpeed, downloadSpeed: d.downloadSpeed, uptime: d.uptime, subscriberId: d.subscriberId },
+            create: d as never,
+          }).catch(() => { /* best-effort; one bad row shouldn't abort the whole sync */ });
+        }
       }
       if (matchedSubs.size) await prisma.subscriber.updateMany({ where: { id: { in: Array.from(matchedSubs) } }, data: { lastOnlineAt: new Date() } });
     } catch (err) {

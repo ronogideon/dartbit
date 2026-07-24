@@ -62,18 +62,29 @@ router.post('/sync', async (req: AuthRequest, res: Response) => {
     });
     if (!mikrotikRouter) return sendError(res, 'Router not found', 404);
 
-    // Clear old sessions for this router
-    await prisma.onlineSession.deleteMany({ where: { routerId: mikrotikRouter.id } });
+    // Clear sessions no longer present in this payload; upsert the rest (not a blanket wipe — see
+    // /router/sessions in routerZtp.ts, which current router scripts actually use, for why).
+    const keys = parsed.data.sessions.map(s => s.macAddress || s.username).filter(Boolean);
+    await prisma.onlineSession.deleteMany({
+      where: { routerId: mikrotikRouter.id, sessionKey: keys.length ? { notIn: keys } : undefined },
+    });
 
-    // Insert new sessions
+    // Insert/update sessions
     for (const s of parsed.data.sessions) {
       const subscriber = await prisma.subscriber.findFirst({
         where: { username: s.username, tenantId: mikrotikRouter.tenantId },
       });
+      const sessionKey = s.macAddress || s.username;
 
-      await prisma.onlineSession.create({
-        data: {
-          ...s,
+      await prisma.onlineSession.upsert({
+        where: { routerId_sessionKey: { routerId: mikrotikRouter.id, sessionKey } },
+        update: {
+          username: s.username, ipAddress: s.ipAddress, macAddress: s.macAddress,
+          uploadSpeed: s.uploadSpeed, downloadSpeed: s.downloadSpeed, uptime: s.uptime,
+          subscriberId: subscriber?.id,
+        },
+        create: {
+          ...s, sessionKey,
           routerId: mikrotikRouter.id,
           subscriberId: subscriber?.id,
           tenantId: mikrotikRouter.tenantId,
