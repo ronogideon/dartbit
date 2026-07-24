@@ -893,7 +893,11 @@ router.all('/sessions', async (req: Request, res: Response) => {
         .filter(s => { const sid = (s as { subscriberId?: string }).subscriberId; return !(sid && hiddenSubIds.has(sid)); })
         .map(({ service: _svc, ...rest }) => rest);
 
-      const reportedUsernames = onlineRows.map(s => s.username).filter(Boolean);
+      // Device identity for uniqueness: MAC when known (each physical device is its own session —
+      // correct for a subscriber with multiple devices on one hotspot account), else username
+      // (correct for PPPoE, which is one session per username by construction).
+      const sessionKeyOf = (s: { username: string; macAddress?: string }) => s.macAddress || s.username;
+      const reportedKeys = onlineRows.map(sessionKeyOf).filter(Boolean);
 
       if (onlineRows.length > 0) {
         // Upsert every reported session in ONE batched multi-row query. This is what keeps an
@@ -901,32 +905,33 @@ router.all('/sessions', async (req: Request, res: Response) => {
         // of destroying and recreating it every time — startedAt is set only on first INSERT and
         // is never touched by the ON CONFLICT branch, so it's a true "since when has this session
         // been continuously online" anchor for the active-users page to sort on.
-        const cols = ['id', 'username', '"ipAddress"', '"macAddress"', '"uploadSpeed"', '"downloadSpeed"', 'uptime', '"routerId"', '"subscriberId"', '"tenantId"', '"startedAt"', '"createdAt"', '"updatedAt"'];
+        const cols = ['id', 'username', '"ipAddress"', '"macAddress"', '"uploadSpeed"', '"downloadSpeed"', 'uptime', '"routerId"', '"subscriberId"', '"tenantId"', '"sessionKey"', '"startedAt"', '"createdAt"', '"updatedAt"'];
         const values: unknown[] = [];
         const rowsSql: string[] = [];
         onlineRows.forEach((s, i) => {
-          const b = i * 10;
-          rowsSql.push(`($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10},NOW(),NOW(),NOW())`);
+          const b = i * 11;
+          rowsSql.push(`($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10},$${b + 11},NOW(),NOW(),NOW())`);
           values.push(
             crypto.randomUUID(), s.username, s.ipAddress || null, s.macAddress || null,
             s.uploadSpeed ?? null, s.downloadSpeed ?? null, s.uptime || null, r.id,
-            (s as { subscriberId?: string }).subscriberId || null, r.tenantId,
+            (s as { subscriberId?: string }).subscriberId || null, r.tenantId, sessionKeyOf(s),
           );
         });
         await prisma.$executeRawUnsafe(
           `INSERT INTO "OnlineSession" (${cols.join(',')}) VALUES ${rowsSql.join(',')}
-           ON CONFLICT ("routerId","username") DO UPDATE SET
-             "ipAddress"=EXCLUDED."ipAddress", "macAddress"=EXCLUDED."macAddress",
+           ON CONFLICT ("routerId","sessionKey") DO UPDATE SET
+             username=EXCLUDED.username, "ipAddress"=EXCLUDED."ipAddress", "macAddress"=EXCLUDED."macAddress",
              "uploadSpeed"=EXCLUDED."uploadSpeed", "downloadSpeed"=EXCLUDED."downloadSpeed",
              uptime=EXCLUDED.uptime, "subscriberId"=EXCLUDED."subscriberId", "updatedAt"=NOW()`,
           ...values,
         );
 
-        // Targeted delete: only sessions genuinely no longer reported (i.e. actually ended) are
-        // removed — everything still being reported keeps its row, id, and startedAt untouched.
-        await prisma.onlineSession.deleteMany({
-          where: { routerId: r.id, username: { notIn: reportedUsernames } },
-        });
+        // Targeted delete: only DEVICES genuinely no longer reported (i.e. actually disconnected)
+        // are removed — everything still being reported keeps its row, id, and startedAt untouched.
+        await prisma.$executeRawUnsafe(
+          `DELETE FROM "OnlineSession" WHERE "routerId"=$1 AND "sessionKey" NOT IN (${reportedKeys.length ? reportedKeys.map((_, i) => `$${i + 2}`).join(',') : "''"})`,
+          r.id, ...reportedKeys,
+        );
 
         for (const s of onlineRows) {
           if (!s.username) continue;
