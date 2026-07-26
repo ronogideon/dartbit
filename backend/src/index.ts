@@ -24,6 +24,7 @@ import adminRoutes from './routes/admin';
 import voucherRoutes from './routes/vouchers';
 import billingRoutes from './routes/billing';
 import networkRoutes from './routes/network';
+import routerFirewallRoutes from './routes/routerFirewall';
 import usersRoutes from './routes/users';
 import paymentConfigRoutes from './routes/paymentConfig';
 import webhookRoutes from './routes/webhooks';
@@ -95,8 +96,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.12', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.12', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.13', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.13', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -116,6 +117,7 @@ app.use('/settings', settingsRoutes);
 app.use('/vouchers', voucherRoutes);
 app.use('/billing', billingRoutes);
 app.use('/network', networkRoutes);
+app.use('/router-firewall', routerFirewallRoutes);
 app.use('/users', usersRoutes);
 app.use('/payment-config', paymentConfigRoutes);
 app.use('/hotspot', mpesaRoutes);
@@ -129,7 +131,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.12 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.11.13 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -906,6 +908,16 @@ async function patchDatabase() {
       id TEXT PRIMARY KEY, "tenantId" TEXT NOT NULL, type TEXT NOT NULL, name TEXT NOT NULL,
       lat DOUBLE PRECISION NOT NULL, lng DOUBLE PRECISION NOT NULL, meta TEXT, "parentId" TEXT,
       "createdBy" TEXT, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+    await safeExec(prisma, 'RouterFirewall table', `CREATE TABLE IF NOT EXISTS "RouterFirewall" (
+      id TEXT PRIMARY KEY, "routerId" TEXT NOT NULL UNIQUE, "tenantId" TEXT NOT NULL,
+      enabled BOOLEAN NOT NULL DEFAULT false,
+      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+    await safeExec(prisma, 'RouterBlockedDomain table', `CREATE TABLE IF NOT EXISTS "RouterBlockedDomain" (
+      id TEXT PRIMARY KEY, "routerId" TEXT NOT NULL, "tenantId" TEXT NOT NULL, domain TEXT NOT NULL,
+      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
+    await safeExec(prisma, 'RouterBlockedDomain idx', `CREATE INDEX IF NOT EXISTS "RouterBlockedDomain_routerId_idx" ON "RouterBlockedDomain"("routerId")`);
+    await safeExec(prisma, 'RouterBlockedDomain uniq', `CREATE UNIQUE INDEX IF NOT EXISTS "RouterBlockedDomain_routerId_domain_key" ON "RouterBlockedDomain"("routerId",domain)`);
     await safeExec(prisma, 'NetworkElement photo', `ALTER TABLE "NetworkElement" ADD COLUMN IF NOT EXISTS photo TEXT`);
     await safeExec(prisma, 'OnlineSession startedAt', `ALTER TABLE "OnlineSession" ADD COLUMN IF NOT EXISTS "startedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP`);
     // sessionKey = device identity for the upsert (macAddress when known, else username). A

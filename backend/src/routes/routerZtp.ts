@@ -1514,6 +1514,18 @@ router.get('/provision-done', async (req: Request, res: Response) => {
     if (!r) return res.status(404).type('text/plain').send('');
     await prisma.$executeRawUnsafe(`UPDATE "MikrotikRouter" SET "provisionedAt"=NOW(), "lastSeenAt"=NOW() WHERE id=$1`, r.id);
     console.log(`[provision-done] router ${r.id} (${r.name}) — PROVISIONING COMPLETE`);
+    // Reprovisioning rebuilds the router's config from scratch, which drops the DNS/firewall block
+    // rules. Re-push the stored blocklist so a firewall-enabled router keeps enforcing it without
+    // the tenant having to remember to resync.
+    try {
+      const fw = await prisma.$queryRawUnsafe(`SELECT enabled FROM "RouterFirewall" WHERE "routerId"=$1`, r.id) as { enabled: boolean }[];
+      if (fw.length && fw[0].enabled) {
+        const domains = await prisma.$queryRawUnsafe(`SELECT domain FROM "RouterBlockedDomain" WHERE "routerId"=$1 ORDER BY domain ASC`, r.id) as { domain: string }[];
+        const { buildBlockSync } = await import('./routerFirewall');
+        await enqueueCommand(r.id, buildBlockSync(true, domains.map(d => d.domain)));
+        console.log(`[provision-done] re-applied ${domains.length} blocked domain(s) to ${r.name}`);
+      }
+    } catch (e) { console.error('[provision-done] firewall resync failed:', e instanceof Error ? e.message : e); }
     res.type('text/plain').send('ok');
   } catch {
     res.type('text/plain').send('');

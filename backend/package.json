@@ -1,6 +1,6 @@
 {
   "name": "dartbit-backend",
-  "version": "1.11.12",
+  "version": "1.11.13",
   "description": "Dartbit ISP Billing & MikroTik Management - Backend",
   "main": "dist/index.js",
   "scripts": {
@@ -8,6 +8,8 @@
     "build": "tsc",
     "start": "npx prisma migrate deploy && node dist/index.js",
     "seed": "ts-node --transpile-only src/seed.ts",
+    "dns": "node dist/dnsServer.js",
+    "dns:dev": "ts-node-dev --respawn --transpile-only src/dnsServer.ts",
     "seed:prod": "node dist/seed.js",
     "migrate": "npx prisma migrate dev",
     "migrate:deploy": "npx prisma migrate deploy",

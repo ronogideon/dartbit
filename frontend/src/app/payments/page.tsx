@@ -9,6 +9,7 @@ import SubscriberLink from '@/components/ui/SubscriberLink';
 import toast from 'react-hot-toast';
 import { Plus, Trash2, Edit2, Lock, Smartphone } from 'lucide-react';
 import SearchInput from '@/components/ui/SearchInput';
+import SearchableSelect from '@/components/ui/SearchableSelect';
 
 interface Payment {
   id: string; amount: number; method: string; source?: string; reference?: string; mpesaCode?: string;
@@ -287,12 +288,14 @@ export default function PaymentsPage() {
 
           <div>
             <label className="label">Subscriber</label>
-            <select className="input" value={promptSubId} onChange={e => loadPromptTarget(e.target.value)} disabled={promptSending}>
-              <option value="">Select a subscriber…</option>
-              {(subscribers as Subscriber[]).map(sub => (
-                <option key={sub.id} value={sub.id}>{sub.fullName} ({sub.username})</option>
-              ))}
-            </select>
+            <SearchableSelect
+              placeholder="Search a subscriber by name or username…"
+              value={promptSubId}
+              onChange={(v) => loadPromptTarget(String(v))}
+              options={[...(subscribers as Subscriber[])]
+                .sort((a, b) => a.fullName.localeCompare(b.fullName))
+                .map(sub => ({ value: sub.id, label: `${sub.fullName} (${sub.username})` }))}
+            />
           </div>
 
           {promptLoading && <p className="text-sm text-gray-400">Loading their details…</p>}

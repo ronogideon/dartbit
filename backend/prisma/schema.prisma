@@ -650,3 +650,23 @@ model NetworkMaintenance {
 
   @@index([tenantId])
 }
+
+model RouterFirewall {
+  id        String   @id
+  routerId  String   @unique
+  tenantId  String
+  enabled   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+}
+
+model RouterBlockedDomain {
+  id        String   @id
+  routerId  String
+  tenantId  String
+  domain    String
+  createdAt DateTime @default(now())
+
+  @@unique([routerId, domain])
+  @@index([routerId])
+}

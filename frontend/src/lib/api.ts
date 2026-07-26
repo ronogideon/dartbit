@@ -310,3 +310,12 @@ export interface PromptTarget { subscriberId: string; fullName: string; username
 export const getPromptTarget = (subscriberId: string) => api.get(`/payments/prompt-target/${subscriberId}`).then((r) => r.data.data as PromptTarget);
 export const promptPayment = (data: { subscriberId: string; phone?: string; amount?: number }) => api.post('/payments/prompt', data).then((r) => r.data.data as { transactionId: string; phone: string; amount: number; message: string });
 export const getPromptStatus = (txId: string) => api.get(`/payments/prompt-status/${txId}`).then((r) => r.data.data as { status: string; message?: string | null; receipt?: string | null; amount?: number });
+
+// ---- Per-router DNS / Firewall blocklist ----
+export interface BlockedDomain { id: string; domain: string; createdAt: string }
+export interface RouterFirewall { enabled: boolean; updatedAt: string | null; domains: BlockedDomain[] }
+export const getRouterFirewall = (routerId: string) => api.get(`/router-firewall/${routerId}`).then((r) => r.data.data as RouterFirewall);
+export const setRouterFirewall = (routerId: string, enabled: boolean) => api.patch(`/router-firewall/${routerId}`, { enabled }).then((r) => r.data.data as { enabled: boolean; message: string });
+export const blockDomain = (routerId: string, domain: string) => api.post(`/router-firewall/${routerId}/domains`, { domain }).then((r) => r.data.data as { domain: string; message: string });
+export const unblockDomain = (routerId: string, id: string) => api.delete(`/router-firewall/${routerId}/domains/${id}`).then((r) => r.data.data);
+export const resyncFirewall = (routerId: string) => api.post(`/router-firewall/${routerId}/resync`).then((r) => r.data.data);

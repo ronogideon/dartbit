@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getRouters, linkRouter, updateRouter, deleteRouter, getProvisionConfig, saveProvisionConfig, rebootRouter, changeRouterIdentity, updateRouterLanPorts, getRouterInterfaces, reprovisionRouter, getRouterZtpCommand, getRouterVpn, provisionRouterVpn, openWinbox, closeWinbox, getRouterOverview, getSubscribers } from '@/lib/api';
+import { getRouters, linkRouter, updateRouter, deleteRouter, getProvisionConfig, saveProvisionConfig, rebootRouter, changeRouterIdentity, updateRouterLanPorts, getRouterInterfaces, reprovisionRouter, getRouterZtpCommand, getRouterVpn, provisionRouterVpn, openWinbox, closeWinbox, getRouterOverview, getSubscribers, getRouterFirewall, setRouterFirewall, blockDomain, unblockDomain, resyncFirewall } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import LinkWizard from '@/components/LinkWizard';
 import AppLayout from '@/components/layout/AppLayout';
@@ -9,7 +9,7 @@ import Modal from '@/components/ui/Modal';
 import { expiryBadge } from '@/lib/format';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import toast from 'react-hot-toast';
-import { Plus, Edit2, Trash2, Copy, Terminal, Settings2, ChevronDown, ChevronUp, RotateCw, MoreVertical, Tag, Network, DownloadCloud } from 'lucide-react';
+import { Plus, Edit2, Trash2, Copy, Terminal, Settings2, ChevronDown, ChevronUp, RotateCw, MoreVertical, Tag, Network, DownloadCloud, Shield } from 'lucide-react';
 import SearchInput from '@/components/ui/SearchInput';
 
 interface ProvConfig {
@@ -628,7 +628,7 @@ function StatBox({ label, value, mono, accent }: { label: string; value: string;
 // Clickable-router detail: Info (health + VPN + Winbox), Users (subscribers on this router), Payments
 // (this month's collections by service). Data from /mikrotiks/:id/overview + the subscribers list.
 function RouterDetailModal({ router, isOpen, onClose }: { router: { id: string; name: string; status?: string; uptime?: string } | null; isOpen: boolean; onClose: () => void }) {
-  const [tab, setTab] = useState<'info' | 'users' | 'payments'>('info');
+  const [tab, setTab] = useState<'info' | 'users' | 'payments' | 'dns'>('info');
   const [vpnOpen, setVpnOpen] = useState(false);
   const { data: overview } = useQuery({
     queryKey: ['router-overview', router?.id],
@@ -644,9 +644,9 @@ function RouterDetailModal({ router, isOpen, onClose }: { router: { id: string; 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={router.name} size="lg">
       <div className="flex gap-1 mb-4 border-b border-gray-100 dark:border-gray-800">
-        {(['info', 'users', 'payments'] as const).map(t => (
+        {(['info', 'users', 'payments', 'dns'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
-            className={`px-3 py-2 text-sm font-medium capitalize border-b-2 -mb-px ${tab === t ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>{t}</button>
+            className={`px-3 py-2 text-sm font-medium capitalize border-b-2 -mb-px ${tab === t ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>{t === 'dns' ? 'DNS / Firewall' : t}</button>
         ))}
       </div>
 
@@ -706,7 +706,110 @@ function RouterDetailModal({ router, isOpen, onClose }: { router: { id: string; 
           </div>
         </div>
       )}
+      {tab === 'dns' && <DnsFirewallTab routerId={router.id} />}
     </Modal>
+  );
+}
+
+// DNS / Firewall panel for a router: toggle blocking on, then maintain a blocklist. Blocked sites
+// resolve to a dead address and are dropped at the firewall (no data served); everything else stays
+// reachable. Admin-only writes are enforced by the backend.
+function DnsFirewallTab({ routerId }: { routerId: string }) {
+  const qc = useQueryClient();
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'TENANT_ADMIN';
+  const { data, isPending } = useQuery({ queryKey: ['router-firewall', routerId], queryFn: () => getRouterFirewall(routerId) });
+  const [newDomain, setNewDomain] = useState('');
+  const invalidate = () => qc.invalidateQueries({ queryKey: ['router-firewall', routerId] });
+
+  const toggleMut = useMutation({
+    mutationFn: (enabled: boolean) => setRouterFirewall(routerId, enabled),
+    onSuccess: (d) => { invalidate(); toast.success(d.message); },
+    onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed'),
+  });
+  const addMut = useMutation({
+    mutationFn: (domain: string) => blockDomain(routerId, domain),
+    onSuccess: (d) => { invalidate(); setNewDomain(''); toast.success(d.message); },
+    onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Could not block that site'),
+  });
+  const removeMut = useMutation({
+    mutationFn: (id: string) => unblockDomain(routerId, id),
+    onSuccess: () => { invalidate(); toast.success('Unblocked'); },
+  });
+  const resyncMut = useMutation({
+    mutationFn: () => resyncFirewall(routerId),
+    onSuccess: () => toast.success('Blocklist re-sent to the router'),
+  });
+
+  if (isPending) return <p className="text-sm text-gray-400">Loading…</p>;
+  const enabled = data?.enabled ?? false;
+  const domains = data?.domains ?? [];
+
+  return (
+    <div className="space-y-4">
+      {/* Enable toggle */}
+      <div className={`rounded-xl p-4 flex items-center justify-between ${enabled ? 'bg-green-50 dark:bg-green-500/10' : 'bg-gray-50 dark:bg-gray-800/60'}`}>
+        <div className="flex items-center gap-3">
+          <Shield size={22} className={enabled ? 'text-green-600' : 'text-gray-400'} />
+          <div>
+            <p className="font-semibold">Content firewall {enabled ? 'on' : 'off'}</p>
+            <p className="text-xs text-gray-500">{enabled ? 'Blocked sites serve no data on this router.' : 'Turn on to block malicious sites, torrent trackers, and more.'}</p>
+          </div>
+        </div>
+        <button
+          onClick={() => isAdmin && toggleMut.mutate(!enabled)}
+          disabled={!isAdmin || toggleMut.isPending}
+          className={`relative w-12 h-6 rounded-full transition ${enabled ? 'bg-green-600' : 'bg-gray-300 dark:bg-gray-600'} ${!isAdmin ? 'opacity-50 cursor-not-allowed' : ''}`}>
+          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${enabled ? 'translate-x-6' : ''}`} />
+        </button>
+      </div>
+
+      {/* Add a domain */}
+      {isAdmin && (
+        <div className="flex gap-2">
+          <input
+            className="input flex-1" placeholder="Block a website, e.g. badsite.com"
+            value={newDomain}
+            onChange={e => setNewDomain(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && newDomain.trim()) addMut.mutate(newDomain.trim()); }}
+          />
+          <button onClick={() => newDomain.trim() && addMut.mutate(newDomain.trim())}
+            disabled={addMut.isPending || !newDomain.trim()} className="btn-primary disabled:opacity-50">Block</button>
+        </div>
+      )}
+
+      {/* Blocklist */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-sm font-medium">Blocked sites ({domains.length})</p>
+          {isAdmin && domains.length > 0 && (
+            <button onClick={() => resyncMut.mutate()} disabled={resyncMut.isPending}
+              className="text-xs text-blue-600 hover:underline">Re-send to router</button>
+          )}
+        </div>
+        {domains.length === 0 ? (
+          <p className="text-sm text-gray-400 py-6 text-center">No sites blocked yet.</p>
+        ) : (
+          <div className="space-y-1 max-h-64 overflow-y-auto">
+            {domains.map(d => (
+              <div key={d.id} className="flex items-center justify-between px-3 py-2 rounded-lg bg-gray-50 dark:bg-gray-800/60 text-sm">
+                <span className="font-mono">{d.domain}</span>
+                {isAdmin && (
+                  <button onClick={() => removeMut.mutate(d.id)} className="text-gray-400 hover:text-red-600" title="Unblock">
+                    <Trash2 size={15} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {!enabled && domains.length > 0 && (
+        <p className="text-xs text-amber-600">Firewall is off — these sites are currently reachable. Turn it on to enforce the list.</p>
+      )}
+      {!isAdmin && <p className="text-xs text-gray-400">Only admins can change firewall settings.</p>}
+    </div>
   );
 }
 
