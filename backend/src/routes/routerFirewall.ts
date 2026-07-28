@@ -41,34 +41,45 @@ async function ownRouter(req: AuthRequest, routerId: string) {
 // the tenant's or Centipid's own rules. Sending the FULL desired state each time keeps it
 // idempotent and self-correcting.
 export function buildBlockSync(enabled: boolean, domains: string[]): string {
-  const parts: string[] = [];
-  // Clear previously-managed entries first (scoped to our comment/list).
-  parts.push(`:foreach d in=[/ip dns static find comment="dartbit-block"] do={ /ip dns static remove $d }`);
-  parts.push(`:foreach a in=[/ip firewall address-list find list="dartbit-block"] do={ /ip firewall address-list remove $a }`);
+  const L: string[] = [];
+  // Clear previously-managed entries first (scoped to our comment/list so we never touch the
+  // tenant's or Centipid's own config). Each statement is its OWN line: the command queue delivers
+  // this as an /import file that runs line-by-line, so one failing statement can't abort the rest.
+  L.push(`:foreach d in=[/ip dns static find comment="dartbit-block"] do={ /ip dns static remove $d }`);
+  L.push(`:foreach a in=[/ip firewall address-list find list="dartbit-block"] do={ /ip firewall address-list remove $a }`);
 
   if (enabled && domains.length) {
     for (const d of domains) {
-      // Resolve the name to a dead address so the site can't load, and match both the domain and
-      // its subdomains. 0.0.0.0 as the answer means the client gets no usable route to the site.
-      parts.push(`:do { /ip dns static add name="${d}" address=0.0.0.0 comment="dartbit-block" } on-error={}`);
-      parts.push(`:do { /ip dns static add regexp=".*\\\\.${d.replace(/\./g, '\\\\.')}\$" address=0.0.0.0 comment="dartbit-block" } on-error={}`);
-      // Also block by resolved IP at the firewall (covers hardcoded-IP / DoH-bypass attempts where
-      // the client skips the router's DNS): add the domain to an address-list that resolves names.
-      parts.push(`:do { /ip firewall address-list add list="dartbit-block" address="${d}" comment="dartbit-block" } on-error={}`);
+      // RouterOS 7 match-subdomain=yes blocks the domain AND every subdomain in one entry, resolving
+      // it to a dead address. This is the primary block and needs clients to use the router's DNS —
+      // which the redirect below guarantees.
+      L.push(`:do { /ip dns static add name="${d}" address=0.0.0.0 match-subdomain=yes comment="dartbit-block" } on-error={ :do { /ip dns static add name="${d}" address=0.0.0.0 comment="dartbit-block" } on-error={} }`);
+      // Second layer: resolve the name at the firewall too, so traffic to its IP is dropped even if a
+      // client somehow reaches it without the router's DNS answer (cached IP, hardcoded host).
+      L.push(`:do { /ip firewall address-list add list="dartbit-block" address="${d}" comment="dartbit-block" } on-error={}`);
     }
-    // Firewall drop rules (forward = client traffic, output = router's own) — created once, scoped
-    // by comment, placed at the top so they win. Silent drop = the site "serves no data".
-    parts.push(`:if ([:len [/ip firewall filter find comment="dartbit-block-fwd"]] = 0) do={ /ip firewall filter add chain=forward dst-address-list="dartbit-block" action=drop comment="dartbit-block-fwd" place-before=0 }`);
-    parts.push(`:if ([:len [/ip firewall filter find comment="dartbit-block-out"]] = 0) do={ /ip firewall filter add chain=output dst-address-list="dartbit-block" action=drop comment="dartbit-block-out" place-before=0 }`);
-    // Make sure the router actually answers DNS for its clients so the static entries take effect.
-    parts.push(`:do { /ip dns set allow-remote-requests=yes } on-error={}`);
+    // THE KEY FIX: force every client DNS query through the router. Without this, a device set to
+    // 8.8.8.8 never sees our static entries and the block does nothing — which is exactly the
+    // "works as usual" symptom. Redirecting 53/udp+tcp to the router makes it answer ALL lookups,
+    // so the blocklist applies to every device regardless of its configured DNS. Scoped by comment,
+    // and skipped on hotspot routers where the hotspot already owns the DNS redirect.
+    L.push(`:if ([:len [/ip firewall nat find comment="dartbit-dns-force"]] = 0 && [:len [/ip hotspot]] = 0) do={ /ip firewall nat add chain=dstnat protocol=udp dst-port=53 action=redirect to-ports=53 comment="dartbit-dns-force" }`);
+    L.push(`:if ([:len [/ip firewall nat find comment="dartbit-dns-force-tcp"]] = 0 && [:len [/ip hotspot]] = 0) do={ /ip firewall nat add chain=dstnat protocol=tcp dst-port=53 action=redirect to-ports=53 comment="dartbit-dns-force-tcp" }`);
+    // Firewall drop for the resolved IPs (forward = client traffic, output = router's own).
+    L.push(`:if ([:len [/ip firewall filter find comment="dartbit-block-fwd"]] = 0) do={ /ip firewall filter add chain=forward dst-address-list="dartbit-block" action=drop comment="dartbit-block-fwd" place-before=0 }`);
+    L.push(`:if ([:len [/ip firewall filter find comment="dartbit-block-out"]] = 0) do={ /ip firewall filter add chain=output dst-address-list="dartbit-block" action=drop comment="dartbit-block-out" place-before=0 }`);
+    // The router must actually run a resolver for its clients.
+    L.push(`:do { /ip dns set allow-remote-requests=yes } on-error={}`);
   } else {
-    // Disabled (or no domains): remove our drop rules too, leaving the router fully open.
-    parts.push(`:foreach f in=[/ip firewall filter find comment="dartbit-block-fwd"] do={ /ip firewall filter remove $f }`);
-    parts.push(`:foreach f in=[/ip firewall filter find comment="dartbit-block-out"] do={ /ip firewall filter remove $f }`);
+    // Disabled: remove our drop rules AND the DNS redirect, leaving the router fully open.
+    L.push(`:foreach f in=[/ip firewall filter find comment="dartbit-block-fwd"] do={ /ip firewall filter remove $f }`);
+    L.push(`:foreach f in=[/ip firewall filter find comment="dartbit-block-out"] do={ /ip firewall filter remove $f }`);
+    L.push(`:foreach n in=[/ip firewall nat find comment="dartbit-dns-force"] do={ /ip firewall nat remove $n }`);
+    L.push(`:foreach n in=[/ip firewall nat find comment="dartbit-dns-force-tcp"] do={ /ip firewall nat remove $n }`);
   }
-  parts.push(`:do { /ip dns cache flush } on-error={}`);
-  return parts.join('; ');
+  L.push(`:do { /ip dns cache flush } on-error={}`);
+  L.push(`:log info "Dartbit: firewall blocklist applied (${enabled ? domains.length : 0} domains)"`);
+  return L.join('\n');
 }
 
 async function pushSync(routerId: string) {
@@ -162,6 +173,22 @@ router.post('/:routerId/resync', async (req: AuthRequest, res: Response) => {
     if (!r) return sendError(res, 'Router not found', 404);
     await pushSync(r.id);
     sendSuccess(res, { ok: true, message: 'Blocklist re-sent to the router.' });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
+// GET /router-firewall/:routerId/preview — the exact RouterOS commands the current blocklist
+// produces. Lets us confirm what's being pushed without shell access to the router.
+router.get('/:routerId/preview', async (req: AuthRequest, res: Response) => {
+  try {
+    if (!isAdmin(req)) return sendError(res, 'Admins only', 403);
+    const r = await ownRouter(req, req.params.routerId);
+    if (!r) return sendError(res, 'Router not found', 404);
+    const cfg = await prisma.$queryRawUnsafe(`SELECT enabled FROM "RouterFirewall" WHERE "routerId"=$1`, r.id) as { enabled: boolean }[];
+    const rows = await prisma.$queryRawUnsafe(`SELECT domain FROM "RouterBlockedDomain" WHERE "routerId"=$1 ORDER BY domain ASC`, r.id) as { domain: string }[];
+    const script = buildBlockSync(cfg.length ? cfg[0].enabled : false, rows.map(x => x.domain));
+    sendSuccess(res, { enabled: cfg.length ? cfg[0].enabled : false, domainCount: rows.length, script });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);
   }
