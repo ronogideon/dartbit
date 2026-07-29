@@ -30,6 +30,8 @@ import paymentConfigRoutes from './routes/paymentConfig';
 import webhookRoutes from './routes/webhooks';
 import hotspotPublicRoutes from './routes/hotspotPublic';
 import mpesaRoutes from './routes/mpesa';
+import { authenticate } from './middleware/auth';
+import { checkTrial } from './middleware/trial';
 import subscriberPortalRoutes from './routes/subscriberPortal';
 import superadminAnalyticsRoutes from './routes/superadminAnalytics';
 import announcementRoutes from './routes/announcements';
@@ -96,30 +98,37 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.16', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.16', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.17', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.17', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
 app.use('/admin', adminRoutes);
+// PAYWALL: after the 14-day trial ends, a TRIAL tenant is blocked (402) from the operational
+// surface below until they pay. We authenticate at the app level first so checkTrial can see the
+// tenant (each router also re-runs authenticate internally — harmless). Deliberately NOT gated, so a
+// lapsed tenant can still get back in and pay, and their end-customers stay online: /auth, /signup,
+// /billing, /tenants, /settings, /users (log in + pay + branding), /router + /hotspot + /portal +
+// /webhooks (routers polling and the tenant's own customers), and all /superadmin + /admin routes.
+const paywall = [authenticate, checkTrial];
 app.use('/router', routerZtpRoutes);
-app.use('/subscribers', subscriberRoutes);
-app.use('/packages', packageRoutes);
-app.use('/payments', paymentRoutes);
-app.use('/messages', messageRoutes);
-app.use('/notifications', notificationsRoutes);
-app.use('/mikrotiks', routerRoutes);
-app.use('/online-sessions', onlineSessionRoutes);
-app.use('/analytics', analyticsRoutes);
-app.use('/expenses', expenseRoutes);
+app.use('/subscribers', ...paywall, subscriberRoutes);
+app.use('/packages', ...paywall, packageRoutes);
+app.use('/payments', ...paywall, paymentRoutes);
+app.use('/messages', ...paywall, messageRoutes);
+app.use('/notifications', ...paywall, notificationsRoutes);
+app.use('/mikrotiks', ...paywall, routerRoutes);
+app.use('/online-sessions', ...paywall, onlineSessionRoutes);
+app.use('/analytics', ...paywall, analyticsRoutes);
+app.use('/expenses', ...paywall, expenseRoutes);
 app.use('/tenants', tenantRoutes);
 app.use('/settings', settingsRoutes);
-app.use('/vouchers', voucherRoutes);
+app.use('/vouchers', ...paywall, voucherRoutes);
 app.use('/billing', billingRoutes);
-app.use('/network', networkRoutes);
-app.use('/router-firewall', routerFirewallRoutes);
+app.use('/network', ...paywall, networkRoutes);
+app.use('/router-firewall', ...paywall, routerFirewallRoutes);
 app.use('/users', usersRoutes);
-app.use('/payment-config', paymentConfigRoutes);
+app.use('/payment-config', ...paywall, paymentConfigRoutes);
 app.use('/hotspot', mpesaRoutes);
 app.use('/hotspot', hotspotPublicRoutes);
 app.use('/portal', subscriberPortalRoutes);
@@ -131,7 +140,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.16 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.11.17 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();

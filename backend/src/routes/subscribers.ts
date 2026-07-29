@@ -111,7 +111,9 @@ router.post('/import/analyze', async (req: AuthRequest, res: Response) => {
       totalRows: rows.length - 1,
       packageColumn: cols.iPackage >= 0 ? rows[0][cols.iPackage].trim() : null,
       values, // distinct package/rate-limit names to map
-      detected: { name: cols.iName >= 0, username: cols.iUser >= 0, phone: cols.iPhone >= 0, expiry: cols.iExpiry >= 0 },
+      detected: { name: cols.iName >= 0, username: cols.iUser >= 0, phone: cols.iPhone >= 0, expiry: cols.iExpiry >= 0, password: cols.iSecret >= 0 },
+      // If false, the client must collect a default password before importing (we never randomize).
+      needsDefaultPassword: cols.iSecret === -1,
     });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Analyze failed', 500);
@@ -132,6 +134,13 @@ router.post('/import', async (req: AuthRequest, res: Response) => {
     const header = rows[0].map(h => h.trim().toLowerCase());
     const { iName, iUser, iPhone, iExpiry, iSecret, iService, iEmail, iPackage } = detectCols(header);
     if (iUser === -1 && iName === -1) return sendError(res, 'Could not find a username or name column in the CSV', 400);
+
+    // Passwords: use the CSV's password column when present; otherwise use the caller-supplied
+    // default. We NEVER generate random passwords — if neither is available, ask for a default.
+    const defaultPassword = String(req.body?.defaultPassword || '').trim();
+    if (iSecret === -1 && !defaultPassword) {
+      return sendError(res, 'No password column found in the CSV. Please enter a default password to use for all imported users.', 400);
+    }
 
     // mapping: { "<csv package value>": { packageId?, newPackage?: { name, speedDownKbps, speedUpKbps, price?, validityMinutes?, service? } } }
     const mapping: Record<string, { packageId?: string; newPackage?: { name: string; speedDownKbps: number; speedUpKbps: number; price?: number; validityMinutes?: number; service?: string } }> = req.body?.mapping || {};
@@ -172,6 +181,9 @@ router.post('/import', async (req: AuthRequest, res: Response) => {
       if (!username) { skipped++; continue; }
       const key = username.toLowerCase();
       if (existing.has(key) || seen.has(key)) { skipped++; continue; }
+      // Password: CSV cell if present, else the default. Never random. A row with neither is skipped.
+      const rowSecret = (iSecret >= 0 && cell(iSecret)) || defaultPassword;
+      if (!rowSecret) { skipped++; continue; }
       seen.add(key);
       const expiresAt = iExpiry >= 0 ? parseFlexDate(cell(iExpiry)) : null;
       if (iExpiry >= 0 && cell(iExpiry) && !expiresAt) noExpiry++;
@@ -179,7 +191,7 @@ router.post('/import', async (req: AuthRequest, res: Response) => {
       const packageId = (pkgVal && resolvedPkg[pkgVal]) || null;
       toCreate.push({
         tenantId, username,
-        secret: (iSecret >= 0 && cell(iSecret)) || Math.random().toString(36).slice(2, 10),
+        secret: rowSecret,
         fullName: name || username,
         phone: (iPhone >= 0 && cell(iPhone)) || null,
         email: (iEmail >= 0 && cell(iEmail)) || null,

@@ -44,21 +44,30 @@ export function wallScript(username: string, subscriberId: string, staticIp?: st
   return lines.join('\n');
 }
 
-// Release a subscriber WITHOUT a disconnect: remove their dartbit-expired entry (matched by live IP,
-// static IP, and subscriber tag as a backstop) and FLUSH that IP's conntrack so live connections
-// recover immediately. This is what makes a renewal take effect in ~1s instead of needing a reboot.
+// Release a subscriber WITHOUT a manual reboot. In order:
+//   1. remove our STATIC dartbit-expired entries for their IP (removable) + flush that IP's conntrack
+//      → a session blocked the new way recovers in ~1s with ZERO interruption.
+//   2. if a DYNAMIC entry STILL blocks the IP — legacy residue from the old profile/RADIUS-reply model
+//      that cannot be removed on a live session — force ONE automatic redial: the CPE reconnects in
+//      ~3s and re-auths onto the now-entitled RADIUS state (written before this runs). Still no manual
+//      reboot. New-model blocks are always static, so this redial only fires while migrating sessions
+//      that were walled before this version shipped.
+// All removes use `!dynamic` (dynamic entries can't be removed and would abort the script) and are
+// wrapped in :do/on-error for total robustness.
 export function unwallScript(username: string, subscriberId: string, staticIp?: string | null): string {
   const t = tag(subscriberId);
   const lines: string[] = [
-    // Backstop: clear any entry we ever tagged for this subscriber (covers an IP change).
-    `:foreach e in=[/ip firewall address-list find list=${LIST} comment="${t}"] do={ /ip firewall address-list remove $e }`,
-    // Resolve the live PPPoE IP → drop its entry + flush its connection tracking.
+    // Backstop: clear any STATIC entry we ever tagged for this subscriber (covers an IP change).
+    `:do { /ip firewall address-list remove [find list=${LIST} comment="${t}" !dynamic] } on-error={}`,
+    // Resolve the live PPPoE IP → drop its static entry, flush conntrack, and redial only if a
+    // dynamic entry stubbornly remains.
     `:foreach a in=[/ppp active find name="${username}"] do={ :local ip [/ppp active get $a address]; ` +
-      `:foreach e in=[/ip firewall address-list find list=${LIST} address=$ip] do={ /ip firewall address-list remove $e }; ` +
-      `:foreach c in=[/ip firewall connection find src-address~$ip] do={ /ip firewall connection remove $c } }`,
+      `:do { /ip firewall address-list remove [find list=${LIST} address=$ip !dynamic] } on-error={}; ` +
+      `:foreach c in=[/ip firewall connection find src-address~$ip] do={ /ip firewall connection remove $c }; ` +
+      `:if ([:len [/ip firewall address-list find list=${LIST} address=$ip]] > 0) do={ /ppp active remove $a } }`,
   ];
   if (staticIp) {
-    lines.push(`:foreach e in=[/ip firewall address-list find list=${LIST} address=${staticIp}] do={ /ip firewall address-list remove $e }`);
+    lines.push(`:do { /ip firewall address-list remove [find list=${LIST} address=${staticIp} !dynamic] } on-error={}`);
     lines.push(`:foreach c in=[/ip firewall connection find src-address~"${staticIp}"] do={ /ip firewall connection remove $c }`);
   }
   return lines.join('\n');
