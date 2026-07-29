@@ -1,0 +1,34 @@
+# Dartbit central filtering DNS resolver — install on the droplet.
+#
+#   1. Copy the built backend to the droplet (or git-pull + npm run build there).
+#   2. Ensure DATABASE_URL is set to the same Postgres the API uses.
+#   3. Bind to the WireGuard tunnel IP so only routers on the VPN can query it:
+#        DNS_BIND=10.8.0.1
+#   4. Free port 53 on the droplet if systemd-resolved holds it:
+#        sudo sed -i 's/#DNSStubListener=yes/DNSStubListener=no/' /etc/systemd/resolved.conf
+#        sudo systemctl restart systemd-resolved
+#   5. sudo cp deploy/dartbit-dns.service /etc/systemd/system/
+#      sudo systemctl daemon-reload && sudo systemctl enable --now dartbit-dns
+#   6. Open UDP 53 from the WG subnet:
+#        sudo ufw allow in on wg0 to any port 53 proto udp
+#
+[Unit]
+Description=Dartbit filtering DNS resolver
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/dartbit/backend
+Environment=DNS_BIND=10.8.0.1
+Environment=DNS_PORT=53
+Environment=DNS_UPSTREAM=1.1.1.1
+Environment=DNS_UPSTREAM2=1.0.0.1
+EnvironmentFile=/opt/dartbit/backend/.env
+ExecStart=/usr/bin/node dist/dnsServer.js
+Restart=always
+RestartSec=3
+# Allow binding port 53 without full root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

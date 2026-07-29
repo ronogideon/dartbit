@@ -249,14 +249,27 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
           }
         }
       } catch { /* best-effort */ }
-      // A wired (PPPoE/Static) user who was EXPIRED is currently connected on the walled-garden
-      // "dartbit-expired" profile — its dynamic address-list entry blocks their forwarding. The new
-      // expiry alone doesn't free the LIVE session, so drop it: PPPoE re-dials within seconds and
-      // lands on the full-service profile. (Hotspot is untouched — its seamless no-kick path stays.)
+      // A wired (PPPoE/Static) user who was EXPIRED is currently connected on the walled garden:
+      // their session IP sits in the "dartbit-expired" firewall address-list (added by the RADIUS
+      // reply or the expired PPP profile), which the firewall confines to the portal only.
+      //
+      // The previous approach kicked the session (/ppp active remove) and hoped the CPE re-dialled —
+      // but many PPPoE clients DON'T re-dial promptly on a server-side drop, so the customer stayed
+      // offline until they rebooted. Instead we free the LIVE session in place: remove its IP from
+      // the address-list (instant full internet, no re-dial) AND restore its queue to the package
+      // speed. The session never drops, so there is no offline gap and no reboot. RADIUS/secret was
+      // already updated above, so any natural future re-dial is clean too.
       try {
         if (wasLapsed && sub.service !== 'HOTSPOT' && sub.routerId) {
           const { enqueueCommand } = await import('../utils/commandQueue');
-          await enqueueCommand(sub.routerId, `:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove \$a }`);
+          const up = pkg?.speedUpKbps, down = pkg?.speedDownKbps;
+          const rateCmd = up && down
+            ? ` :foreach q in=[/queue simple find where name="<pppoe-${sub.username}>"] do={ /queue simple set $q max-limit=${up}k/${down}k };`
+            : '';
+          await enqueueCommand(
+            sub.routerId,
+            `:foreach a in=[/ppp active find name="${sub.username}"] do={ :local ip [/ppp active get $a address]; :foreach e in=[/ip firewall address-list find list="dartbit-expired" address=$ip] do={ /ip firewall address-list remove $e } };${rateCmd}`,
+          );
         }
       } catch { /* best-effort */ }
       await prisma.mpesaTransaction.update({ where: { id: tx.id }, data: { status: 'PAID', mpesaReceipt: receipt } });

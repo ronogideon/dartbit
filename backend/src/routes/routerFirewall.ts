@@ -41,44 +41,41 @@ async function ownRouter(req: AuthRequest, routerId: string) {
 // the tenant's or Centipid's own rules. Sending the FULL desired state each time keeps it
 // idempotent and self-correcting.
 export function buildBlockSync(enabled: boolean, domains: string[]): string {
+  // Central-resolver model: the actual blocking lives on the Dartbit DNS server at the WireGuard
+  // tunnel IP 10.8.0.1 (it identifies this router by its 10.8.0.x source and applies its blocklist).
+  // On the router we only (a) point clients at that resolver and (b) force DNS through it so a
+  // device can't bypass with its own resolver. No on-router static entries or IP drops — that was
+  // fragile and, when the router's own resolver couldn't answer, took the whole internet down.
+  const DNS = process.env.DARTBIT_DNS_IP || '10.8.0.1';
   const L: string[] = [];
-  // Clear previously-managed entries first (scoped to our comment/list so we never touch the
-  // tenant's or Centipid's own config). Each statement is its OWN line: the command queue delivers
-  // this as an /import file that runs line-by-line, so one failing statement can't abort the rest.
+  void domains; // blocking now lives centrally; the router just routes DNS to ${DNS}
+
+  // Always clear legacy on-router blocking from earlier versions (scoped to our comments/list), so
+  // upgrading a router removes the stuff that could black-hole all DNS.
   L.push(`:foreach d in=[/ip dns static find comment="dartbit-block"] do={ /ip dns static remove $d }`);
   L.push(`:foreach a in=[/ip firewall address-list find list="dartbit-block"] do={ /ip firewall address-list remove $a }`);
+  L.push(`:foreach f in=[/ip firewall filter find comment="dartbit-block-fwd"] do={ /ip firewall filter remove $f }`);
+  L.push(`:foreach f in=[/ip firewall filter find comment="dartbit-block-out"] do={ /ip firewall filter remove $f }`);
+  L.push(`:foreach n in=[/ip firewall nat find comment="dartbit-dns-force"] do={ /ip firewall nat remove $n }`);
+  L.push(`:foreach n in=[/ip firewall nat find comment="dartbit-dns-force-tcp"] do={ /ip firewall nat remove $n }`);
 
-  if (enabled && domains.length) {
-    for (const d of domains) {
-      // RouterOS 7 match-subdomain=yes blocks the domain AND every subdomain in one entry, resolving
-      // it to a dead address. This is the primary block and needs clients to use the router's DNS —
-      // which the redirect below guarantees.
-      L.push(`:do { /ip dns static add name="${d}" address=0.0.0.0 match-subdomain=yes comment="dartbit-block" } on-error={ :do { /ip dns static add name="${d}" address=0.0.0.0 comment="dartbit-block" } on-error={} }`);
-      // Second layer: resolve the name at the firewall too, so traffic to its IP is dropped even if a
-      // client somehow reaches it without the router's DNS answer (cached IP, hardcoded host).
-      L.push(`:do { /ip firewall address-list add list="dartbit-block" address="${d}" comment="dartbit-block" } on-error={}`);
-    }
-    // THE KEY FIX: force every client DNS query through the router. Without this, a device set to
-    // 8.8.8.8 never sees our static entries and the block does nothing — which is exactly the
-    // "works as usual" symptom. Redirecting 53/udp+tcp to the router makes it answer ALL lookups,
-    // so the blocklist applies to every device regardless of its configured DNS. Scoped by comment,
-    // and skipped on hotspot routers where the hotspot already owns the DNS redirect.
-    L.push(`:if ([:len [/ip firewall nat find comment="dartbit-dns-force"]] = 0 && [:len [/ip hotspot]] = 0) do={ /ip firewall nat add chain=dstnat protocol=udp dst-port=53 action=redirect to-ports=53 comment="dartbit-dns-force" }`);
-    L.push(`:if ([:len [/ip firewall nat find comment="dartbit-dns-force-tcp"]] = 0 && [:len [/ip hotspot]] = 0) do={ /ip firewall nat add chain=dstnat protocol=tcp dst-port=53 action=redirect to-ports=53 comment="dartbit-dns-force-tcp" }`);
-    // Firewall drop for the resolved IPs (forward = client traffic, output = router's own).
-    L.push(`:if ([:len [/ip firewall filter find comment="dartbit-block-fwd"]] = 0) do={ /ip firewall filter add chain=forward dst-address-list="dartbit-block" action=drop comment="dartbit-block-fwd" place-before=0 }`);
-    L.push(`:if ([:len [/ip firewall filter find comment="dartbit-block-out"]] = 0) do={ /ip firewall filter add chain=output dst-address-list="dartbit-block" action=drop comment="dartbit-block-out" place-before=0 }`);
-    // The router must actually run a resolver for its clients.
-    L.push(`:do { /ip dns set allow-remote-requests=yes } on-error={}`);
+  if (enabled) {
+    // Central resolver first, public fallback second so DNS never dies if the tunnel blips.
+    L.push(`:do { /ip dns set servers=${DNS},1.1.1.1 allow-remote-requests=yes } on-error={}`);
+    // Hand clients this router as their DNS (it forwards to the central resolver). Best-effort.
+    L.push(`:foreach p in=[/ppp profile find] do={ :do { /ppp profile set $p dns-server=${DNS} } on-error={} }`);
+    L.push(`:foreach n in=[/ip dhcp-server network find] do={ :do { /ip dhcp-server network set $n dns-server=${DNS} } on-error={} }`);
+    // Force client DNS through the router (which forwards to ${DNS}) so a device on 8.8.8.8 is still
+    // filtered. Redirect to the router's own 53. Skipped on hotspot routers (hotspot owns DNS).
+    L.push(`:if ([:len [/ip hotspot]] = 0) do={ :if ([:len [/ip firewall nat find comment="dartbit-dns-force"]] = 0) do={ /ip firewall nat add chain=dstnat protocol=udp dst-port=53 action=redirect to-ports=53 comment="dartbit-dns-force" } }`);
+    L.push(`:if ([:len [/ip hotspot]] = 0) do={ :if ([:len [/ip firewall nat find comment="dartbit-dns-force-tcp"]] = 0) do={ /ip firewall nat add chain=dstnat protocol=tcp dst-port=53 action=redirect to-ports=53 comment="dartbit-dns-force-tcp" } }`);
   } else {
-    // Disabled: remove our drop rules AND the DNS redirect, leaving the router fully open.
-    L.push(`:foreach f in=[/ip firewall filter find comment="dartbit-block-fwd"] do={ /ip firewall filter remove $f }`);
-    L.push(`:foreach f in=[/ip firewall filter find comment="dartbit-block-out"] do={ /ip firewall filter remove $f }`);
-    L.push(`:foreach n in=[/ip firewall nat find comment="dartbit-dns-force"] do={ /ip firewall nat remove $n }`);
-    L.push(`:foreach n in=[/ip firewall nat find comment="dartbit-dns-force-tcp"] do={ /ip firewall nat remove $n }`);
+    // Disabled: restore normal public DNS and drop the forced redirect — full open internet.
+    L.push(`:do { /ip dns set servers=1.1.1.1,8.8.8.8 } on-error={}`);
+    L.push(`:foreach p in=[/ppp profile find] do={ :do { /ppp profile set $p dns-server=1.1.1.1 } on-error={} }`);
   }
   L.push(`:do { /ip dns cache flush } on-error={}`);
-  L.push(`:log info "Dartbit: firewall blocklist applied (${enabled ? domains.length : 0} domains)"`);
+  L.push(`:log info "Dartbit: DNS filtering ${enabled ? 'enabled via ' + DNS : 'disabled'}"`);
   return L.join('\n');
 }
 
