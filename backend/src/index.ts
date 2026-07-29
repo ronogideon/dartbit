@@ -96,8 +96,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.15', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.15', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.16', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.16', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -131,7 +131,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.15 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.11.16 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -256,6 +256,7 @@ function startExpiryWatcher() {
   const prisma = new PrismaClient();
   const kicked = new Map<string, number>(); // subscriberId -> last-kick epoch (ms), to avoid hammering
   const walledSynced = new Map<string, number>(); // subscriberId -> expiresAt(ms) already pushed to walled-garden
+  const wallBatchAt = new Map<string, number>(); // routerId -> last confinement-batch epoch (ms)
   const run = async () => {
     try {
       const now = new Date();
@@ -282,6 +283,35 @@ function startExpiryWatcher() {
           if (walledSynced.size > 5000) { let n = 0; for (const k of walledSynced.keys()) { walledSynced.delete(k); if (++n > 1000) break; } }
         }
       } catch (e) { console.error('[walled-garden] pass error:', e instanceof Error ? e.message : e); }
+
+      // (0b) CONFINE expired-but-enabled PPPoE on their LIVE session. RADIUS accepts them (so the CPE
+      // stays connected to reach the portal) but no longer pushes a dynamic address-list — those
+      // can't be removed on renewal without a disconnect. Instead we add a STATIC dartbit-expired
+      // entry for their current IP (resolved on-router, idempotent) via the command queue. Batched
+      // one command per router, at most every 30s per router, so a fresh redial is re-confined
+      // within a sweep or two. The UNWALL happens event-driven on renewal (instant, no re-auth).
+      try {
+        const expiredActive = await prisma.subscriber.findMany({
+          where: { service: 'PPPOE', isActive: true, routerId: { not: null }, expiresAt: { lte: now } },
+          select: { id: true, username: true, routerId: true },
+        });
+        if (expiredActive.length) {
+          const { wallScript } = await import('./utils/walledGarden');
+          const { enqueueCommand } = await import('./utils/commandQueue');
+          const byRouter = new Map<string, string[]>();
+          for (const s of expiredActive) {
+            const arr = byRouter.get(s.routerId!) ?? [];
+            arr.push(wallScript(s.username, s.id));
+            byRouter.set(s.routerId!, arr);
+          }
+          for (const [routerId, scripts] of byRouter) {
+            if (Date.now() - (wallBatchAt.get(routerId) || 0) < 30_000) continue;
+            wallBatchAt.set(routerId, Date.now());
+            await enqueueCommand(routerId, scripts.join('\n')).catch(() => { /* best-effort */ });
+          }
+          if (wallBatchAt.size > 5000) { const c = Date.now(); for (const [k, v] of wallBatchAt) if (c - v > 120_000) wallBatchAt.delete(k); }
+        }
+      } catch (e) { console.error('[walled-garden] confine pass error:', e instanceof Error ? e.message : e); }
 
       // Subscribers who are NO LONGER entitled but STILL have a live session — these are the ones to
       // disconnect. Covers PPPoE AND Hotspot, and runs regardless of RADIUS mode: we kick via the
@@ -323,6 +353,11 @@ function startExpiryWatcher() {
         if (Date.now() - (kicked.get(dk) || 0) < 5 * 60_000) continue;
         kicked.set(dk, Date.now());
 
+        // Expired-but-enabled PPPoE is CONFINED (walled), not disconnected: it stays connected to
+        // reach the portal. Only admin-disabled (isActive=false) PPPoE and de-entitled hotspot are
+        // actually torn down. This flag gates the deauth/kick below.
+        const pppoeWalled = sub.service === 'PPPOE' && sub.isActive && expired;
+
         // (a) Stop them re-authenticating. Under RADIUS, clear radcheck (guarantees rejection even if
         // the Expiration attribute is evaluated in a different timezone on the FreeRADIUS host). In
         // legacy mode, disable the local credential.
@@ -330,7 +365,14 @@ function startExpiryWatcher() {
           if (radius?.radiusConfigured()) {
             await radius.syncSubscriberToRadius(sub.id);
           } else if (sub.service === 'PPPOE') {
-            await enqueueCommand(sub.routerId!, `:foreach s in=[/ppp secret find name="${sub.username}"] do={ /ppp secret set $s disabled=yes }`);
+            if (pppoeWalled) {
+              // Legacy walled garden: keep the secret ENABLED (they stay connected) and confine the
+              // live session by adding its IP to dartbit-expired. No disconnect.
+              const { enqueueWall } = await import('./utils/walledGarden');
+              await enqueueWall(sub.routerId!, sub.username, sub.id);
+            } else {
+              await enqueueCommand(sub.routerId!, `:foreach s in=[/ppp secret find name="${sub.username}"] do={ /ppp secret set $s disabled=yes }`);
+            }
           } else {
             const { pushSubscriberToRouter } = await import('./utils/pushSubscriber');
             await pushSubscriberToRouter(sub.id);
@@ -338,9 +380,13 @@ function startExpiryWatcher() {
         } catch (e) { console.error('expiry: deauth failed for', sub.username, e instanceof Error ? e.message : e); }
 
         // (b) Drop the LIVE session reliably via the command queue (executes on the ~2s poll).
+        // EXCEPTION: a walled (expired-active) PPPoE user is NOT dropped — they stay connected,
+        // confined by the address-list added in (a). Only admin-disabled PPPoE is disconnected.
         try {
           if (sub.service === 'PPPOE') {
-            await enqueueCommand(sub.routerId!, `:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove $a }`);
+            if (!pppoeWalled) {
+              await enqueueCommand(sub.routerId!, `:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove $a }`);
+            }
           } else {
             const mac = (sub.macAddress || '').toUpperCase();
             const macClause = mac ? ` or mac-address="${mac}"` : '';

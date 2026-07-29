@@ -392,14 +392,22 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
         console.error('update: router push failed (continuing):', e instanceof Error ? e.message : e);
       }
     } else if (subscriber.routerId && subscriber.service !== 'HOTSPOT' && !radiusConfigured()) {
-      // PPPoE/static: toggle the secret enable/disable + kick active session to match new state.
+      // PPPoE/static: reconcile the secret + the live session WITHOUT a re-auth.
+      //  • entitled       → enable secret + UNWALL (release from portal instantly, flush conntrack).
+      //  • expired-active  → keep secret enabled + WALL (confine to portal; session stays up).
+      //  • admin-disabled  → disable secret + drop the live session.
       try {
         const { enqueueCommand } = await import('../utils/commandQueue');
+        const { enqueueWall, enqueueUnwall } = await import('../utils/walledGarden');
         const now = new Date();
         const expired = subscriber.expiresAt ? subscriber.expiresAt <= now : false;
-        const entitled = subscriber.isActive && !expired;
-        if (entitled) {
+        const staticIp = (subscriber as { ipAddress?: string | null }).ipAddress ?? null;
+        if (subscriber.isActive && !expired) {
           await enqueueCommand(subscriber.routerId, `:foreach s in=[/ppp secret find name="${subscriber.username}"] do={ /ppp secret set $s disabled=no }`);
+          await enqueueUnwall(subscriber.routerId, subscriber.username, subscriber.id, staticIp);
+        } else if (subscriber.isActive && expired) {
+          await enqueueCommand(subscriber.routerId, `:foreach s in=[/ppp secret find name="${subscriber.username}"] do={ /ppp secret set $s disabled=no }`);
+          await enqueueWall(subscriber.routerId, subscriber.username, subscriber.id, staticIp);
         } else {
           await enqueueCommand(subscriber.routerId,
             `:foreach s in=[/ppp secret find name="${subscriber.username}"] do={ /ppp secret set $s disabled=yes }\n` +

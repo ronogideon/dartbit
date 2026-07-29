@@ -220,12 +220,12 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:if ([:len [/ip pool find name="${pppoePool}"]] = 0) do={ /ip pool add name=${pppoePool} ranges=${pppoeStart}-${pppoeEnd} }`);
     add(`:if ([:len [/ppp profile find name="dartbit-pppoe"]] = 0) do={ /ppp profile add name=dartbit-pppoe local-address=${pppoeLocal} remote-address=${pppoePool} comment="Dartbit PPPoE" }`);
     add(`:if ([:len [/interface pppoe-server server find service-name="dartbit"]] = 0) do={ /interface pppoe-server server add service-name=dartbit interface=${bridge} authentication=chap,pap default-profile=dartbit-pppoe disabled=no comment="Dartbit PPPoE Server" }`);
-    // Expired/restricted PPPoE profile: expired subscribers are moved here instead of being
-    // disconnected, so they STAY connected but can only reach the Dartbit portal/backend to renew.
-    // The profile tags connected clients into the "dartbit-expired" address-list; firewall rules
-    // below permit only DNS + the backend/portal address-list and drop everything else for them.
-    add(`:if ([:len [/ppp profile find name="dartbit-expired"]] = 0) do={ /ppp profile add name=dartbit-expired local-address=${pppoeLocal} remote-address=${pppoePool} address-list=dartbit-expired comment="Dartbit Expired (portal-only)" }`);
-    add(`/ppp profile set [find name="dartbit-expired"] address-list=dartbit-expired`);
+    // LEGACY (retired): the dartbit-expired PROFILE is no longer assigned to anyone — expired users
+    // stay on their normal profile and are confined by the dartbit-expired address-list, toggled on
+    // the live session (no re-auth). We still ensure the profile EXISTS so any secret left pointing
+    // at it on an old router (before this reprovision resets it) never references a missing profile;
+    // the per-subscriber sync below moves every secret back to its package profile.
+    add(`:if ([:len [/ppp profile find name="dartbit-expired"]] = 0) do={ /ppp profile add name=dartbit-expired local-address=${pppoeLocal} remote-address=${pppoePool} address-list=dartbit-expired comment="Dartbit Expired (legacy, unused)" }`);
     // Walled-garden firewall for expired PPPoE/Static: allow DNS, the backend, and the portal;
     // drop all other forwarded traffic from expired clients. Rules are idempotent (recreated).
     add(`:foreach f in=[/ip firewall filter find comment~"Dartbit expired"] do={ /ip firewall filter remove $f }`);
@@ -1192,16 +1192,27 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       // connected on the restricted "dartbit-expired" profile so they can reach the portal to
       // renew. Active → their normal package profile.
       const adminDisabled = !sub.isActive;
-      const effectiveProfile = expired && !adminDisabled ? 'dartbit-expired' : profileName;
+      // The dartbit-expired PROFILE is retired: everyone dials into their package/default profile.
+      // Expired subscribers are confined by the dartbit-expired firewall address-list instead, which
+      // we toggle on the LIVE session below — no re-auth, no reboot.
+      const effectiveProfile = profileName;
 
       // Each line stays short — uses inline strings, no shared state needed.
       add(`:if ([:len [/ppp profile find name="${profileName}"]] = 0) do={ /ppp profile add name=${profileName} local-address=10.10.10.1 remote-address=pppoe-pool rate-limit="${speed}" comment="Dartbit" }`);
       add(`:if ([:len [/ppp secret find name="${sub.username}"]] = 0) do={ /ppp secret add name="${sub.username}" password="${sub.secret}" profile=${effectiveProfile} service=pppoe comment="Dartbit:${sub.id}" }`);
       add(`:if ([:len [/ppp secret find name="${sub.username}"]] > 0) do={ /ppp secret set [find name="${sub.username}"] password="${sub.secret}" profile=${effectiveProfile} disabled=${adminDisabled ? 'yes' : 'no'} }`);
-      // Drop the live session so it reconnects onto the correct profile: expired users reconnect
-      // onto the walled-garden profile (portal-only); admin-disabled users are dropped and stay out.
-      if (expired || adminDisabled) {
+      // Reconcile walled-garden membership WITHOUT touching the live session:
+      //  • admin-disabled → drop the session (fully off; radcheck/secret already disabled).
+      //  • expired-active → add the live IP to dartbit-expired (confined, stays connected).
+      //  • active         → remove any dartbit-expired entry for this user + flush its conntrack, so
+      //                     a just-renewed session gets full internet in ~1s with no redial.
+      if (adminDisabled) {
         add(`:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove \$a }`);
+      } else if (expired) {
+        add(`:foreach a in=[/ppp active find name="${sub.username}"] do={ :local ip [/ppp active get \$a address]; :if ([:len [/ip firewall address-list find list="dartbit-expired" address=\$ip]]=0) do={ /ip firewall address-list add list=dartbit-expired address=\$ip comment="Dartbit-exp:${sub.id}" } }`);
+      } else {
+        add(`:foreach e in=[/ip firewall address-list find list="dartbit-expired" comment="Dartbit-exp:${sub.id}"] do={ /ip firewall address-list remove \$e }`);
+        add(`:foreach a in=[/ppp active find name="${sub.username}"] do={ :local ip [/ppp active get \$a address]; :foreach e in=[/ip firewall address-list find list="dartbit-expired" address=\$ip] do={ /ip firewall address-list remove \$e }; :foreach c in=[/ip firewall connection find src-address~\$ip] do={ /ip firewall connection remove \$c } }`);
       }
     }
 
@@ -1283,6 +1294,8 @@ router.get('/sync-script', async (req: Request, res: Response) => {
         add(`:if ([:len [/ip firewall address-list find list="dartbit-expired" address="${sub.ipAddress}"]] = 0) do={ /ip firewall address-list add list=dartbit-expired address=${sub.ipAddress} comment="Dartbit:${sub.id}" }`);
       } else {
         add(`:foreach a in=[/ip firewall address-list find list="dartbit-expired" address="${sub.ipAddress}"] do={ /ip firewall address-list remove \$a }`);
+        // Flush the static IP's conntrack too, so a just-renewed static user recovers in ~1s.
+        add(`:foreach c in=[/ip firewall connection find src-address~"${sub.ipAddress}"] do={ /ip firewall connection remove \$c }`);
       }
     }
 

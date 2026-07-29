@@ -144,10 +144,15 @@ export async function syncSubscriberToRadius(subscriberId: string, opts?: { kick
       const rl = sqlq(rateLimit(sub.package?.speedUpKbps, sub.package?.speedDownKbps));
       stmts.push(`INSERT INTO radreply (username, attribute, op, value) VALUES ('${u}','Mikrotik-Rate-Limit',':=','${rl}');`);
     } else if (walledGarden) {
-      // Accept (no Expiration) but restrict: low rate + dartbit-expired address-list.
+      // Accept (no Expiration) so the CPE stays connected and can reach the portal, but throttle it.
+      // NOTE: we deliberately do NOT push Mikrotik-Address-List here. That attribute adds a DYNAMIC
+      // address-list entry owned by the live session — it cannot be removed on renewal without a
+      // disconnect (the reason renewed users used to need a reboot). The dartbit-expired list is
+      // instead managed with STATIC entries via the command queue (see utils/walledGarden), which
+      // are removable live, so a renewal takes effect in ~1s with no re-auth. The WALL is enqueued
+      // in the kick block below.
       stmts.push(`INSERT INTO radcheck (username, attribute, op, value) VALUES ('${u}','Cleartext-Password',':=','${pwd}');`);
       stmts.push(`INSERT INTO radreply (username, attribute, op, value) VALUES ('${u}','Mikrotik-Rate-Limit',':=','512k/512k');`);
-      stmts.push(`INSERT INTO radreply (username, attribute, op, value) VALUES ('${u}','Mikrotik-Address-List',':=','dartbit-expired');`);
     }
     // else: cleared (rejected) — admin-disabled, or expired hotspot.
   }
@@ -160,20 +165,32 @@ export async function syncSubscriberToRadius(subscriberId: string, opts?: { kick
     throw e;
   }
 
-  // Kick any live session so the NEW reply applies on the immediate reconnect:
-  // - not entitled  → reconnect lands in the walled garden (PPPoE) or is rejected (hotspot)
-  // - entitled + kickToApply (payment/edit cleared the walled garden) → reconnect with full service
-  // CoA first (instant where the router honours it), then the RELIABLE command-queue kick as the
-  // real workhorse — CoA on PPPoE is finicky, so we don't depend on it. For HOTSPOT we kick ONLY by
-  // username, never by MAC: a co-located voucher session shares the device MAC and must not be torn
-  // down by this subscriber's expiry.
-  if (sub.routerId && (!entitled || opts?.kickToApply)) {
-    await disconnectSession(sub, identities.map(i => i.name)).catch(() => { /* best-effort */ });
+  // Apply the new state to any LIVE session — for PPPoE this is done WITHOUT a re-auth or reboot:
+  //  • expired-but-active PPPoE (walledGarden) → WALL: add its IP to dartbit-expired. The session
+  //    stays up; the firewall confines it to the portal on the next packet. No disconnect.
+  //  • renewed PPPoE (entitled + kickToApply) → UNWALL: drop the list entry + flush conntrack, so
+  //    the live session has full internet in ~1s. No disconnect, no redial.
+  //  • admin-disabled PPPoE, or any de-entitled HOTSPOT → the session must actually END, so drop it.
+  //    (Hotspot has no walled garden. For HOTSPOT we kick ONLY by username, never by MAC — a
+  //    co-located voucher session shares the device MAC and must not be torn down by this expiry.)
+  if (sub.routerId) {
     try {
-      const { enqueueCommand } = await import('./commandQueue');
       if (sub.service === 'PPPOE') {
-        await enqueueCommand(sub.routerId, `:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove $a }`);
-      } else {
+        if (walledGarden) {
+          const { enqueueWall } = await import('./walledGarden');
+          await enqueueWall(sub.routerId, sub.username, sub.id);
+        } else if (!sub.isActive) {
+          // Fully disabled: end the session (radcheck was cleared above, so it can't re-auth).
+          await disconnectSession(sub, [sub.username]).catch(() => { /* best-effort */ });
+          const { enqueueCommand } = await import('./commandQueue');
+          await enqueueCommand(sub.routerId, `:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove $a }`);
+        } else if (entitled && opts?.kickToApply) {
+          const { enqueueUnwall } = await import('./walledGarden');
+          await enqueueUnwall(sub.routerId, sub.username, sub.id);
+        }
+      } else if (!entitled || opts?.kickToApply) {
+        await disconnectSession(sub, identities.map(i => i.name)).catch(() => { /* best-effort */ });
+        const { enqueueCommand } = await import('./commandQueue');
         await enqueueCommand(sub.routerId, `:foreach a in=[/ip hotspot active find where user="${sub.username}"] do={ /ip hotspot active remove $a }`);
       }
     } catch { /* best-effort */ }

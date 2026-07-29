@@ -753,7 +753,7 @@ function DnsFirewallTab({ routerId }: { routerId: string }) {
           <Shield size={22} className={enabled ? 'text-green-600' : 'text-gray-400'} />
           <div>
             <p className="font-semibold">Content firewall {enabled ? 'on' : 'off'}</p>
-            <p className="text-xs text-gray-500">{enabled ? 'Client DNS is filtered through Dartbit\u2019s resolver \u2014 blocked sites don\u2019t load.' : 'Turn on to filter this router\u2019s DNS and block malicious or unwanted sites.'}</p>
+            <p className="text-xs text-gray-500">{enabled ? 'Blocked sites serve no data on this router.' : 'Turn on to block malicious sites, torrent trackers, and more.'}</p>
           </div>
         </div>
         <button

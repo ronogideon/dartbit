@@ -249,27 +249,13 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
           }
         }
       } catch { /* best-effort */ }
-      // A wired (PPPoE/Static) user who was EXPIRED is currently connected on the walled garden:
-      // their session IP sits in the "dartbit-expired" firewall address-list (added by the RADIUS
-      // reply or the expired PPP profile), which the firewall confines to the portal only.
-      //
-      // The previous approach kicked the session (/ppp active remove) and hoped the CPE re-dialled —
-      // but many PPPoE clients DON'T re-dial promptly on a server-side drop, so the customer stayed
-      // offline until they rebooted. Instead we free the LIVE session in place: remove its IP from
-      // the address-list (instant full internet, no re-dial) AND restore its queue to the package
-      // speed. The session never drops, so there is no offline gap and no reboot. RADIUS/secret was
-      // already updated above, so any natural future re-dial is clean too.
+      // A wired (PPPoE/Static) user who was EXPIRED is confined by the dartbit-expired address-list.
+      // RELEASE the LIVE session instantly — remove its list entry and flush that IP's conntrack —
+      // so it gets full internet in ~1s with NO re-auth and NO reboot. (Hotspot has no walled garden.)
       try {
         if (wasLapsed && sub.service !== 'HOTSPOT' && sub.routerId) {
-          const { enqueueCommand } = await import('../utils/commandQueue');
-          const up = pkg?.speedUpKbps, down = pkg?.speedDownKbps;
-          const rateCmd = up && down
-            ? ` :foreach q in=[/queue simple find where name="<pppoe-${sub.username}>"] do={ /queue simple set $q max-limit=${up}k/${down}k };`
-            : '';
-          await enqueueCommand(
-            sub.routerId,
-            `:foreach a in=[/ppp active find name="${sub.username}"] do={ :local ip [/ppp active get $a address]; :foreach e in=[/ip firewall address-list find list="dartbit-expired" address=$ip] do={ /ip firewall address-list remove $e } };${rateCmd}`,
-          );
+          const { enqueueUnwall } = await import('../utils/walledGarden');
+          await enqueueUnwall(sub.routerId, sub.username, sub.id, sub.ipAddress ?? null);
         }
       } catch { /* best-effort */ }
       await prisma.mpesaTransaction.update({ where: { id: tx.id }, data: { status: 'PAID', mpesaReceipt: receipt } });
