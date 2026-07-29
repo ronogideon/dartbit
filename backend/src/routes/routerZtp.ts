@@ -219,7 +219,12 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add('# 5. PPPoE server');
     add(`:if ([:len [/ip pool find name="${pppoePool}"]] = 0) do={ /ip pool add name=${pppoePool} ranges=${pppoeStart}-${pppoeEnd} }`);
     add(`:if ([:len [/ppp profile find name="dartbit-pppoe"]] = 0) do={ /ppp profile add name=dartbit-pppoe local-address=${pppoeLocal} remote-address=${pppoePool} comment="Dartbit PPPoE" }`);
-    add(`:if ([:len [/interface pppoe-server server find service-name="dartbit"]] = 0) do={ /interface pppoe-server server add service-name=dartbit interface=${bridge} authentication=chap,pap default-profile=dartbit-pppoe disabled=no comment="Dartbit PPPoE Server" }`);
+    add(`:if ([:len [/interface pppoe-server server find service-name="dartbit"]] = 0) do={ /interface pppoe-server server add service-name=dartbit interface=${bridge} authentication=chap,pap default-profile=dartbit-pppoe one-session-per-host=yes disabled=no comment="Dartbit PPPoE Server" }`);
+    // one-session-per-host=yes: RouterOS refuses a second PPPoE session for the same user and
+    // replaces the old one cleanly, so a renewed/reconnecting client can't end up with two live
+    // sessions colliding on one framed IP (the "two online sessions, slow/no internet" bug). Force it
+    // on existing servers too, since older provisions were created without it (defaulted to =no).
+    add(`/interface pppoe-server server set [find service-name="dartbit"] one-session-per-host=yes`);
     // LEGACY (retired): the dartbit-expired PROFILE is no longer assigned to anyone — expired users
     // stay on their normal profile and are confined by the dartbit-expired address-list, toggled on
     // the live session (no re-auth). We still ensure the profile EXISTS so any secret left pointing
