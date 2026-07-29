@@ -184,7 +184,11 @@ export async function syncSubscriberToRadius(subscriberId: string, opts?: { kick
           await disconnectSession(sub, [sub.username]).catch(() => { /* best-effort */ });
           const { enqueueCommand } = await import('./commandQueue');
           await enqueueCommand(sub.routerId, `:foreach a in=[/ppp active find name="${sub.username}"] do={ /ppp active remove $a }`);
-        } else if (entitled && opts?.kickToApply) {
+        } else if (entitled) {
+          // Entitled PPPoE: always clear the walled garden. The unwall is idempotent and a true
+          // no-op if they weren't walled, so we DON'T gate it on kickToApply — that gate was why a
+          // frontend edit (PATCH) or the renew endpoint, which sync WITHOUT kickToApply, left users
+          // stuck walled after renewal. Firing on every entitled sync covers every renewal path.
           const { enqueueUnwall } = await import('./walledGarden');
           await enqueueUnwall(sub.routerId, sub.username, sub.id);
         }

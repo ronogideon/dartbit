@@ -59,16 +59,22 @@ export function unwallScript(username: string, subscriberId: string, staticIp?: 
   const lines: string[] = [
     // Backstop: clear any STATIC entry we ever tagged for this subscriber (covers an IP change).
     `:do { /ip firewall address-list remove [find list=${LIST} comment="${t}" !dynamic] } on-error={}`,
-    // Resolve the live PPPoE IP → drop its static entry, flush conntrack, and redial only if a
-    // dynamic entry stubbornly remains.
+    // Resolve the live PPPoE IP. Only act if the IP is ACTUALLY in dartbit-expired — otherwise this
+    // whole block is a no-op, so calling unwall on an already-entitled user never blips their
+    // conntrack. If it IS walled: remove the static entry, flush conntrack, and force one redial only
+    // if a dynamic (legacy, un-removable) entry stubbornly remains.
     `:foreach a in=[/ppp active find name="${username}"] do={ :local ip [/ppp active get $a address]; ` +
-      `:do { /ip firewall address-list remove [find list=${LIST} address=$ip !dynamic] } on-error={}; ` +
-      `:foreach c in=[/ip firewall connection find src-address~$ip] do={ /ip firewall connection remove $c }; ` +
-      `:if ([:len [/ip firewall address-list find list=${LIST} address=$ip]] > 0) do={ /ppp active remove $a } }`,
+      `:if ([:len [/ip firewall address-list find list=${LIST} address=$ip]] > 0) do={ ` +
+        `:do { /ip firewall address-list remove [find list=${LIST} address=$ip !dynamic] } on-error={}; ` +
+        `:foreach c in=[/ip firewall connection find src-address~$ip] do={ /ip firewall connection remove $c }; ` +
+        `:if ([:len [/ip firewall address-list find list=${LIST} address=$ip]] > 0) do={ /ppp active remove $a } } }`,
   ];
   if (staticIp) {
-    lines.push(`:do { /ip firewall address-list remove [find list=${LIST} address=${staticIp} !dynamic] } on-error={}`);
-    lines.push(`:foreach c in=[/ip firewall connection find src-address~"${staticIp}"] do={ /ip firewall connection remove $c }`);
+    lines.push(
+      `:if ([:len [/ip firewall address-list find list=${LIST} address=${staticIp}]] > 0) do={ ` +
+        `:do { /ip firewall address-list remove [find list=${LIST} address=${staticIp} !dynamic] } on-error={}; ` +
+        `:foreach c in=[/ip firewall connection find src-address~"${staticIp}"] do={ /ip firewall connection remove $c } }`,
+    );
   }
   return lines.join('\n');
 }
