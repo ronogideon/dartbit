@@ -87,7 +87,7 @@ function normMac(mac?: string | null): string | null {
 // (username=password=MAC, for silent mac-auth auto-login). Each identity carries the same expiry +
 // rate-limit. Idempotent — clears prior rows for every identity first, then inserts current state.
 // Gated on the router being RADIUS-managed, so legacy-script routers are never touched here.
-export async function syncSubscriberToRadius(subscriberId: string, opts?: { kickToApply?: boolean }): Promise<void> {
+export async function syncSubscriberToRadius(subscriberId: string, opts?: { kickToApply?: boolean; forceReauth?: boolean }): Promise<void> {
   if (!radiusConfigured()) { console.log(`[radius] skip ${subscriberId}: not configured (DARTBIT_RADIUS_ENABLED / SSH)`); return; }
   const sub = await prisma.subscriber.findUnique({
     where: { id: subscriberId },
@@ -189,8 +189,13 @@ export async function syncSubscriberToRadius(subscriberId: string, opts?: { kick
           // no-op if they weren't walled, so we DON'T gate it on kickToApply — that gate was why a
           // frontend edit (PATCH) or the renew endpoint, which sync WITHOUT kickToApply, left users
           // stuck walled after renewal. Firing on every entitled sync covers every renewal path.
-          const { enqueueUnwall } = await import('./walledGarden');
+          const { enqueueUnwall, enqueueReauth } = await import('./walledGarden');
           await enqueueUnwall(sub.routerId, sub.username, sub.id);
+          // forceReauth (payment/renewal of a previously-lapsed user): the RADIUS rows above are now
+          // entitled, so ALSO drop the old session — it authenticated into the walled state and won't
+          // recover until it re-auths. The CPE redials in ~3s onto full service. Unconditional kick,
+          // because the old walled session may not be detectable via the address-list alone.
+          if (opts?.forceReauth) await enqueueReauth(sub.routerId, sub.username);
         }
       } else if (!entitled || opts?.kickToApply) {
         await disconnectSession(sub, identities.map(i => i.name)).catch(() => { /* best-effort */ });

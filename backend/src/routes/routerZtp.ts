@@ -333,9 +333,6 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // tenant subdomain to buy a plan, not just the apex.
     add(`/ip firewall address-list add list=dartbit-backend address=${backendHost} comment="Dartbit backend fqdn"`);
     add(`/ip firewall address-list add list=dartbit-backend address=${portalBaseHost} comment="Dartbit portal fqdn"`);
-    // Explicit api.<portalBase> so STK push (portal -> api) is always reachable for a walled
-    // user even if BACKEND_URL is customised and backendHost differs from api.<portalBase>.
-    add(`/ip firewall address-list add list=dartbit-backend address=api.${portalBaseHost} comment=\"Dartbit api fqdn\"`);
     // The tenant's own portal subdomain — explicitly allowed so an expired/unpaid customer on ANY
     // account can always reach tenant.dartbittech.com to pay, regardless of payment status.
     if (tenantPortalHost) add(`/ip firewall address-list add list=dartbit-backend address=${tenantPortalHost} comment="Dartbit tenant portal fqdn"`);

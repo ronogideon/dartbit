@@ -235,7 +235,7 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
       // Mirror the new expiry into RADIUS (no-ops if RADIUS isn't enabled).
       try {
         const { radiusConfigured, syncSubscriberToRadius } = await import('../utils/radius');
-        if (radiusConfigured()) await syncSubscriberToRadius(sub.id);
+        if (radiusConfigured()) await syncSubscriberToRadius(sub.id, { forceReauth: wasLapsed });
       } catch (e) { console.error('renew: radius sync failed:', e instanceof Error ? e.message : e); }
       // Legacy router push only when not on RADIUS.
       try {

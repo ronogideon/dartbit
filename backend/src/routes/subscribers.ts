@@ -308,17 +308,20 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       return 0;
     });
 
-    // Online status: a subscriber is online if a current OnlineSession exists for them.
+    // Online status: a subscriber is online only if they have a current OnlineSession AND are
+    // actually entitled. An expired subscriber holds a live PPPoE session but sits in the walled
+    // garden with no real internet, so we surface them as OFFLINE — matching what they can actually do.
     const online = await prisma.onlineSession.findMany({
       where: tenantId ? { tenantId } : {},
       select: { subscriberId: true, username: true },
     });
     const onlineIds = new Set(online.map(o => o.subscriberId).filter(Boolean) as string[]);
     const onlineNames = new Set(online.map(o => o.username));
-    const withOnline = sorted.map(s => ({
-      ...s,
-      isOnline: onlineIds.has(s.id) || onlineNames.has(s.username),
-    }));
+    const nowMs = Date.now();
+    const withOnline = sorted.map(s => {
+      const entitled = s.isActive && !(s.expiresAt && new Date(s.expiresAt).getTime() <= nowMs);
+      return { ...s, isOnline: entitled && (onlineIds.has(s.id) || onlineNames.has(s.username)) };
+    });
 
     sendSuccess(res, withOnline);
   } catch {
@@ -436,7 +439,10 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
       if (radiusConfigured() && (subscriber.service === 'PPPOE' || subscriber.service === 'HOTSPOT')) {
         // kickToApply: drop the live session so the new state takes effect immediately — into the
         // walled garden if it just expired, or back to full service if the expiry was pushed out.
-        await syncSubscriberToRadius(subscriber.id, { kickToApply: true });
+        // forceReauth: if it WAS expired or disabled before this edit, force a clean re-auth so the
+        // walled session recovers. Use `existing` (pre-update state), not the just-updated record.
+        const wasBlocked = !existing.isActive || (existing.expiresAt ? new Date(existing.expiresAt) <= new Date() : false);
+        await syncSubscriberToRadius(subscriber.id, { kickToApply: true, forceReauth: wasBlocked });
       }
     } catch (e) {
       console.error('radius sync (update) failed:', e instanceof Error ? e.message : e);
@@ -536,7 +542,7 @@ router.post('/:id/extend', async (req: AuthRequest, res: Response) => {
     try {
       const { radiusConfigured, syncSubscriberToRadius } = await import('../utils/radius');
       if (radiusConfigured() && (sub.service === 'PPPOE' || sub.service === 'HOTSPOT')) {
-        await syncSubscriberToRadius(sub.id);
+        await syncSubscriberToRadius(sub.id, { forceReauth: !(sub.expiresAt && sub.expiresAt > now) });
       }
     } catch (e) {
       console.error('extend: radius sync failed (continuing):', e instanceof Error ? e.message : e);

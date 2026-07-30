@@ -88,3 +88,18 @@ export async function enqueueWall(routerId: string, username: string, subscriber
 export async function enqueueUnwall(routerId: string, username: string, subscriberId: string, staticIp?: string | null): Promise<void> {
   await enqueueCommand(routerId, unwallScript(username, subscriberId, staticIp));
 }
+
+// Force a clean re-auth: unconditionally drop the user's live PPPoE session so the CPE redials and
+// re-authenticates against the (already-updated) entitled RADIUS state. Used on payment/renewal of a
+// previously-lapsed user — the old session authenticated into the walled state and keeps running
+// under it until it re-auths, so clearing the address-list alone isn't enough. With
+// one-session-per-host=yes the redial replaces cleanly. This does NOT depend on detecting the walled
+// state on the router — the caller only fires it when the user was actually expired, so a healthy
+// early renewal is never interrupted.
+export function reauthScript(username: string): string {
+  return `:foreach a in=[/ppp active find name="${username}"] do={ /ppp active remove $a }`;
+}
+
+export async function enqueueReauth(routerId: string, username: string): Promise<void> {
+  await enqueueCommand(routerId, reauthScript(username));
+}
