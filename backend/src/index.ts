@@ -98,8 +98,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.21', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.21', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.22', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.22', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -140,7 +140,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.21 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.11.22 running on port ${PORT}\n`);
   patchDatabase();
   startSessionCleanup();
   startBillingStatusUpdater();
@@ -293,34 +293,59 @@ function startExpiryWatcher() {
         }
       } catch (e) { console.error('[walled-garden] pass error:', e instanceof Error ? e.message : e); }
 
-      // (0b) CONFINE expired-but-enabled PPPoE on their LIVE session. RADIUS accepts them (so the CPE
-      // stays connected to reach the portal) but no longer pushes a dynamic address-list — those
-      // can't be removed on renewal without a disconnect. Instead we add a STATIC dartbit-expired
-      // entry for their current IP (resolved on-router, idempotent) via the command queue. Batched
-      // one command per router, at most every 30s per router, so a fresh redial is re-confined
-      // within a sweep or two. The UNWALL happens event-driven on renewal (instant, no re-auth).
+      // (0b) RECONCILE the dartbit-expired address-list against WHO ACTUALLY HOLDS EACH IP RIGHT NOW.
+      // PPPoE pool IPs are reassigned across users, so a stale STATIC entry (added for an expired user
+      // who has since departed) pins the walled state onto whoever inherits that IP next — walling
+      // paid, connected customers ("authenticated but no internet"). We fix this by driving off the
+      // live session report (OnlineSession): every sweep, per router, for each online PPPoE user we
+      // UN-wall their current IP if they're ENTITLED (removing any stale entry + flushing conntrack,
+      // but only when there's actually something to remove, so healthy users are never blipped) and
+      // WALL their current IP if they're EXPIRED. Keyed by the IP held NOW, so inherited/stale entries
+      // clear automatically within a sweep.
       try {
-        const expiredActive = await prisma.subscriber.findMany({
-          where: { service: 'PPPOE', isActive: true, routerId: { not: null }, expiresAt: { lte: now } },
-          select: { id: true, username: true, routerId: true },
+        const fresh = new Date(Date.now() - 5 * 60_000); // sessions reported in the last 5 min
+        const sessions = await prisma.onlineSession.findMany({
+          where: { updatedAt: { gte: fresh }, NOT: { ipAddress: null } },
+          select: { username: true, ipAddress: true, routerId: true, subscriberId: true },
         });
-        if (expiredActive.length) {
-          const { wallScript } = await import('./utils/walledGarden');
-          const { enqueueCommand } = await import('./utils/commandQueue');
-          const byRouter = new Map<string, string[]>();
-          for (const s of expiredActive) {
-            const arr = byRouter.get(s.routerId!) ?? [];
-            arr.push(wallScript(s.username, s.id));
-            byRouter.set(s.routerId!, arr);
+        if (sessions.length) {
+          // Resolve entitlement for the online users (by subscriberId, else by username).
+          const ids = Array.from(new Set(sessions.map(s => s.subscriberId).filter(Boolean))) as string[];
+          const names = Array.from(new Set(sessions.map(s => s.username).filter(Boolean)));
+          const subs = await prisma.subscriber.findMany({
+            where: { OR: [{ id: { in: ids } }, { username: { in: names } }], service: 'PPPOE' },
+            select: { id: true, username: true, isActive: true, expiresAt: true },
+          });
+          const byId = new Map(subs.map(s => [s.id, s]));
+          const byName = new Map(subs.map(s => [s.username, s]));
+          const isExpired = (s: { isActive: boolean; expiresAt: Date | null }) =>
+            !s.isActive || (s.expiresAt ? new Date(s.expiresAt) <= now : false);
+          type Act = { wall: string[]; unwall: string[] };
+          const perRouter = new Map<string, Act>();
+          for (const sess of sessions) {
+            const sub = (sess.subscriberId && byId.get(sess.subscriberId)) || byName.get(sess.username);
+            if (!sub || !sess.ipAddress) continue; // not a known PPPoE subscriber → leave alone
+            const a = perRouter.get(sess.routerId) ?? { wall: [], unwall: [] };
+            (isExpired(sub) ? a.wall : a.unwall).push(sess.ipAddress);
+            perRouter.set(sess.routerId, a);
           }
-          for (const [routerId, scripts] of byRouter) {
-            if (Date.now() - (wallBatchAt.get(routerId) || 0) < 30_000) continue;
+          const { enqueueCommand } = await import('./utils/commandQueue');
+          for (const [routerId, a] of perRouter) {
+            if (Date.now() - (wallBatchAt.get(routerId) || 0) < 15_000) continue;
             wallBatchAt.set(routerId, Date.now());
-            await enqueueCommand(routerId, scripts.join('\n')).catch(() => { /* best-effort */ });
+            const cmds: string[] = [];
+            for (const ip of a.unwall) {
+              // Stale-wall cleanup: only remove + flush if this now-entitled IP is actually walled.
+              cmds.push(`:local h [/ip firewall address-list find list=dartbit-expired address=${ip} !dynamic]; :if ([:len $h] > 0) do={ /ip firewall address-list remove $h; :foreach c in=[/ip firewall connection find src-address~"${ip}"] do={ /ip firewall connection remove $c } }`);
+            }
+            for (const ip of a.wall) {
+              cmds.push(`:if ([:len [/ip firewall address-list find list=dartbit-expired address=${ip}]]=0) do={ /ip firewall address-list add list=dartbit-expired address=${ip} comment="Dartbit-exp:reconcile" }`);
+            }
+            if (cmds.length) await enqueueCommand(routerId, cmds.join('\n')).catch(() => { /* best-effort */ });
           }
           if (wallBatchAt.size > 5000) { const c = Date.now(); for (const [k, v] of wallBatchAt) if (c - v > 120_000) wallBatchAt.delete(k); }
         }
-      } catch (e) { console.error('[walled-garden] confine pass error:', e instanceof Error ? e.message : e); }
+      } catch (e) { console.error('[walled-garden] reconcile error:', e instanceof Error ? e.message : e); }
 
       // Subscribers who are NO LONGER entitled but STILL have a live session — these are the ones to
       // disconnect. Covers PPPoE AND Hotspot, and runs regardless of RADIUS mode: we kick via the

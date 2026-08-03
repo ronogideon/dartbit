@@ -26,15 +26,28 @@ function tag(subscriberId: string): string {
   return `Dartbit-exp:${subscriberId}`;
 }
 
+// A blank/whitespace username would render as `/ppp active find name=""`, which must never be emitted
+// — it can behave as an unfiltered match on the router and touch every session. Callers pass a real
+// PPPoE username; anything else yields a no-op script.
+function safeUser(username: string): string | null {
+  const u = (username || '').trim();
+  return u.length ? u : null;
+}
+
 // Confine a subscriber: add a STATIC dartbit-expired entry for their current IP. Resolves the live
 // PPPoE framed IP on the router; also handles an explicit STATIC IP. Never disconnects.
 export function wallScript(username: string, subscriberId: string, staticIp?: string | null): string {
+  const user = safeUser(username);
+  if (!user && !staticIp) return '';
   const t = tag(subscriberId);
-  const lines: string[] = [
-    `:foreach a in=[/ppp active find name="${username}"] do={ :local ip [/ppp active get $a address]; ` +
-      `:if ([:len [/ip firewall address-list find list=${LIST} address=$ip]]=0) do={ ` +
-      `/ip firewall address-list add list=${LIST} address=$ip comment="${t}" } }`,
-  ];
+  const lines: string[] = [];
+  if (user) {
+    lines.push(
+      `:foreach a in=[/ppp active find name="${user}"] do={ :local ip [/ppp active get $a address]; ` +
+        `:if ([:len [/ip firewall address-list find list=${LIST} address=$ip]]=0) do={ ` +
+        `/ip firewall address-list add list=${LIST} address=$ip comment="${t}" } }`,
+    );
+  }
   if (staticIp) {
     lines.push(
       `:if ([:len [/ip firewall address-list find list=${LIST} address=${staticIp}]]=0) do={ ` +
@@ -55,22 +68,26 @@ export function wallScript(username: string, subscriberId: string, staticIp?: st
 // All removes use `!dynamic` (dynamic entries can't be removed and would abort the script) and are
 // wrapped in :do/on-error for total robustness.
 export function unwallScript(username: string, subscriberId: string, staticIp?: string | null): string {
+  const user = safeUser(username);
+  if (!user && !staticIp) return '';
   const t = tag(subscriberId);
   const lines: string[] = [
     // Backstop: clear any STATIC entry we ever tagged for this subscriber (covers an IP change).
     `:do { /ip firewall address-list remove [find list=${LIST} comment="${t}" !dynamic] } on-error={}`,
-    // Resolve the live PPPoE IP. Only act if the IP is ACTUALLY in dartbit-expired — so calling
-    // unwall on an already-entitled (never-walled) user is a true no-op and never blips their session.
-    // If it WAS walled: remove the static entry, flush conntrack, and DROP the session so it re-auths
-    // immediately against the now-entitled RADIUS state. Clearing the list in place isn't enough — the
-    // old session authenticated into the walled state and keeps running under it until it re-auths.
-    // With one-session-per-host=yes the CPE's ~3s redial replaces cleanly, with no duplicate session.
-    `:foreach a in=[/ppp active find name="${username}"] do={ :local ip [/ppp active get $a address]; ` +
-      `:if ([:len [/ip firewall address-list find list=${LIST} address=$ip]] > 0) do={ ` +
-        `:do { /ip firewall address-list remove [find list=${LIST} address=$ip !dynamic] } on-error={}; ` +
-        `:foreach c in=[/ip firewall connection find src-address~$ip] do={ /ip firewall connection remove $c }; ` +
-        `/ppp active remove $a } }`,
   ];
+  if (user) {
+    lines.push(
+      // Resolve the live PPPoE IP. Only act if the IP is ACTUALLY in dartbit-expired — so calling
+      // unwall on an already-entitled (never-walled) user is a true no-op and never blips their
+      // session. If it WAS walled: remove the static entry, flush conntrack, and DROP the session so
+      // it re-auths against the now-entitled RADIUS state (one-session-per-host makes the redial clean).
+      `:foreach a in=[/ppp active find name="${user}"] do={ :local ip [/ppp active get $a address]; ` +
+        `:if ([:len [/ip firewall address-list find list=${LIST} address=$ip]] > 0) do={ ` +
+          `:do { /ip firewall address-list remove [find list=${LIST} address=$ip !dynamic] } on-error={}; ` +
+          `:foreach c in=[/ip firewall connection find src-address~$ip] do={ /ip firewall connection remove $c }; ` +
+          `/ppp active remove $a } }`,
+    );
+  }
   if (staticIp) {
     lines.push(
       `:if ([:len [/ip firewall address-list find list=${LIST} address=${staticIp}]] > 0) do={ ` +
@@ -97,7 +114,9 @@ export async function enqueueUnwall(routerId: string, username: string, subscrib
 // state on the router — the caller only fires it when the user was actually expired, so a healthy
 // early renewal is never interrupted.
 export function reauthScript(username: string): string {
-  return `:foreach a in=[/ppp active find name="${username}"] do={ /ppp active remove $a }`;
+  const user = safeUser(username);
+  if (!user) return '';
+  return `:foreach a in=[/ppp active find name="${user}"] do={ /ppp active remove $a }`;
 }
 
 export async function enqueueReauth(routerId: string, username: string): Promise<void> {
