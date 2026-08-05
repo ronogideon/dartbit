@@ -250,11 +250,11 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     //  EXPIRED device (cookie is its own credential, independent of the user existing), bouncing it
     //  in a reconnect loop on the captive portal and blocking the purchase flow. MAC auth alone
     //  gives robust auto-login for active devices without that loop.
-    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,mac,http-pap mac-auth-password=dartbit use-radius=no }`);
+    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=mac,http-pap mac-auth-password=dartbit use-radius=no }`);
     // Always sync the profile settings (idempotent — no disruption). use-radius is intentionally NOT
     // set here: new profiles default to use-radius=no (the create above), and section 8e flips it to
     // =yes when RADIUS is active — so we never downgrade a RADIUS-mode profile on reprovision.
-    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=cookie,mac,http-pap mac-auth-password=dartbit`);
+    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=mac,http-pap mac-auth-password=dartbit`);
     // User profile — one device per credential. No add-mac-cookie (cookie auth removed; MAC auth
     // via the MAC-named user is the reconnect mechanism and it cleanly stops at expiry).
     add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 address-pool=dhcp-pool }`);
@@ -486,7 +486,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
         add(`/ppp aaa set use-radius=yes accounting=yes interim-update=5m`);
         // Switch the Dartbit hotspot profile (only) to RADIUS auth with the login methods the portal
         // needs. Never touches other profiles (e.g. a coexisting centipid hotspot).
-        add(`:foreach hp in=[/ip hotspot profile find where name="hsprof-dartbit"] do={ /ip hotspot profile set $hp use-radius=yes radius-accounting=yes radius-interim-update=5m login-by=cookie,mac,http-chap,http-pap }`);
+        add(`:foreach hp in=[/ip hotspot profile find where name="hsprof-dartbit"] do={ /ip hotspot profile set $hp use-radius=yes radius-accounting=yes radius-interim-update=5m login-by=mac,http-chap,http-pap }`);
         add('');
         // Register/refresh this router as a FreeRADIUS client on the droplet, from the SAME wgIp +
         // secret — so the client, both /radius entries, and clients.conf can never drift apart.
