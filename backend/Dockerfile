@@ -17,4 +17,4 @@ RUN npm run build
 
 EXPOSE 4000
 
-CMD ["node", "dist/index.js"]
+CMD ["sh", "-c", "npx prisma db push --skip-generate && node dist/index.js"]
