@@ -72,6 +72,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const wan        = cfg?.wanInterface     ?? 'ether1';
     const wan2       = (cfg?.wanInterface2 ?? '').trim();
     const autoBridgeLan = cfg?.autoBridgeLan ?? true;
+    const loadBalance = (cfg?.loadBalance ?? false) && !!wan2;
     const lan        = cfg?.lanInterface     ?? 'ether2';
     const bridge     = cfg?.bridgeName       ?? 'bridge-lan';
     const lanGw      = cfg?.lanGateway       ?? '40.40.88.1';
@@ -211,7 +212,53 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // interface (ether1) is slave - use master instead (bridgeLocal)". An invalid masquerade means
     // client traffic leaves un-NATted — subscribers authenticate fine but get no internet.
     // Wrapped in on-error so a bad value can never abort the whole import.
-    add(`:do { :local gw ""; :local rt [/ip route find where dst-address="0.0.0.0/0" and active]; :if ([:len $rt] > 0) do={ :set gw [/ip route get [:pick $rt 0] immediate-gw] }; :local wanif "${wan}"; :if ([:typeof $gw] = "str" && [:len $gw] > 0) do={ :local p [:find $gw "%"]; :if ([:typeof $p] = "num") do={ :set wanif [:pick $gw ($p+1) [:len $gw]] } }; :do { :if ([:len [/interface pppoe-client find name=$wanif]] > 0) do={ :set wanif [/interface pppoe-client get [find name=$wanif] interface] } } on-error={}; :do { :local bp [/interface bridge port find interface=$wanif]; :if ([:len $bp] > 0) do={ :set wanif [/interface bridge port get [:pick $bp 0] bridge] } } on-error={}; :if ([:len [/ip firewall nat find comment="Dartbit WAN NAT"]] = 0) do={ /ip firewall nat add chain=srcnat out-interface=$wanif action=masquerade comment="Dartbit WAN NAT"; :log info ("Dartbit: WAN NAT created on " . $wanif) } else={ :if ([/ip firewall nat get [find comment="Dartbit WAN NAT"] out-interface] != $wanif) do={ /ip firewall nat set [find comment="Dartbit WAN NAT"] out-interface=$wanif; :log info ("Dartbit: WAN NAT moved to " . $wanif) } } } on-error={:log warning "Dartbit: WAN NAT setup failed"}`);
+    if (!loadBalance) {
+      add(`:do { :local gw ""; :local rt [/ip route find where dst-address="0.0.0.0/0" and active]; :if ([:len $rt] > 0) do={ :set gw [/ip route get [:pick $rt 0] immediate-gw] }; :local wanif "${wan}"; :if ([:typeof $gw] = "str" && [:len $gw] > 0) do={ :local p [:find $gw "%"]; :if ([:typeof $p] = "num") do={ :set wanif [:pick $gw ($p+1) [:len $gw]] } }; :do { :if ([:len [/interface pppoe-client find name=$wanif]] > 0) do={ :set wanif [/interface pppoe-client get [find name=$wanif] interface] } } on-error={}; :do { :local bp [/interface bridge port find interface=$wanif]; :if ([:len $bp] > 0) do={ :set wanif [/interface bridge port get [:pick $bp 0] bridge] } } on-error={}; :if ([:len [/ip firewall nat find comment="Dartbit WAN NAT"]] = 0) do={ /ip firewall nat add chain=srcnat out-interface=$wanif action=masquerade comment="Dartbit WAN NAT"; :log info ("Dartbit: WAN NAT created on " . $wanif) } else={ :if ([/ip firewall nat get [find comment="Dartbit WAN NAT"] out-interface] != $wanif) do={ /ip firewall nat set [find comment="Dartbit WAN NAT"] out-interface=$wanif; :log info ("Dartbit: WAN NAT moved to " . $wanif) } } } on-error={:log warning "Dartbit: WAN NAT setup failed"}`);
+    } else {
+      // ===== LOAD BALANCING: dual-WAN PCC + auto-failover (both uplinks DHCP) =====
+      // Balances client connections across ${wan} + ${wan2} via per-connection-classifier, and
+      // fails EVERYTHING over to the survivor the instant a WAN drops (check-gateway=ping + a fallback
+      // route inside each routing-mark table). Dartbit owns routing here (it holds both client lists),
+      // so it manages the whole egress. Both uplinks are DHCP, so a 1-min scheduler (dartbit-lb) reads
+      // each DHCP gateway and (re)writes the marked default routes only when they change (no flap).
+      // Every rule is tagged "Dartbit LB" and cleared before re-adding, so reprovision is idempotent.
+      const w1 = wan, w2 = wan2;
+      // Retire the single-WAN masquerade — the per-uplink LB masquerades replace it.
+      add(`:foreach n in=[/ip firewall nat find comment=\"Dartbit WAN NAT\"] do={ /ip firewall nat remove \$n }`);
+      // WAN interface-list (both uplinks) so the classifier matches ALL client traffic (bridge-lan,
+      // hotspot, and PPPoE-terminated dynamic interfaces) via in-interface-list=!WAN.
+      add(`:if ([:len [/interface list find name=\"WAN\"]] = 0) do={ /interface list add name=WAN }`);
+      add(`:foreach m in=[/interface list member find comment=\"Dartbit LB\"] do={ /interface list member remove \$m }`);
+      add(`/interface list member add list=WAN interface=${w1} comment=\"Dartbit LB\"`);
+      add(`/interface list member add list=WAN interface=${w2} comment=\"Dartbit LB\"`);
+      // Routing-mark tables.
+      add(`:if ([:len [/routing table find name=\"to_wan1\"]] = 0) do={ /routing table add name=to_wan1 fib }`);
+      add(`:if ([:len [/routing table find name=\"to_wan2\"]] = 0) do={ /routing table add name=to_wan2 fib }`);
+      // DHCP clients on both uplinks: baseline internet + native main-table failover for router/unmarked
+      // traffic (w1 distance 1, w2 distance 2). The scheduler owns the routing-mark tables.
+      add(`:if ([:len [/ip dhcp-client find interface=\"${w1}\"]] = 0) do={ /ip dhcp-client add interface=${w1} add-default-route=yes default-route-distance=1 comment=\"Dartbit LB wan1\" }`);
+      add(`/ip dhcp-client set [find interface=\"${w1}\"] add-default-route=yes default-route-distance=1`);
+      add(`:if ([:len [/ip dhcp-client find interface=\"${w2}\"]] = 0) do={ /ip dhcp-client add interface=${w2} add-default-route=yes default-route-distance=2 comment=\"Dartbit LB wan2\" }`);
+      add(`/ip dhcp-client set [find interface=\"${w2}\"] add-default-route=yes default-route-distance=2`);
+      // PCC connection + routing marks. Only NEW (no-mark) connections are classified; established ones
+      // keep their pinned mark. dst-address-type=!local skips router-bound traffic.
+      add(`:foreach m in=[/ip firewall mangle find comment~\"Dartbit LB\"] do={ /ip firewall mangle remove \$m }`);
+      add(`/ip firewall mangle add chain=prerouting in-interface-list=!WAN connection-mark=no-mark dst-address-type=!local per-connection-classifier=both-addresses-and-ports:2/0 action=mark-connection new-connection-mark=wan1_conn passthrough=yes comment=\"Dartbit LB c1\"`);
+      add(`/ip firewall mangle add chain=prerouting in-interface-list=!WAN connection-mark=no-mark dst-address-type=!local per-connection-classifier=both-addresses-and-ports:2/1 action=mark-connection new-connection-mark=wan2_conn passthrough=yes comment=\"Dartbit LB c2\"`);
+      add(`/ip firewall mangle add chain=prerouting in-interface-list=!WAN connection-mark=wan1_conn action=mark-routing new-routing-mark=to_wan1 passthrough=no comment=\"Dartbit LB m1\"`);
+      add(`/ip firewall mangle add chain=prerouting in-interface-list=!WAN connection-mark=wan2_conn action=mark-routing new-routing-mark=to_wan2 passthrough=no comment=\"Dartbit LB m2\"`);
+      // Per-uplink masquerade (a connection that fails over to the other WAN needs that WAN's NAT).
+      add(`:if ([:len [/ip firewall nat find comment=\"Dartbit LB NAT1\"]] = 0) do={ /ip firewall nat add chain=srcnat out-interface=${w1} action=masquerade comment=\"Dartbit LB NAT1\" }`);
+      add(`:if ([:len [/ip firewall nat find comment=\"Dartbit LB NAT2\"]] = 0) do={ /ip firewall nat add chain=srcnat out-interface=${w2} action=masquerade comment=\"Dartbit LB NAT2\" }`);
+      // Scheduler + script: read both DHCP gateways; rebuild the marked default routes ONLY when they
+      // change. Each mark table has primary (its own WAN) + fallback (the other WAN), both check-gateway
+      // =ping, so a dead WAN moves that table's traffic to the survivor immediately.
+      add(`:foreach x in=[/system script find name=\"dartbit-lb\"] do={ /system script remove \$x }`);
+      add(`:foreach x in=[/system scheduler find name=\"dartbit-lb\"] do={ /system scheduler remove \$x }`);
+      add(`/system script add name=dartbit-lb policy=read,write,test source={:do { :local g1 \"\"; :local g2 \"\"; :do { :set g1 [/ip dhcp-client get [find interface=\"${w1}\"] gateway] } on-error={}; :do { :set g2 [/ip dhcp-client get [find interface=\"${w2}\"] gateway] } on-error={}; :local c1 \"\"; :do { :set c1 [/ip route get [find comment=\"Dartbit LB mk r1a\"] gateway] } on-error={}; :local c2 \"\"; :do { :set c2 [/ip route get [find comment=\"Dartbit LB mk r2a\"] gateway] } on-error={}; :if ([:len \$g1] > 0 && [:len \$g2] > 0 && (\$c1 != \$g1 || \$c2 != \$g2)) do={ :foreach r in=[/ip route find comment~\"Dartbit LB mk\"] do={ /ip route remove \$r }; /ip route add dst-address=0.0.0.0/0 gateway=\$g1 routing-table=to_wan1 check-gateway=ping distance=1 comment=\"Dartbit LB mk r1a\"; /ip route add dst-address=0.0.0.0/0 gateway=\$g2 routing-table=to_wan1 check-gateway=ping distance=2 comment=\"Dartbit LB mk r1b\"; /ip route add dst-address=0.0.0.0/0 gateway=\$g2 routing-table=to_wan2 check-gateway=ping distance=1 comment=\"Dartbit LB mk r2a\"; /ip route add dst-address=0.0.0.0/0 gateway=\$g1 routing-table=to_wan2 check-gateway=ping distance=2 comment=\"Dartbit LB mk r2b\"; :log info \"Dartbit: load-balancing routes updated\" } } on-error={}}`);
+      add(`/system scheduler add name=dartbit-lb interval=1m on-event=\"/system script run dartbit-lb\" comment=\"Dartbit load-balancing route sync\"`);
+      add(`:do { /system script run dartbit-lb } on-error={}`);
+    }
     add('');
 
     // 4b. ANTI-TETHERING (block hotspot/USB sharing) — TTL based, DISABLED BY DEFAULT.
@@ -1616,7 +1663,7 @@ router.post('/provision/:routerId', async (req: Request, res: Response) => {
     const { routerId } = req.params;
     const body = req.body || {};
     const allowed = [
-      'wanInterface', 'wanInterface2', 'autoBridgeLan', 'lanInterface', 'bridgeName',
+      'wanInterface', 'wanInterface2', 'autoBridgeLan', 'loadBalance', 'lanInterface', 'bridgeName',
       'lanSubnet', 'lanGateway', 'dhcpPoolStart', 'dhcpPoolEnd', 'dnsServers',
       'pppoeEnabled', 'pppoeInterface', 'pppoeLocalAddress', 'pppoeRemotePool',
       'pppoePoolStart', 'pppoePoolEnd',

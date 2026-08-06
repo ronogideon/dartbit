@@ -223,6 +223,7 @@ model RouterProvisioningConfig {
   wanInterface        String         @default("ether1")
   wanInterface2       String?                        // optional 2nd uplink — excluded from the LAN bridge (for dual-WAN / load balancing)
   autoBridgeLan       Boolean        @default(true)  // false = only explicitly-listed LAN ports are bridged (safe on shared/multi-system routers)
+  loadBalance         Boolean        @default(false) // dual-WAN PCC balancing + auto-failover across wanInterface + wanInterface2
   lanInterface        String         @default("ether2")
   bridgeName          String         @default("bridge-lan")
   lanSubnet           String         @default("192.168.88.0/24")

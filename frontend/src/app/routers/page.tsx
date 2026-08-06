@@ -13,7 +13,7 @@ import { Plus, Edit2, Trash2, Copy, Terminal, Settings2, ChevronDown, ChevronUp,
 import SearchInput from '@/components/ui/SearchInput';
 
 interface ProvConfig {
-  wanInterface: string; wanInterface2?: string; autoBridgeLan?: boolean; lanInterface: string; bridgeName: string;
+  wanInterface: string; wanInterface2?: string; autoBridgeLan?: boolean; loadBalance?: boolean; lanInterface: string; bridgeName: string;
   lanSubnet: string; lanGateway: string; dhcpPoolStart: string;
   dhcpPoolEnd: string; dnsServers: string; pppoeEnabled: boolean;
   pppoeLocalAddress: string; pppoeRemotePool: string;
@@ -29,7 +29,7 @@ interface MikrotikRouter {
 }
 
 const defaultProvision: ProvConfig = {
-  wanInterface: 'ether1', wanInterface2: '', autoBridgeLan: true, lanInterface: 'ether2', bridgeName: 'bridge-lan',
+  wanInterface: 'ether1', wanInterface2: '', autoBridgeLan: true, loadBalance: false, lanInterface: 'ether2', bridgeName: 'bridge-lan',
   lanSubnet: '192.168.88.0/24', lanGateway: '192.168.88.1',
   dhcpPoolStart: '192.168.88.10', dhcpPoolEnd: '192.168.88.254',
   dnsServers: '8.8.8.8,8.8.4.4', pppoeEnabled: true,
@@ -115,6 +115,11 @@ function ProvisionPanel({ routerId }: { routerId: string }) {
                     <input type="checkbox" checked={form.autoBridgeLan !== false}
                       onChange={e => setForm(f => ({ ...f, autoBridgeLan: e.target.checked }))} />
                     <span>Auto-add unassigned ports to the LAN bridge. <span className="text-gray-500">Turn OFF on a router shared with another billing system, so only the ports you pick are used and the other system&apos;s ports are never touched.</span></span>
+                  </label>
+                  <label className={`flex items-center gap-2 text-xs mb-3 cursor-pointer ${!form.wanInterface2 ? 'opacity-50' : ''}`}>
+                    <input type="checkbox" disabled={!form.wanInterface2} checked={form.loadBalance === true}
+                      onChange={e => setForm(f => ({ ...f, loadBalance: e.target.checked }))} />
+                    <span>Load-balance across both uplinks (with auto-failover). <span className="text-gray-500">Requires a second uplink. Splits traffic across both WANs and moves everything to the survivor if one drops.</span></span>
                   </label>
                   <div className="grid grid-cols-2 gap-2">
                     {([
