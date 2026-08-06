@@ -104,8 +104,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.29', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.29', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.30', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.30', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -146,9 +146,14 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.29 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.11.30 running on port ${PORT}\n`);
   patchDatabase().catch(e => console.error('[patchDatabase] failed:', e instanceof Error ? e.message : e));
   startSessionCleanup();
+  // RADIUS routers don't run the router-side session reporter (it's skipped as redundant), so this
+  // mirrors FreeRADIUS radacct (both PPPoE and hotspot) into OnlineSession — otherwise authenticated
+  // users on RADIUS routers show no active session. It only owns routers with RADIUS activity, so it
+  // never collides with the router-side reporter used by non-RADIUS routers.
+  startRadiusSessionSync();
   startBillingStatusUpdater();
   startExpiryWatcher();
   startRouterOfflineWatcher();
@@ -563,6 +568,7 @@ function startFreeradiusHealthCheck() {
 function startRadiusSessionSync() {
   const prisma = new PrismaClient();
   const lastBytes = new Map<string, { in: number; out: number; at: number }>();
+  const radiusRouters = new Set<string>(); // routers we've seen RADIUS sessions for — we own their OnlineSession rows
   const run = async () => {
     try {
       const { radiusConfigured, getRadiusActiveSessions } = await import('./utils/radius');
@@ -618,8 +624,13 @@ function startRadiusSessionSync() {
 
       // Upsert each session (stable id/startedAt across cycles — matches the discipline used for
       // directly-reported sessions in routerZtp.ts) rather than wiping and recreating every poll;
-      // only sessions no longer present in this snapshot are removed.
+      // only sessions no longer present in this snapshot are removed. We ONLY manage routers we've
+      // seen RADIUS sessions for — a non-RADIUS router (served by the router-side reporter) is never
+      // touched here, so the two writers can't wipe each other. A RADIUS router that drains to zero
+      // stays "owned" (in radiusRouters) so its last sessions are correctly cleared.
+      for (const rid of perRouter.keys()) radiusRouters.add(rid);
       for (const r of routers) {
+        if (!radiusRouters.has(r.id)) continue;
         const list = perRouter.get(r.id) || [];
         const keys = list.map(d => d.sessionKey).filter(Boolean);
         await prisma.onlineSession.deleteMany({

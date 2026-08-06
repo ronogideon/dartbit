@@ -29,7 +29,7 @@ interface MikrotikRouter {
 }
 
 const defaultProvision: ProvConfig = {
-  wanInterface: 'ether1', wanInterface2: '', autoBridgeLan: true, loadBalance: false, lanInterface: 'ether2', bridgeName: 'bridge-lan',
+  wanInterface: 'ether1', wanInterface2: '', autoBridgeLan: false, loadBalance: false, lanInterface: 'ether2', bridgeName: 'bridge-lan',
   lanSubnet: '192.168.88.0/24', lanGateway: '192.168.88.1',
   dhcpPoolStart: '192.168.88.10', dhcpPoolEnd: '192.168.88.254',
   dnsServers: '8.8.8.8,8.8.4.4', pppoeEnabled: true,
@@ -111,11 +111,6 @@ function ProvisionPanel({ routerId }: { routerId: string }) {
                       {IFACES.filter(i => i !== form.wanInterface).map(i => <option key={i} value={i}>{i}</option>)}
                     </select>
                   </div>
-                  <label className="flex items-center gap-2 text-xs mb-3 cursor-pointer">
-                    <input type="checkbox" checked={form.autoBridgeLan !== false}
-                      onChange={e => setForm(f => ({ ...f, autoBridgeLan: e.target.checked }))} />
-                    <span>Auto-add unassigned ports to the LAN bridge. <span className="text-gray-500">Turn OFF on a router shared with another billing system, so only the ports you pick are used and the other system&apos;s ports are never touched.</span></span>
-                  </label>
                   <label className={`flex items-center gap-2 text-xs mb-3 cursor-pointer ${!form.wanInterface2 ? 'opacity-50' : ''}`}>
                     <input type="checkbox" disabled={!form.wanInterface2} checked={form.loadBalance === true}
                       onChange={e => setForm(f => ({ ...f, loadBalance: e.target.checked }))} />
