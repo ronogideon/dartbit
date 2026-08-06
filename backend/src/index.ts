@@ -1,6 +1,12 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+// Resilience: a rejected promise in a background watcher (e.g. a transient DB hiccup) must never
+// take the whole server down — log it and keep serving. This is what turns a recoverable blip into
+// an outage otherwise (Node crashes the process on an unhandled rejection by default).
+process.on('unhandledRejection', (reason) => { console.error('[unhandledRejection]', reason instanceof Error ? reason.stack || reason.message : reason); });
+process.on('uncaughtException', (err) => { console.error('[uncaughtException]', err instanceof Error ? err.stack || err.message : err); });
+
 import express from 'express';
 import cors from 'cors';
 import { PrismaClient } from '@prisma/client';
@@ -98,8 +104,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.27', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.27', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.29', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.29', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -140,8 +146,8 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.27 running on port ${PORT}\n`);
-  patchDatabase();
+  console.log(`\n🚀 Dartbit v1.11.29 running on port ${PORT}\n`);
+  patchDatabase().catch(e => console.error('[patchDatabase] failed:', e instanceof Error ? e.message : e));
   startSessionCleanup();
   startBillingStatusUpdater();
   startExpiryWatcher();
@@ -711,6 +717,8 @@ async function patchDatabase() {
     await safeExec(prisma, 'MikrotikRouter.winboxOpenUntil', `ALTER TABLE "MikrotikRouter" ADD COLUMN IF NOT EXISTS "winboxOpenUntil" TIMESTAMP(3)`);
     await safeExec(prisma, 'MikrotikRouter.winboxUser', `ALTER TABLE "MikrotikRouter" ADD COLUMN IF NOT EXISTS "winboxUser" TEXT`);
     await safeExec(prisma, 'MikrotikRouter.winboxPass', `ALTER TABLE "MikrotikRouter" ADD COLUMN IF NOT EXISTS "winboxPass" TEXT`);
+    await safeExec(prisma, 'MikrotikRouter.wgEndpoint', `ALTER TABLE "MikrotikRouter" ADD COLUMN IF NOT EXISTS "wgEndpoint" TEXT`);
+    await safeExec(prisma, 'MikrotikRouter.wgVia', `ALTER TABLE "MikrotikRouter" ADD COLUMN IF NOT EXISTS "wgVia" TEXT`);
 
     // RouterProvisioningConfig — CREATE TABLE first
     await safeExec(prisma, 'RouterProvisioningConfig table',
@@ -743,6 +751,9 @@ async function patchDatabase() {
       ['hotspotNetwork', `TEXT NOT NULL DEFAULT '192.168.88.0/24'`],
       ['hotspotDnsName', `TEXT NOT NULL DEFAULT 'dartbit.login'`],
       ['staticEnabled', `BOOLEAN NOT NULL DEFAULT false`],
+      ['wanInterface2', `TEXT`],
+      ['autoBridgeLan', `BOOLEAN NOT NULL DEFAULT true`],
+      ['loadBalance', `BOOLEAN NOT NULL DEFAULT false`],
     ];
     for (const [col, type] of provColumns) {
       await safeExec(prisma, `RouterProvisioningConfig.${col}`,
