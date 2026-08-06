@@ -70,6 +70,8 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
 
     const cfg = r.provConfig;
     const wan        = cfg?.wanInterface     ?? 'ether1';
+    const wan2       = (cfg?.wanInterface2 ?? '').trim();
+    const autoBridgeLan = cfg?.autoBridgeLan ?? true;
     const lan        = cfg?.lanInterface     ?? 'ether2';
     const bridge     = cfg?.bridgeName       ?? 'bridge-lan';
     const lanGw      = cfg?.lanGateway       ?? '40.40.88.1';
@@ -136,17 +138,30 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // notation and PPPoE-client WANs to the physical port). Used to keep the live uplink out of the
     // bridge even if the stored config names a different port.
     add(`:global wandet ""; :do { :local rt [/ip route find where dst-address="0.0.0.0/0" and active]; :if ([:len $rt] > 0) do={ :local gw [/ip route get [:pick $rt 0] immediate-gw]; :if ([:typeof $gw] = "str") do={ :local p [:find $gw "%"]; :if ([:typeof $p] = "num") do={ :set wandet [:pick $gw ($p+1) [:len $gw]] } else={ :set wandet $gw } } } } on-error={}; :do { :if ([:len [/interface pppoe-client find name=$wandet]] > 0) do={ :set wandet [/interface pppoe-client get [find name=$wandet] interface] } } on-error={}`);
+    // Uplinks must NEVER be bridged into the LAN. Keep both configured uplinks out of bridge-lan,
+    // always — this is what stops a second uplink (e.g. ether2) being swallowed by the auto-sweep.
+    const uplinks = [wan, wan2].filter(Boolean);
+    for (const up of uplinks) {
+      add(`:foreach p in=[/interface bridge port find interface="${up}" bridge="${bridge}"] do={ /interface bridge port remove $p; :log info "Dartbit: kept uplink ${up} out of ${bridge}" }`);
+    }
     for (const port of lanInterfaces) {
-      // First remove the port from ANY other bridge it might be on (this is the fix —
-      // RouterOS silently rejects adding a port that's already on another bridge).
+      if (uplinks.includes(port)) continue; // never bridge an uplink even if mistakenly listed
       add(`:foreach p in=[/interface bridge port find interface="${port}"] do={ :local b [/interface bridge port get $p bridge]; :if ($b != "${bridge}") do={ /interface bridge port remove $p; :log info ("Dartbit: moved ${port} from " . $b . " to ${bridge}") } }`);
       add(`:global wandet; :if ("${port}" != $wandet && [:len [/interface bridge port find interface="${port}" bridge="${bridge}"]] = 0) do={ /interface bridge port add bridge=${bridge} interface=${port} comment="Dartbit LAN port" }`);
     }
-    // Safety net: add every remaining LAN-side interface that isn't on ANY bridge yet — all ethernet
-    // except the WAN uplink, plus any wireless — into the bridge. Error-safe, so a freshly installed
-    // router ends up with every AP/LAN port on the one bridge even if not all were enumerated.
-    add(`:global wandet; :foreach i in=[/interface ethernet find where name!="${wan}"] do={ :local n [/interface ethernet get $i name]; :if ($n != $wandet && [:len [/interface bridge port find interface=$n]] = 0 && [:len [/ip address find interface=$n]] = 0 && [:len [/ip dhcp-client find interface=$n]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$n comment="Dartbit LAN (auto)" } on-error={} } }`);
-    add(`:foreach w in=[/interface find where type="wlan"] do={ :local n [/interface get $w name]; :if ([:len [/interface bridge port find interface=$n]] = 0 && [:len [/ip address find interface=$n]] = 0 && [:len [/ip dhcp-client find interface=$n]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$n comment="Dartbit WLAN (auto)" } on-error={} } }`);
+    if (autoBridgeLan) {
+      // Safety net (fresh single-system routers): bridge every LAN-side interface not already placed —
+      // all ethernet except BOTH uplinks + the runtime WAN, plus wireless. Disabled on shared routers
+      // (autoBridgeLan=false) so it can never grab another system's ports or a spare uplink.
+      add(`:global wandet; :foreach i in=[/interface ethernet find where name!="${wan}"] do={ :local n [/interface ethernet get $i name]; :if ($n != $wandet && $n != "${wan2}" && [:len [/interface bridge port find interface=$n]] = 0 && [:len [/ip address find interface=$n]] = 0 && [:len [/ip dhcp-client find interface=$n]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$n comment="Dartbit LAN (auto)" } on-error={} } }`);
+      add(`:foreach w in=[/interface find where type="wlan"] do={ :local n [/interface get $w name]; :if ([:len [/interface bridge port find interface=$n]] = 0 && [:len [/ip address find interface=$n]] = 0 && [:len [/ip dhcp-client find interface=$n]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$n comment="Dartbit WLAN (auto)" } on-error={} } }`);
+    } else if (lanInterfaces.length) {
+      // Explicit mode (shared/multi-system routers): bridge-lan holds EXACTLY the listed LAN ports.
+      // Remove any port in bridge-lan that's no longer assigned (e.g. moved to the other system) so a
+      // frontend reorg fully takes effect. Only touches bridge-lan membership — never other bridges.
+      const keepCond = lanInterfaces.map(pp => `$n != "${pp}"`).join(' && ');
+      add(`:foreach p in=[/interface bridge port find bridge="${bridge}"] do={ :local n [/interface bridge port get $p interface]; :if (${keepCond}) do={ /interface bridge port remove $p; :log info ("Dartbit: removed " . $n . " from ${bridge} (de-assigned)") } }`);
+    }
     add('');
 
     // 2. LAN gateway IP
@@ -1601,7 +1616,7 @@ router.post('/provision/:routerId', async (req: Request, res: Response) => {
     const { routerId } = req.params;
     const body = req.body || {};
     const allowed = [
-      'wanInterface', 'lanInterface', 'bridgeName',
+      'wanInterface', 'wanInterface2', 'autoBridgeLan', 'lanInterface', 'bridgeName',
       'lanSubnet', 'lanGateway', 'dhcpPoolStart', 'dhcpPoolEnd', 'dnsServers',
       'pppoeEnabled', 'pppoeInterface', 'pppoeLocalAddress', 'pppoeRemotePool',
       'pppoePoolStart', 'pppoePoolEnd',

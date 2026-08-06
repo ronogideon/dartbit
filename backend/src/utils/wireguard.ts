@@ -175,23 +175,28 @@ export async function deprovisionRouterWg(routerId: string): Promise<void> {
 export function buildMikrotikWgConfig(opts: { wgIp: string; privateKey: string; wanInterface?: string }): string {
   const serverHost = WG_ENDPOINT.split(':')[0];
   const serverPort = WG_ENDPOINT.split(':')[1] || '51820';
+  // Prefer the v6 literal from boot when we have one, so the failover script (which keys off the v6
+  // literal) works on its first run; the hostname was the bug that stranded a router on a dead v6 path.
+  const initialEndpoint = WG_ENDPOINT6 || serverHost;
   const lines = [
     `/interface wireguard add name=dartbit-vpn private-key="${opts.privateKey}" listen-port=13231`,
     `/ip address add address=${opts.wgIp}/24 interface=dartbit-vpn comment="Dartbit VPN"`,
-    `/interface wireguard peers add interface=dartbit-vpn public-key="${WG_SERVER_PUBKEY}" endpoint-address=${serverHost} endpoint-port=${serverPort} allowed-address=${WG_SUBNET} persistent-keepalive=25s comment="Dartbit VPN"`,
+    `/interface wireguard peers add interface=dartbit-vpn public-key="${WG_SERVER_PUBKEY}" endpoint-address=${initialEndpoint} endpoint-port=${serverPort} allowed-address=${WG_SUBNET} persistent-keepalive=25s comment="Dartbit VPN"`,
     `/ip firewall filter add chain=input src-address=${WG_SUBNET} action=accept comment="Dartbit VPN mgmt" place-before=0`,
   ];
   if (WG_ENDPOINT6) {
     const wan = opts.wanInterface || 'ether1';
-    // Enable IPv6 + DHCPv6 on the WAN (harmless no-ops where the uplink has no v6), then install a
-    // failover script: prefer the v6 endpoint whenever the droplet is reachable over v6, fall back
-    // to v4 when it isn't. Checked every 5 minutes and once immediately.
+    // Enable IPv6 + DHCPv6 on the WAN (harmless no-ops where the uplink has no v6), then install the
+    // failover script: PREFER v6, fall back to v4 when v6 is unreachable OR the v6 handshake goes
+    // stale. Anti-flap: (re)switch to v6 only after it is reachable on TWO consecutive checks (~10 min),
+    // resetting that streak on any fallback, so a v6 path that pings but can't carry the tunnel can't
+    // oscillate every 5 min (the old flapping bug). The peer starts on v6, so v6 is preferred from boot.
     lines.push(
       `:do { /ipv6 settings set disable-ipv6=no accept-router-advertisements=yes } on-error={}`,
       `:do { :if ([:len [/ipv6 dhcp-client find interface="${wan}"]] = 0) do={ /ipv6 dhcp-client add interface=${wan} request=address,prefix pool-name=dartbit6 pool-prefix-length=64 add-default-route=yes comment="Dartbit v6 uplink" } } on-error={}`,
       `:foreach s in=[/system script find name="dartbit-wg6"] do={ /system script remove \$s }`,
       `:foreach s in=[/system scheduler find name="dartbit-wg6"] do={ /system scheduler remove \$s }`,
-      `/system script add name=dartbit-wg6 policy=read,write,test source={:do { :local v6 "${WG_ENDPOINT6}"; :local v4 "${serverHost}"; :local peer [/interface wireguard peers find comment="Dartbit VPN"]; :local cur [/interface wireguard peers get \$peer endpoint-address]; :local pingOk false; :do { :if ([/ping \$v6 count=2 interval=1s] > 0) do={ :set pingOk true } } on-error={}; :local hsOk false; :do { :local hs [/interface wireguard peers get \$peer last-handshake]; :if ([:typeof \$hs] = "time" && \$hs < 3m) do={ :set hsOk true } } on-error={}; :if (\$cur != \$v6 && \$pingOk = true) do={ /interface wireguard peers set \$peer endpoint-address=\$v6; :log info "Dartbit: WireGuard endpoint switched to IPv6" }; :if (\$cur = \$v6 && \$pingOk = false) do={ /interface wireguard peers set \$peer endpoint-address=\$v4; :log info "Dartbit: WireGuard endpoint fell back to IPv4 (v6 unreachable)" }; :if (\$cur = \$v6 && \$pingOk = true && \$hsOk = false) do={ /interface wireguard peers set \$peer endpoint-address=\$v4; :log info "Dartbit: WireGuard endpoint fell back to IPv4 (v6 reachable but handshake stale)" } } on-error={}}`,
+      `/system script add name=dartbit-wg6 policy=read,write,test source={:global dartbitV6Streak; :do { :local v6 "${WG_ENDPOINT6}"; :local v4 "${serverHost}"; :local peer [/interface wireguard peers find comment="Dartbit VPN"]; :if ([:len \$peer] = 0) do={ :error "no peer" }; :local cur [/interface wireguard peers get \$peer endpoint-address]; :if ([:typeof \$dartbitV6Streak] != "num") do={ :set dartbitV6Streak 0 }; :local v6ok false; :do { :if ([/ping \$v6 count=2 interval=1s] > 0) do={ :set v6ok true } } on-error={}; :local hsFresh false; :do { :local hs [/interface wireguard peers get \$peer last-handshake]; :if ([:typeof \$hs] = "time" && \$hs < 3m) do={ :set hsFresh true } } on-error={}; :if (\$v6ok = true) do={ :set dartbitV6Streak (\$dartbitV6Streak + 1) } else={ :set dartbitV6Streak 0 }; :if (\$cur = \$v6) do={ :if (\$v6ok = false || \$hsFresh = false) do={ /interface wireguard peers set \$peer endpoint-address=\$v4; :set dartbitV6Streak 0; :log info "Dartbit: WG endpoint -> IPv4 (v6 down or handshake stale)" } } else={ :if (\$v6ok = true && \$dartbitV6Streak >= 2) do={ /interface wireguard peers set \$peer endpoint-address=\$v6; :log info "Dartbit: WG endpoint -> IPv6 (preferred, stable)" } } } on-error={}}`,
       `/system scheduler add name=dartbit-wg6 interval=5m on-event="/system script run dartbit-wg6" comment="Dartbit WG IPv6 preference"`,
       `:do { /system script run dartbit-wg6 } on-error={}`,
     );
@@ -207,19 +212,30 @@ export async function refreshWgStatus(): Promise<void> {
   catch { return; }
   // `wg show wg0 dump` lines: pubkey<TAB>presharedkey<TAB>endpoint<TAB>allowed-ips<TAB>latest-handshake<TAB>rx<TAB>tx<TAB>keepalive
   const byKey = new Map<string, number>(); // pubkey -> handshake epoch (seconds)
+  const epByKey = new Map<string, string>(); // pubkey -> endpoint the router connects FROM (addr:port)
   for (const line of dump.split('\n')) {
     const parts = line.split('\t');
     if (parts.length >= 5 && parts[0] && /^[A-Za-z0-9+/]{43}=$/.test(parts[0])) {
       const hs = parseInt(parts[4], 10);
       if (!isNaN(hs)) byKey.set(parts[0], hs);
+      if (parts[2] && parts[2] !== '(none)') epByKey.set(parts[0], parts[2]);
     }
   }
   const routers = await prisma.mikrotikRouter.findMany({ where: { wgPublicKey: { not: null } }, select: { id: true, wgPublicKey: true } });
   for (const r of routers) {
     if (!r.wgPublicKey) continue;
     const hs = byKey.get(r.wgPublicKey);
-    if (hs && hs > 0) {
-      await prisma.mikrotikRouter.update({ where: { id: r.id }, data: { wgLastHandshake: new Date(hs * 1000) } }).catch(() => {});
+    const ep = epByKey.get(r.wgPublicKey);
+    // Family: a v6 endpoint is bracketed (`[2604:...]:port`) or has multiple colons; v4 is `a.b.c.d:port`.
+    // We only trust the family when the handshake is recent — a stale endpoint tells us nothing live.
+    const fresh = hs && hs > 0 && Date.now() - hs * 1000 < 3 * 60 * 1000;
+    const via = ep ? (ep.includes('[') || (ep.match(/:/g) || []).length > 1 ? 'ipv6' : 'ipv4') : null;
+    const data: { wgLastHandshake?: Date; wgEndpoint?: string | null; wgVia?: string | null } = {};
+    if (hs && hs > 0) data.wgLastHandshake = new Date(hs * 1000);
+    if (ep) data.wgEndpoint = ep;
+    data.wgVia = fresh ? via : null;
+    if (Object.keys(data).length) {
+      await prisma.mikrotikRouter.update({ where: { id: r.id }, data }).catch(() => {});
     }
   }
 }

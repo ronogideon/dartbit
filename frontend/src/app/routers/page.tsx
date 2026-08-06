@@ -13,7 +13,7 @@ import { Plus, Edit2, Trash2, Copy, Terminal, Settings2, ChevronDown, ChevronUp,
 import SearchInput from '@/components/ui/SearchInput';
 
 interface ProvConfig {
-  wanInterface: string; lanInterface: string; bridgeName: string;
+  wanInterface: string; wanInterface2?: string; autoBridgeLan?: boolean; lanInterface: string; bridgeName: string;
   lanSubnet: string; lanGateway: string; dhcpPoolStart: string;
   dhcpPoolEnd: string; dnsServers: string; pppoeEnabled: boolean;
   pppoeLocalAddress: string; pppoeRemotePool: string;
@@ -29,7 +29,7 @@ interface MikrotikRouter {
 }
 
 const defaultProvision: ProvConfig = {
-  wanInterface: 'ether1', lanInterface: 'ether2', bridgeName: 'bridge-lan',
+  wanInterface: 'ether1', wanInterface2: '', autoBridgeLan: true, lanInterface: 'ether2', bridgeName: 'bridge-lan',
   lanSubnet: '192.168.88.0/24', lanGateway: '192.168.88.1',
   dhcpPoolStart: '192.168.88.10', dhcpPoolEnd: '192.168.88.254',
   dnsServers: '8.8.8.8,8.8.4.4', pppoeEnabled: true,
@@ -103,6 +103,19 @@ function ProvisionPanel({ routerId }: { routerId: string }) {
                       {IFACES.map(i => <option key={i} value={i}>{i}{i === 'ether1' ? ' — default uplink' : ''}</option>)}
                     </select>
                   </div>
+                  <div className="mb-3">
+                    <label className="label text-xs">Second uplink (optional) — kept out of the LAN, for dual-WAN</label>
+                    <select className="input text-xs" value={String(form.wanInterface2 || '')}
+                      onChange={e => setForm(f => ({ ...f, wanInterface2: e.target.value, lanInterface: String(f.lanInterface || '').split(',').map(s => s.trim()).filter(p => p && p !== e.target.value).join(',') }))}>
+                      <option value="">None</option>
+                      {IFACES.filter(i => i !== form.wanInterface).map(i => <option key={i} value={i}>{i}</option>)}
+                    </select>
+                  </div>
+                  <label className="flex items-center gap-2 text-xs mb-3 cursor-pointer">
+                    <input type="checkbox" checked={form.autoBridgeLan !== false}
+                      onChange={e => setForm(f => ({ ...f, autoBridgeLan: e.target.checked }))} />
+                    <span>Auto-add unassigned ports to the LAN bridge. <span className="text-gray-500">Turn OFF on a router shared with another billing system, so only the ports you pick are used and the other system&apos;s ports are never touched.</span></span>
+                  </label>
                   <div className="grid grid-cols-2 gap-2">
                     {([
                       ['Bridge Name', 'bridgeName'], ['LAN Subnet', 'lanSubnet'],
@@ -118,7 +131,7 @@ function ProvisionPanel({ routerId }: { routerId: string }) {
                       <label className="label text-xs">LAN Ports — all bridged into one LAN ({String(form.bridgeName)})</label>
                       <div className="flex flex-wrap gap-1.5 mt-1">
                         {IFACES.map(i => {
-                          const isWan = i === form.wanInterface;
+                          const isWan = i === form.wanInterface || (!!form.wanInterface2 && i === form.wanInterface2);
                           const sel = lanList.includes(i);
                           return (
                             <button key={i} type="button" disabled={isWan} onClick={() => toggleLan(i)}
@@ -284,7 +297,7 @@ function VpnModal({ isOpen, onClose, routerId, routerName }: { isOpen: boolean; 
               {data.provisioned ? (
                 <span className={`inline-flex items-center gap-1.5 text-sm font-medium ${data.vpnOnline ? 'text-green-600' : 'text-gray-400'}`}>
                   <span className={`w-2 h-2 rounded-full ${data.vpnOnline ? 'bg-green-500' : 'bg-gray-400'}`} />
-                  {data.vpnOnline ? 'Connected' : 'Offline'}
+                  {data.vpnOnline ? (data.via === 'ipv6' ? 'Connected · IPv6' : data.via === 'ipv4' ? 'Connected · IPv4' : 'Connected') : 'Offline'}
                 </span>
               ) : <span className="text-sm text-gray-400">Not set up</span>}
             </div>
@@ -655,7 +668,7 @@ function RouterDetailModal({ router, isOpen, onClose }: { router: { id: string; 
           <div className="grid grid-cols-2 gap-3">
             <StatBox label="Status" value={overview?.health?.status || router.status || '—'} accent={(overview?.health?.status || router.status) === 'ONLINE' ? 'green' : undefined} />
             <StatBox label="Uptime" value={overview?.health?.uptime || router.uptime || '—'} />
-            <StatBox label="VPN" value={overview?.vpn?.online ? 'Connected' : 'Offline'} accent={overview?.vpn?.online ? 'green' : undefined} />
+            <StatBox label="VPN" value={overview?.vpn?.online ? (overview?.vpn?.via === 'ipv6' ? 'Connected · IPv6' : overview?.vpn?.via === 'ipv4' ? 'Connected · IPv4' : 'Connected') : 'Offline'} accent={overview?.vpn?.online ? 'green' : undefined} />
             <StatBox label="VPN IP" value={overview?.vpn?.wgIp || '—'} mono />
           </div>
           <p className="text-xs text-gray-400">Last seen: {overview?.health?.lastSeenAt ? new Date(overview.health.lastSeenAt).toLocaleString() : '—'}</p>

@@ -195,7 +195,7 @@ export const getRouterLinkStatus = (id: string) => api.get(`/mikrotiks/${id}/lin
 export const getRouterInterfaces = (id: string) => api.get(`/router/list-interfaces/${id}`).then(r => r.data.data);
 export const getRouterZtpCommand = (id: string) => api.get(`/mikrotiks/${id}/ztp-command`).then(r => r.data.data);
 
-export interface RouterVpn { provisioned: boolean; wgIp: string | null; endpoint: string; vpnOnline: boolean; lastHandshake?: string | null; mikrotikConfig: string | null; }
+export interface RouterVpn { provisioned: boolean; wgIp: string | null; endpoint: string; vpnOnline: boolean; via?: string | null; lastHandshake?: string | null; mikrotikConfig: string | null; }
 export const getRouterVpn = (id: string) => api.get(`/mikrotiks/${id}/vpn`).then(r => r.data.data as RouterVpn);
 export const provisionRouterVpn = (id: string) => api.post(`/mikrotiks/${id}/vpn/provision`).then(r => r.data.data as { wgIp: string; endpoint: string; mikrotikConfig: string });
 

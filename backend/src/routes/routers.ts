@@ -300,6 +300,10 @@ router.get('/:id/overview', async (req: AuthRequest, res: Response) => {
         wgIp: r.wgIp,
         lastHandshake: r.wgLastHandshake,
         online: !!r.wgLastHandshake && (now.getTime() - new Date(r.wgLastHandshake).getTime() < VPN_ONLINE_MS),
+        // Active address family of the live tunnel, so the UI can show whether it's reached via IPv6
+        // or IPv4. Only meaningful while online; null when the tunnel is down or stale.
+        via: (!!r.wgLastHandshake && (now.getTime() - new Date(r.wgLastHandshake).getTime() < VPN_ONLINE_MS)) ? (r.wgVia || null) : null,
+        endpoint: r.wgEndpoint || null,
       },
       health: { status: r.status, uptime: r.uptime, lastSeenAt: r.lastSeenAt, identity: r.identity },
       winbox: {
@@ -537,6 +541,7 @@ router.get('/:id/vpn', async (req: AuthRequest, res: Response) => {
       wgIp: router_.wgIp,
       endpoint: wgEnv.endpoint,
       vpnOnline: online,
+      via: online ? (router_.wgVia || null) : null,
       lastHandshake: router_.wgLastHandshake,
       mikrotikConfig,
     });
