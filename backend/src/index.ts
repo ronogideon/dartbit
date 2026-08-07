@@ -104,8 +104,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.31', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.31', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.32', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.32', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -146,7 +146,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.31 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.11.32 running on port ${PORT}\n`);
   patchDatabase().catch(e => console.error('[patchDatabase] failed:', e instanceof Error ? e.message : e));
   startSessionCleanup();
   // RADIUS routers don't run the router-side session reporter (it's skipped as redundant), so this
@@ -569,6 +569,7 @@ function startRadiusSessionSync() {
   const prisma = new PrismaClient();
   const lastBytes = new Map<string, { in: number; out: number; at: number }>();
   const radiusRouters = new Set<string>(); // routers we've seen RADIUS sessions for — we own their OnlineSession rows
+  const openRecs = new Map<string, string>(); // `${routerId}:${sessionKey}` -> open SessionRecord id (for history)
   const run = async () => {
     try {
       const { radiusConfigured, getRadiusActiveSessions } = await import('./utils/radius');
@@ -584,13 +585,13 @@ function startRadiusSessionSync() {
       const macVariants = macs.flatMap(m => [m, m.toLowerCase()]);
       const subs = usernames.length || macVariants.length ? await prisma.subscriber.findMany({
         where: { OR: [usernames.length ? { username: { in: usernames } } : undefined, macVariants.length ? { macAddress: { in: macVariants } } : undefined].filter(Boolean) as object[] },
-        select: { id: true, username: true, macAddress: true, tenantId: true },
+        select: { id: true, username: true, macAddress: true, tenantId: true, service: true },
       }) : [];
-      const subByUser = new Map<string, { id: string; username: string }>();
-      const subByMac = new Map<string, { id: string; username: string }>();
+      const subByUser = new Map<string, { id: string; username: string; service: string }>();
+      const subByMac = new Map<string, { id: string; username: string; service: string }>();
       for (const s of subs) {
-        subByUser.set(`${s.tenantId}:${s.username}`, { id: s.id, username: s.username });
-        if (s.macAddress) subByMac.set(`${s.tenantId}:${s.macAddress.toUpperCase()}`, { id: s.id, username: s.username });
+        subByUser.set(`${s.tenantId}:${s.username}`, { id: s.id, username: s.username, service: s.service });
+        if (s.macAddress) subByMac.set(`${s.tenantId}:${s.macAddress.toUpperCase()}`, { id: s.id, username: s.username, service: s.service });
       }
 
       const now = Date.now();
@@ -598,6 +599,7 @@ function startRadiusSessionSync() {
         username: string; ipAddress: string | null; macAddress: string | null;
         uploadSpeed: number; downloadSpeed: number; uptime: string;
         routerId: string; subscriberId: string | null; tenantId: string; sessionKey: string;
+        service: string; inOctets: number; outOctets: number; sessionSecs: number;
       }
       const perRouter = new Map<string, RadiusSessionRow[]>();
       const matchedSubs = new Set<string>();
@@ -618,6 +620,7 @@ function startRadiusSessionSync() {
           uploadSpeed: up, downloadSpeed: down, uptime: String(row.sessionSecs),
           routerId: r.id, subscriberId: sub?.id || null, tenantId: r.tenantId,
           sessionKey: row.mac || sub?.username || row.username,
+          service: sub?.service || (row.mac ? 'HOTSPOT' : 'PPPOE'), inOctets: row.inOctets, outOctets: row.outOctets, sessionSecs: row.sessionSecs,
         });
         perRouter.set(r.id, arr);
       }
@@ -636,12 +639,47 @@ function startRadiusSessionSync() {
         await prisma.onlineSession.deleteMany({
           where: { routerId: r.id, sessionKey: keys.length ? { notIn: keys } : undefined },
         });
+        const seen = new Set<string>();
         for (const d of list) {
+          seen.add(d.sessionKey);
           await prisma.onlineSession.upsert({
             where: { routerId_sessionKey: { routerId: r.id, sessionKey: d.sessionKey } },
             update: { username: d.username, ipAddress: d.ipAddress, macAddress: d.macAddress, uploadSpeed: d.uploadSpeed, downloadSpeed: d.downloadSpeed, uptime: d.uptime, subscriberId: d.subscriberId },
-            create: d as never,
+            create: { username: d.username, ipAddress: d.ipAddress, macAddress: d.macAddress, uploadSpeed: d.uploadSpeed, downloadSpeed: d.downloadSpeed, uptime: d.uptime, subscriberId: d.subscriberId, routerId: d.routerId, tenantId: d.tenantId, sessionKey: d.sessionKey } as never,
           }).catch(() => { /* best-effort; one bad row shouldn't abort the whole sync */ });
+
+          // Session HISTORY (SessionRecord). radacct byte counters are per-session totals, so we can
+          // set rx/tx directly (no baseline math). Create on first sight, update thereafter.
+          const rk = `${r.id}:${d.sessionKey}`;
+          const openId = openRecs.get(rk);
+          try {
+            if (!openId) {
+              const rec = await prisma.sessionRecord.create({
+                data: {
+                  username: d.username, service: d.service, ipAddress: d.ipAddress,
+                  startedAt: new Date(now - d.sessionSecs * 1000), lastSeenAt: new Date(now),
+                  startRx: BigInt(0), startTx: BigInt(0),
+                  rxBytes: BigInt(Math.max(0, d.inOctets)), txBytes: BigInt(Math.max(0, d.outOctets)),
+                  subscriberId: d.subscriberId, routerId: r.id, tenantId: d.tenantId,
+                },
+              });
+              openRecs.set(rk, rec.id);
+            } else {
+              await prisma.sessionRecord.update({
+                where: { id: openId },
+                data: { lastSeenAt: new Date(now), rxBytes: BigInt(Math.max(0, d.inOctets)), txBytes: BigInt(Math.max(0, d.outOctets)), ipAddress: d.ipAddress },
+              });
+            }
+          } catch { /* best-effort history */ }
+        }
+        // Finalize history for this router's sessions that are no longer active.
+        for (const rk of Array.from(openRecs.keys())) {
+          if (!rk.startsWith(`${r.id}:`)) continue;
+          const sk = rk.slice(r.id.length + 1);
+          if (seen.has(sk)) continue;
+          const id = openRecs.get(rk)!;
+          openRecs.delete(rk);
+          await prisma.sessionRecord.update({ where: { id }, data: { endedAt: new Date() } }).catch(() => {});
         }
       }
       if (matchedSubs.size) await prisma.subscriber.updateMany({ where: { id: { in: Array.from(matchedSubs) } }, data: { lastOnlineAt: new Date() } });
