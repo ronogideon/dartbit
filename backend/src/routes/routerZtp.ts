@@ -228,9 +228,11 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
       // WAN interface-list (both uplinks) so the classifier matches ALL client traffic (bridge-lan,
       // hotspot, and PPPoE-terminated dynamic interfaces) via in-interface-list=!WAN.
       add(`:if ([:len [/interface list find name=\"WAN\"]] = 0) do={ /interface list add name=WAN }`);
-      add(`:foreach m in=[/interface list member find comment=\"Dartbit LB\"] do={ /interface list member remove \$m }`);
-      add(`/interface list member add list=WAN interface=${w1} comment=\"Dartbit LB\"`);
-      add(`/interface list member add list=WAN interface=${w2} comment=\"Dartbit LB\"`);
+      // Drop any stale Dartbit-LB WAN member whose interface is no longer one of our uplinks (covers
+      // switching the 2nd uplink), then idempotently ensure both current uplinks are members.
+      add(`:foreach m in=[/interface list member find list=\"WAN\" comment=\"Dartbit LB\"] do={ :local i [/interface list member get \$m interface]; :if (\$i != \"${w1}\" && \$i != \"${w2}\") do={ /interface list member remove \$m } }`);
+      add(`:if ([:len [/interface list member find list=\"WAN\" interface=\"${w1}\"]] = 0) do={ /interface list member add list=WAN interface=${w1} comment=\"Dartbit LB\" }`);
+      add(`:if ([:len [/interface list member find list=\"WAN\" interface=\"${w2}\"]] = 0) do={ /interface list member add list=WAN interface=${w2} comment=\"Dartbit LB\" }`);
       // Routing-mark tables.
       add(`:if ([:len [/routing table find name=\"to_wan1\"]] = 0) do={ /routing table add name=to_wan1 fib }`);
       add(`:if ([:len [/routing table find name=\"to_wan2\"]] = 0) do={ /routing table add name=to_wan2 fib }`);
