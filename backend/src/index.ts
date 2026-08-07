@@ -104,8 +104,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.33', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.33', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.35', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.35', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -146,7 +146,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.33 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.11.35 running on port ${PORT}\n`);
   patchDatabase().catch(e => console.error('[patchDatabase] failed:', e instanceof Error ? e.message : e));
   startSessionCleanup();
   // RADIUS routers don't run the router-side session reporter (it's skipped as redundant), so this
@@ -632,6 +632,8 @@ function startRadiusSessionSync() {
       // touched here, so the two writers can't wipe each other. A RADIUS router that drains to zero
       // stays "owned" (in radiusRouters) so its last sessions are correctly cleared.
       for (const rid of perRouter.keys()) radiusRouters.add(rid);
+      let upsertErr = '';
+      let wrote = 0;
       for (const r of routers) {
         if (!radiusRouters.has(r.id)) continue;
         const list = perRouter.get(r.id) || [];
@@ -646,7 +648,8 @@ function startRadiusSessionSync() {
             where: { routerId_sessionKey: { routerId: r.id, sessionKey: d.sessionKey } },
             update: { username: d.username, ipAddress: d.ipAddress, macAddress: d.macAddress, uploadSpeed: d.uploadSpeed, downloadSpeed: d.downloadSpeed, uptime: d.uptime, subscriberId: d.subscriberId },
             create: { username: d.username, ipAddress: d.ipAddress, macAddress: d.macAddress, uploadSpeed: d.uploadSpeed, downloadSpeed: d.downloadSpeed, uptime: d.uptime, subscriberId: d.subscriberId, routerId: d.routerId, tenantId: d.tenantId, sessionKey: d.sessionKey } as never,
-          }).catch(() => { /* best-effort; one bad row shouldn't abort the whole sync */ });
+          }).catch((e) => { if (!upsertErr) { upsertErr = e instanceof Error ? e.message : String(e); } });
+          wrote++;
 
           // Session HISTORY (SessionRecord). radacct byte counters are per-session totals, so we can
           // set rx/tx directly (no baseline math). Create on first sight, update thereafter.
@@ -682,6 +685,11 @@ function startRadiusSessionSync() {
           await prisma.sessionRecord.update({ where: { id }, data: { endedAt: new Date() } }).catch(() => {});
         }
       }
+      // Observability: one concise line per cycle so you can see the pipeline working in the logs —
+      // how many radacct rows came back, how many matched a subscriber, and how many OnlineSession
+      // rows were written. If radacct has rows but wrote=0, the write path is the problem (upsertErr
+      // shows why); if rows=0, radacct/env is the problem.
+      console.log(`[radius-sync] radacct=${rows.length} matched=${matchedSubs.size} routers=${perRouter.size} wrote=${wrote}${upsertErr ? ` upsertErr="${upsertErr}"` : ''}`);
       if (matchedSubs.size) await prisma.subscriber.updateMany({ where: { id: { in: Array.from(matchedSubs) } }, data: { lastOnlineAt: new Date() } });
     } catch (err) {
       console.error('radius session sync error:', err instanceof Error ? err.message : err);
