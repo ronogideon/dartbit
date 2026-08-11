@@ -90,7 +90,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.7');
+    add('# Dartbit ZTP Script v1.5.8');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -277,6 +277,21 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach f in=[/ip firewall mangle find comment~"Dartbit ttl"] do={ /ip firewall mangle remove \$f }`);
     add(`/ip firewall filter add chain=forward in-interface-list=LAN out-interface=${wan} ttl=equal:63 dst-address-list=!dartbit-backend action=drop comment="Dartbit anti-tether 63" disabled=yes`);
     add(`/ip firewall filter add chain=forward in-interface-list=LAN out-interface=${wan} ttl=equal:127 dst-address-list=!dartbit-backend action=drop comment="Dartbit anti-tether 127" disabled=yes`);
+    add('');
+
+    // 4c. MSS clamp — PMTU blackhole fix. Without this, TCP flows that cross a reduced-MTU uplink
+    //     (PPPoE = 1492; WireGuard / Starlink / any CGNAT-tunnelled path < 1500) silently lose their
+    //     largest segments whenever the path can't return an ICMP "fragmentation needed" (routinely
+    //     blocked on CGNAT). Small requests fit, so MOST sites work — but anything that pushes
+    //     full-size packets (large TLS handshakes, game matchmaking/asset servers like eFootball,
+    //     AnyDesk's relay/stream) stalls and the app reports "no internet / can't connect". Clamping
+    //     every forwarded TCP SYN to clamp-to-pmtu makes both endpoints negotiate a size the path can
+    //     actually carry. clamp-to-pmtu is a no-op on a full-MTU path, so it is safe on every WAN
+    //     type (single-WAN, PPPoE, dual-WAN load-balanced). tcp-flags=syn matches SYN and SYN/ACK, so
+    //     both directions of the handshake are clamped. Idempotent (cleared + re-added each provision).
+    add('# 4c. MSS clamp — fixes PMTU blackhole (eFootball/AnyDesk/large-TLS stalls on reduced-MTU WANs)');
+    add(`:foreach m in=[/ip firewall mangle find comment~"Dartbit MSS"] do={ /ip firewall mangle remove $m }`);
+    add(`/ip firewall mangle add chain=forward protocol=tcp tcp-flags=syn action=change-mss new-mss=clamp-to-pmtu passthrough=yes comment="Dartbit MSS clamp"`);
     add('');
 
     // 5. PPPoE server

@@ -87,7 +87,7 @@ function normMac(mac?: string | null): string | null {
 // (username=password=MAC, for silent mac-auth auto-login). Each identity carries the same expiry +
 // rate-limit. Idempotent — clears prior rows for every identity first, then inserts current state.
 // Gated on the router being RADIUS-managed, so legacy-script routers are never touched here.
-export async function syncSubscriberToRadius(subscriberId: string, opts?: { kickToApply?: boolean; forceReauth?: boolean }): Promise<void> {
+export async function syncSubscriberToRadius(subscriberId: string, opts?: { kickToApply?: boolean; forceReauth?: boolean; prevUsername?: string | null; prevMac?: string | null }): Promise<void> {
   if (!radiusConfigured()) { console.log(`[radius] skip ${subscriberId}: not configured (DARTBIT_RADIUS_ENABLED / SSH)`); return; }
   const sub = await prisma.subscriber.findUnique({
     where: { id: subscriberId },
@@ -129,7 +129,28 @@ export async function syncSubscriberToRadius(subscriberId: string, opts?: { kick
   // HOTSPOT still gets fully cleared (rejected).
   const walledGarden = sub.service === 'PPPOE' && sub.isActive && expired;
 
+  // Purge STALE identities left behind by an edit that changed the username (or hotspot MAC). This
+  // sync always DELETEs+re-INSERTs the CURRENT identity names, so a password change under the SAME
+  // name self-heals — but a NAME change orphans the OLD radcheck/radreply rows, which are never
+  // touched by the loop below and keep authenticating forever. That is the exact "old username +
+  // old password still works after an edit" bug. We delete every previous identity name that is no
+  // longer one of the current ones, and (further down) kick any live session still on the old name.
+  const currentNames = new Set(identities.map(i => i.name));
+  const staleNames: string[] = [];
+  const addStale = (n?: string | null) => {
+    const v = (n || '').trim();
+    if (v && !currentNames.has(v) && !staleNames.includes(v)) staleNames.push(v);
+  };
+  addStale(opts?.prevUsername);
+  // A hotspot rename can also change the device MAC identity; a PPPoE sub has no MAC identity.
+  addStale(sub.service === 'HOTSPOT' ? normMac(opts?.prevMac) : null);
+
   const stmts: string[] = [];
+  for (const n of staleNames) {
+    const u = sqlq(n);
+    stmts.push(`DELETE FROM radcheck WHERE username='${u}';`);
+    stmts.push(`DELETE FROM radreply WHERE username='${u}';`);
+  }
   for (const id of identities) {
     const u = sqlq(id.name);
     stmts.push(`DELETE FROM radcheck WHERE username='${u}';`);
@@ -174,6 +195,22 @@ export async function syncSubscriberToRadius(subscriberId: string, opts?: { kick
   //    (Hotspot has no walled garden. For HOTSPOT we kick ONLY by username, never by MAC — a
   //    co-located voucher session shares the device MAC and must not be torn down by this expiry.)
   if (sub.routerId) {
+    // A rename leaves the OLD username/MAC potentially still dialed in. Its radcheck rows are now
+    // deleted (above), so it cannot re-auth — but the CURRENT session keeps running until it drops.
+    // CoA-disconnect it AND explicitly remove the active PPPoE/hotspot entry so the change is instant.
+    if (staleNames.length) {
+      try {
+        await disconnectSession(sub, staleNames).catch(() => { /* best-effort */ });
+        const { enqueueCommand } = await import('./commandQueue');
+        for (const n of staleNames) {
+          const q = n.replace(/"/g, '');
+          if (!q) continue;
+          await enqueueCommand(sub.routerId,
+            `:foreach a in=[/ppp active find name="${q}"] do={ /ppp active remove $a }\n` +
+            `:foreach a in=[/ip hotspot active find where user="${q}"] do={ /ip hotspot active remove $a }`);
+        }
+      } catch { /* best-effort */ }
+    }
     try {
       if (sub.service === 'PPPOE') {
         if (walledGarden) {

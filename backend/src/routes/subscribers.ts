@@ -399,6 +399,25 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
     // (re)creates the users. Covers the case of an admin setting expiry to the past to disconnect.
     // When RADIUS is the active auth system we do NOT push local users to the router at all — the
     // radcheck sync above is authoritative. Local pushes only happen in legacy (non-RADIUS) mode.
+    // If the username changed, the on-router LOCAL user still carries the OLD name and keeps
+    // authenticating (the legacy twin of the radcheck-orphan bug). RADIUS rows are purged in
+    // syncSubscriberToRadius via prevUsername; here we remove the stale /ppp secret + /ip hotspot
+    // user (and kick the old session) on legacy routers. RADIUS routers don't hold local users.
+    const renamedFrom = existing.username && existing.username !== subscriber.username ? existing.username : null;
+    if (subscriber.routerId && renamedFrom && !radiusConfigured()) {
+      try {
+        const { enqueueCommand } = await import('../utils/commandQueue');
+        const oldU = renamedFrom.replace(/"/g, '');
+        await enqueueCommand(subscriber.routerId,
+          `:foreach a in=[/ppp active find name="${oldU}"] do={ /ppp active remove $a }\n` +
+          `:foreach s in=[/ppp secret find name="${oldU}"] do={ /ppp secret remove $s }\n` +
+          `:foreach u in=[/ip hotspot user find name="${oldU}"] do={ /ip hotspot user remove $u }\n` +
+          `:foreach a in=[/ip hotspot active find where user="${oldU}"] do={ /ip hotspot active remove $a }`);
+      } catch (e) {
+        console.error('update: old-identity cleanup failed (continuing):', e instanceof Error ? e.message : e);
+      }
+    }
+
     if (subscriber.routerId && subscriber.service === 'HOTSPOT' && !radiusConfigured()) {
       try {
         const { pushSubscriberToRouter } = await import('../utils/pushSubscriber');
@@ -442,7 +461,14 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
         // forceReauth: if it WAS expired or disabled before this edit, force a clean re-auth so the
         // walled session recovers. Use `existing` (pre-update state), not the just-updated record.
         const wasBlocked = !existing.isActive || (existing.expiresAt ? new Date(existing.expiresAt) <= new Date() : false);
-        await syncSubscriberToRadius(subscriber.id, { kickToApply: true, forceReauth: wasBlocked });
+        // Pass the PRE-EDIT username/MAC so a rename purges the OLD radcheck/radreply rows (and kicks
+        // the old session). Without this the previous credentials keep authenticating after an edit.
+        await syncSubscriberToRadius(subscriber.id, {
+          kickToApply: true,
+          forceReauth: wasBlocked,
+          prevUsername: existing.username,
+          prevMac: existing.macAddress,
+        });
       }
     } catch (e) {
       console.error('radius sync (update) failed:', e instanceof Error ? e.message : e);
