@@ -175,9 +175,16 @@ export async function deprovisionRouterWg(routerId: string): Promise<void> {
 export function buildMikrotikWgConfig(opts: { wgIp: string; privateKey: string; wanInterface?: string }): string {
   const serverHost = WG_ENDPOINT.split(':')[0];
   const serverPort = WG_ENDPOINT.split(':')[1] || '51820';
-  // Prefer the v6 literal from boot when we have one, so the failover script (which keys off the v6
-  // literal) works on its first run; the hostname was the bug that stranded a router on a dead v6 path.
-  const initialEndpoint = WG_ENDPOINT6 || serverHost;
+  // Start on the RELIABLE IPv4 endpoint. Prefer a v4 literal (the SSH host, when it's a bare IPv4)
+  // so DNS can't hand us a dead AAAA and strand the tunnel; fall back to the hostname otherwise.
+  // WireGuard is router-initiated/outbound, so v4 establishes even through CGNAT — which means a
+  // reprovision always comes back up on v4 within seconds, regardless of v6 state. The failover
+  // script below then PROMOTES to the preferred IPv6 only once it is proven to carry the tunnel,
+  // and flips back to v4 the instant the v6 handshake goes stale. (Previously the peer started on
+  // v6; a router whose v6 pinged but couldn't carry WireGuard was stranded offline on every
+  // reprovision — the exact failure this rewrite removes.)
+  const v4Endpoint = /^\d{1,3}(\.\d{1,3}){3}$/.test(WG_HOST) ? WG_HOST : serverHost;
+  const initialEndpoint = v4Endpoint;
   const lines = [
     `/interface wireguard add name=dartbit-vpn private-key="${opts.privateKey}" listen-port=13231`,
     `/ip address add address=${opts.wgIp}/24 interface=dartbit-vpn comment="Dartbit VPN"`,
@@ -187,18 +194,27 @@ export function buildMikrotikWgConfig(opts: { wgIp: string; privateKey: string; 
   if (WG_ENDPOINT6) {
     const wan = opts.wanInterface || 'ether1';
     // Enable IPv6 + DHCPv6 on the WAN (harmless no-ops where the uplink has no v6), then install the
-    // failover script: PREFER v6, fall back to v4 when v6 is unreachable OR the v6 handshake goes
-    // stale. Anti-flap: (re)switch to v6 only after it is reachable on TWO consecutive checks (~10 min),
-    // resetting that streak on any fallback, so a v6 path that pings but can't carry the tunnel can't
-    // oscillate every 5 min (the old flapping bug). The peer starts on v6, so v6 is preferred from boot.
+    // v4/v6 failover script. It runs every minute and decides on the ONE thing that actually matters:
+    // is the WireGuard handshake fresh? (i.e. is the tunnel really passing traffic on the current
+    // endpoint) — NOT whether the address merely pings. This is the core fix: the old script fell
+    // back only when the v6 address stopped PINGING, so a v6 path that pinged but couldn't carry the
+    // tunnel stranded the router offline on v6 forever. Now:
+    //   * FAILOVER (guaranteed): if the handshake is stale (>3m) on the current endpoint, flip to the
+    //     other family immediately. Works both directions, so the tunnel converges on whichever family
+    //     is actually up. If both are down it harmlessly alternates until one recovers, then sticks.
+    //   * PROMOTE to preferred v6: only when the tunnel is healthy on v4, a cooldown has elapsed, and
+    //     the v6 endpoint pings. If v6 then fails to carry the tunnel, the failover rule pulls back to
+    //     v4 within ~3m and arms a 30-min cooldown — so a bad v6 path costs at most ~3m per 30m instead
+    //     of the old flap-every-5m. A working tunnel is never disturbed.
+    // The peer starts on v4 (see initialEndpoint), so bring-up and every reprovision recover on v4 in
+    // seconds; promotion to v6 happens on the next healthy cycle.
     lines.push(
       `:do { /ipv6 settings set disable-ipv6=no accept-router-advertisements=yes } on-error={}`,
       `:do { :if ([:len [/ipv6 dhcp-client find interface="${wan}"]] = 0) do={ /ipv6 dhcp-client add interface=${wan} request=address,prefix pool-name=dartbit6 pool-prefix-length=64 add-default-route=yes comment="Dartbit v6 uplink" } } on-error={}`,
       `:foreach s in=[/system script find name="dartbit-wg6"] do={ /system script remove \$s }`,
       `:foreach s in=[/system scheduler find name="dartbit-wg6"] do={ /system scheduler remove \$s }`,
-      `/system script add name=dartbit-wg6 policy=read,write,test source={:global dartbitV6Streak; :do { :local v6 "${WG_ENDPOINT6}"; :local v4 "${serverHost}"; :local peer [/interface wireguard peers find comment="Dartbit VPN"]; :if ([:len \$peer] = 0) do={ :error "no peer" }; :local cur [/interface wireguard peers get \$peer endpoint-address]; :if ([:typeof \$dartbitV6Streak] != "num") do={ :set dartbitV6Streak 0 }; :local v6ok false; :do { :if ([/ping \$v6 count=2 interval=1s] > 0) do={ :set v6ok true } } on-error={}; :local hsFresh false; :do { :local hs [/interface wireguard peers get \$peer last-handshake]; :if ([:typeof \$hs] = "time" && \$hs < 3m) do={ :set hsFresh true } } on-error={}; :if (\$v6ok = true) do={ :set dartbitV6Streak (\$dartbitV6Streak + 1) } else={ :set dartbitV6Streak 0 }; :if (\$cur = \$v6) do={ :if (\$v6ok = false) do={ /interface wireguard peers set \$peer endpoint-address=\$v4; :set dartbitV6Streak 0; :log info "Dartbit: WG endpoint -> IPv4 (v6 unreachable; stay on v6 while it still pings)" } } else={ :if (\$v6ok = true && \$dartbitV6Streak >= 2) do={ /interface wireguard peers set \$peer endpoint-address=\$v6; :log info "Dartbit: WG endpoint -> IPv6 (preferred, stable)" } } } on-error={}}`,
-      `/system scheduler add name=dartbit-wg6 interval=5m on-event="/system script run dartbit-wg6" comment="Dartbit WG IPv6 preference"`,
-      `:do { /system script run dartbit-wg6 } on-error={}`,
+      `/system script add name=dartbit-wg6 policy=read,write,test source={:global dartbitWgCd; :do { :local v6 "${WG_ENDPOINT6}"; :local v4 "${v4Endpoint}"; :local peer [/interface wireguard peers find comment="Dartbit VPN"]; :if ([:len \$peer] = 0) do={ :error "no peer" }; :local cur [/interface wireguard peers get \$peer endpoint-address]; :local fresh false; :do { :local hs [/interface wireguard peers get \$peer last-handshake]; :if ([:typeof \$hs] = "time" && \$hs < 3m) do={ :set fresh true } } on-error={}; :if ([:typeof \$dartbitWgCd] != "num") do={ :set dartbitWgCd 0 }; :if (\$dartbitWgCd > 0) do={ :set dartbitWgCd (\$dartbitWgCd - 1) }; :if (\$fresh = false) do={ :if (\$cur = \$v6) do={ /interface wireguard peers set \$peer endpoint-address=\$v4; :set dartbitWgCd 30; :log warning "Dartbit WG: IPv6 handshake stale -> failover to IPv4" } else={ /interface wireguard peers set \$peer endpoint-address=\$v6; :log warning "Dartbit WG: IPv4 handshake stale -> failover to IPv6" } } else={ :if (\$cur = \$v4 && \$dartbitWgCd = 0) do={ :local v6ping false; :do { :if ([/ping \$v6 count=2 interval=1s] > 0) do={ :set v6ping true } } on-error={}; :if (\$v6ping = true) do={ /interface wireguard peers set \$peer endpoint-address=\$v6; :log info "Dartbit WG: promoting to preferred IPv6" } } } } on-error={}}`,
+      `/system scheduler add name=dartbit-wg6 interval=1m on-event="/system script run dartbit-wg6" comment="Dartbit WG v4/v6 failover"`,
     );
   }
   return lines.join('\n');

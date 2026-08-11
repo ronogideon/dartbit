@@ -90,7 +90,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.8');
+    add('# Dartbit ZTP Script v1.5.9');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
