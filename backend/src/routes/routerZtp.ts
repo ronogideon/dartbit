@@ -191,8 +191,8 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:if ([:len [/ip dhcp-server network find address="${lanSubnet}"]] = 0) do={ /ip dhcp-server network add address=${lanSubnet} gateway=${lanGw} dns-server=${lanGw} comment="Dartbit LAN" }`);
     add(`/ip dhcp-server network set [find address="${lanSubnet}"] gateway=${lanGw} dns-server=${lanGw}`);
     // The DHCP server bound to the bridge — this is what actually hands out IPs
-    add(`:if ([:len [/ip dhcp-server find name="dartbit-dhcp"]] = 0) do={ /ip dhcp-server add name=dartbit-dhcp interface=${bridge} address-pool=dhcp-pool lease-time=1d disabled=no }`);
-    add(`/ip dhcp-server set [find name="dartbit-dhcp"] interface=${bridge} address-pool=dhcp-pool disabled=no`);
+    add(`:if ([:len [/ip dhcp-server find name="dartbit-dhcp"]] = 0) do={ /ip dhcp-server add name=dartbit-dhcp interface=${bridge} address-pool=dhcp-pool lease-time=1h disabled=no }`);
+    add(`/ip dhcp-server set [find name="dartbit-dhcp"] interface=${bridge} address-pool=dhcp-pool lease-time=1h disabled=no`);
     // CRITICAL: remove any OTHER DHCP server on this bridge that would conflict
     add(`:foreach d in=[/ip dhcp-server find interface="${bridge}"] do={ :if ([/ip dhcp-server get $d name] != "dartbit-dhcp") do={ /ip dhcp-server disable $d; :log info ("Dartbit: disabled conflicting DHCP server " . [/ip dhcp-server get $d name] . " on ${bridge}") } }`);
     // Enable router's DNS server so it can answer queries from clients
@@ -336,8 +336,13 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=mac,http-pap mac-auth-password=dartbit`);
     // User profile — one device per credential. No add-mac-cookie (cookie auth removed; MAC auth
     // via the MAC-named user is the reconnect mechanism and it cleanly stops at expiry).
-    add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 address-pool=dhcp-pool }`);
-    add(`:do { /ip hotspot user profile set [find name="dartbit-default"] add-mac-cookie=yes } on-error={}`);
+    add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 }`);
+    // CRITICAL: address-pool must stay UNSET (none) on hotspot USER profiles. Setting it makes the
+    // hotspot do a one-to-one NAT at login — allocating a SECOND dhcp-pool address per authenticated
+    // user on top of their DHCP lease. That doubles pool consumption and, once the pool is empty, the
+    // login-time allocation FAILS: the user authenticates but has no usable address and gets no
+    // internet (and new devices see "pool <dhcp-pool> is empty"). Users keep their DHCP IP instead.
+    add(`:do { /ip hotspot user profile set [find name="dartbit-default"] add-mac-cookie=yes address-pool=none } on-error={}`);
     // Hotspot itself on the bridge
     add(`:if ([:len [/ip hotspot find name="dartbit-hotspot"]] = 0) do={ /ip hotspot add name=dartbit-hotspot interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no }`);
     // Sync hotspot settings — idempotent, RouterOS handles no-op gracefully
@@ -1307,7 +1312,8 @@ router.get('/sync-script', async (req: Request, res: Response) => {
     // reprovision) has its profile guaranteed to exist before its first MAC/D-name user is added,
     // so auto-login works for ALL packages — existing or newly created. We also always ensure the
     // stable dartbit-default profile exists as a universal fallback.
-    add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 add-mac-cookie=yes address-pool=dhcp-pool }`);
+    add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 add-mac-cookie=yes }`);
+    add(`:do { /ip hotspot user profile set [find name="dartbit-default"] address-pool=none } on-error={}`);
     const hsProfilesSeen = new Set<string>();
     for (const sub of hsUsers) {
       if (!sub.package) continue;
@@ -1319,8 +1325,8 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       // package validity (mac-cookie-timeout is relative to login ≈ purchase), so it never outlives
       // the paid window. Expiry enforcement also wipes it, as a backstop.
       const ckSec = (sub.package.validityMinutes || 60) * 60 + 60;
-      add(`:if ([:len [/ip hotspot user profile find name="${pn}"]] = 0) do={ /ip hotspot user profile add name=${pn} address-pool=dhcp-pool }`);
-      add(`/ip hotspot user profile set [find name="${pn}"] rate-limit="${sp}" shared-users=1 add-mac-cookie=yes mac-cookie-timeout=${ckSec}s address-pool=dhcp-pool`);
+      add(`:if ([:len [/ip hotspot user profile find name="${pn}"]] = 0) do={ /ip hotspot user profile add name=${pn} }`);
+      add(`/ip hotspot user profile set [find name="${pn}"] rate-limit="${sp}" shared-users=1 add-mac-cookie=yes mac-cookie-timeout=${ckSec}s address-pool=none`);
     }
 
     for (const sub of hsUsers) {
@@ -1442,9 +1448,9 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       }
     }
     for (const prof of Object.values(profilesByPkg)) {
-      add(`:if ([:len [/ip hotspot user profile find name="${prof.name}"]] = 0) do={ /ip hotspot user profile add name=${prof.name} address-pool=dhcp-pool }`);
+      add(`:if ([:len [/ip hotspot user profile find name="${prof.name}"]] = 0) do={ /ip hotspot user profile add name=${prof.name} }`);
       // MAC cookie written on login for instant reconnect, expiring 60s after the voucher validity.
-      add(`/ip hotspot user profile set [find name="${prof.name}"] rate-limit="${prof.speed}" shared-users=1 add-mac-cookie=yes mac-cookie-timeout=${prof.validityMin * 60 + 60}s address-pool=dhcp-pool`);
+      add(`/ip hotspot user profile set [find name="${prof.name}"] rate-limit="${prof.speed}" shared-users=1 add-mac-cookie=yes mac-cookie-timeout=${prof.validityMin * 60 + 60}s address-pool=none`);
     }
     // Add each voucher as a hotspot user — username and password = code.
     // limit-uptime caps cumulative active time, BUT we ALSO enforce wall-clock expiry:

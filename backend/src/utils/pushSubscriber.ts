@@ -45,8 +45,11 @@ export function buildHotspotSubCommands(sub: HsSubLike): string[] {
     return lines;
   }
 
-  lines.push(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} address-pool=dhcp-pool }`);
-  lines.push(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=no address-pool=dhcp-pool`);
+  lines.push(`:if ([:len [/ip hotspot user profile find name="${profileName}"]] = 0) do={ /ip hotspot user profile add name=${profileName} }`);
+  // address-pool=none: keep the user on their DHCP-assigned IP. Setting a pool here makes the hotspot
+  // one-to-one NAT them onto a SECOND dhcp-pool address at login, doubling pool use and breaking auth
+  // (no internet) once the pool empties. See routerZtp section 6.
+  lines.push(`/ip hotspot user profile set [find name="${profileName}"] rate-limit="${speed}" shared-users=1 add-mac-cookie=no address-pool=none`);
   lines.push(`:if ([:len [/ip hotspot user find name="${sub.username}"]] = 0) do={ /ip hotspot user add name="${sub.username}" password="${sub.secret}" profile=${profileName}${macBind} comment="Dartbit:${sub.id}" }`);
   lines.push(`:if ([:len [/ip hotspot user find name="${sub.username}"]] > 0) do={ /ip hotspot user set [find name="${sub.username}"] password="${sub.secret}" profile=${profileName} disabled=no${macBind} }`);
   if (macU) {

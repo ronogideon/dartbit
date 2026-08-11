@@ -544,6 +544,51 @@ export async function bulkSyncHotspotToRadius(opts: { tenantId?: string; routerI
   return { synced, skipped };
 }
 
+// Full RADIUS identity rebuild: TRUNCATE the per-user auth tables (radcheck + radreply), then
+// repopulate them entirely from the tenant database — every entitled PPPoE + HOTSPOT subscriber
+// (D-name + MAC identities) and every active voucher, across ALL tenants. Use this when radcheck has
+// drifted from the source of truth: orphaned rows from renamed/deleted users, stale CSV imports, or
+// leftovers from an earlier config. The per-user bulk syncs only ADD/UPDATE by username and can
+// never remove an orphan, so ONLY a flush guarantees radcheck === the database.
+//
+// Leaves radacct (accounting / live-session state) and nas (the router client list) untouched, so
+// open sessions and router registrations survive — only the credentials clients re-auth against are
+// rebuilt. The window where a device could fail a re-auth is the few seconds between the flush and
+// the resync, which run in the same call. GLOBAL by design: radcheck is not tenant-keyed, so this
+// rebuilds every tenant at once and no user is ever left orphaned, whoever triggers it.
+//
+// NOTE: this assumes the droplet's `radius` DB holds ONLY Dartbit identities (the intended setup — a
+// coexisting biller uses a separate RADIUS server, scoped by called-id on the router). If another
+// system writes into THIS same radcheck, the pre-flush counts returned here will reveal it; verify
+// before relying on the flush. dryRun previews the row counts + what would be rebuilt, touching nothing.
+export async function resetAndResyncRadius(opts?: { dryRun?: boolean }): Promise<Record<string, unknown>> {
+  if (!radiusConfigured()) throw new Error('RADIUS not configured');
+  const before = parseInt(await radiusPsql('SELECT count(*) FROM radcheck;'), 10) || 0;
+  const replyBefore = parseInt(await radiusPsql('SELECT count(*) FROM radreply;'), 10) || 0;
+
+  if (opts?.dryRun) {
+    const now = new Date();
+    const [pppoe, hotspot, vouchers] = await Promise.all([
+      prisma.subscriber.count({ where: { service: 'PPPOE', isActive: true, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] } }),
+      prisma.subscriber.count({ where: { service: 'HOTSPOT', isActive: true, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] } }),
+      prisma.voucher.count({ where: { batchId: { not: 'MPESA' } } }),
+    ]);
+    return { dryRun: true, radcheckRows: before, radreplyRows: replyBefore, wouldSync: { pppoe, hotspot, vouchers } };
+  }
+
+  // 1. Flush the per-user identity tables in one transaction (RESTART IDENTITY resets the serials).
+  await radiusPsql('BEGIN; TRUNCATE radcheck, radreply RESTART IDENTITY; COMMIT;');
+  // 2. Rebuild from the DB across ALL tenants. Each helper clears+inserts by username, so it's clean.
+  //    bulkSyncPppoeToRadius also strips any stray byte-limit attrs on the way in (self-healing).
+  const pppoe = await bulkSyncPppoeToRadius({});
+  const hotspot = await bulkSyncHotspotToRadius({});
+  const vouchers = await bulkSyncVouchersToRadius({});
+  const after = parseInt(await radiusPsql('SELECT count(*) FROM radcheck;'), 10) || 0;
+
+  console.log(`[radius] reset+resync: flushed ${before} radcheck / ${replyBefore} radreply rows, rebuilt radcheck to ${after} (pppoe ${pppoe.synced}, hotspot ${hotspot.synced}, vouchers ${vouchers.synced})`);
+  return { flushed: { radcheck: before, radreply: replyBefore }, radcheckAfter: after, pppoe, hotspot, vouchers };
+}
+
 export function radiusClientName(routerId: string): string {
   return 'dartbit_' + routerId.replace(/[^A-Za-z0-9]/g, '').slice(-16);
 }

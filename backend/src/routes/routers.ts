@@ -690,6 +690,29 @@ router.post('/radius/bulk-sync-vouchers', async (req: AuthRequest, res: Response
   }
 });
 
+// POST /mikrotiks/radius/reset-resync — FLUSH radcheck + radreply, then rebuild them entirely from
+// the database (all entitled PPPoE + HOTSPOT subscribers and all active vouchers, every tenant). Use
+// this to clear drift/orphans so RADIUS exactly mirrors the DB — the per-user bulk syncs above only
+// add/update by username and never remove stale rows. Global by design (radcheck isn't tenant-keyed).
+// Body: { confirm: true } to execute, or { dryRun: true } to preview the counts without touching data.
+router.post('/radius/reset-resync', async (req: AuthRequest, res: Response) => {
+  try {
+    if (!['SUPERADMIN', 'TENANT_ADMIN'].includes(req.user?.role || '')) {
+      return sendError(res, 'Not authorized', 403);
+    }
+    const { radiusConfigured, resetAndResyncRadius } = await import('../utils/radius');
+    if (!radiusConfigured()) return sendError(res, 'RADIUS not configured/enabled', 400);
+    const dryRun = req.body?.dryRun === true;
+    if (!dryRun && req.body?.confirm !== true) {
+      return sendError(res, 'This flushes ALL radcheck/radreply rows and rebuilds them from the database. Re-send with {"confirm": true} to execute, or {"dryRun": true} to preview.', 400);
+    }
+    const result = await resetAndResyncRadius({ dryRun });
+    sendSuccess(res, result);
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Reset+resync failed', 500);
+  }
+});
+
 // GET /mikrotiks/radius/diagnose — confirms the backend can reach RADIUS Postgres over SSH.
 router.get('/radius/diagnose', async (_req: AuthRequest, res: Response) => {
   try {
