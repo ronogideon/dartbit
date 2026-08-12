@@ -620,13 +620,35 @@ function startRadiusSessionSync() {
         routerId: string; subscriberId: string | null; tenantId: string; sessionKey: string;
         service: string; inOctets: number; outOctets: number; sessionSecs: number;
       }
-      const perRouter = new Map<string, RadiusSessionRow[]>();
-      const matchedSubs = new Set<string>();
+
+      // Collapse open radacct rows to ONE per stable identity. PPPoE identity is the USERNAME (a
+      // credential is one subscriber no matter which device MAC dialed it); HOTSPOT identity is the
+      // device MAC. Keying PPPoE by MAC (the old `row.mac || username`) produced phantom duplicates
+      // whenever two open rows for one user carried different/empty calling-station-ids — the exact
+      // "two online sessions for one PPPoE user" bug, independent of router version or reboot. When a
+      // duplicate identity survives (a zombie whose interims stopped + the live reconnect), we keep
+      // the row with the smallest idleSecs — the one FreeRADIUS is still receiving updates for — so
+      // the live session wins the display immediately, before the reaper closes the zombie in radacct.
+      const isMac = (s: string) => /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(s);
+      const best = new Map<string, { row: typeof rows[number]; r: { id: string; tenantId: string }; sub?: { id: string; username: string; service: string }; sessionKey: string; service: string }>();
       for (const row of rows) {
         const r = byWgIp.get(row.nasIp);
         if (!r) continue;
         const sub = subByUser.get(`${r.tenantId}:${row.username}`) || (row.mac ? subByMac.get(`${r.tenantId}:${row.mac}`) : undefined);
-        const key = `${r.id}:${row.username}`;
+        // Service: trust the matched subscriber; otherwise a real (non-MAC) username means PPPoE,
+        // a MAC-shaped username (hotspot MAC-auth) means HOTSPOT.
+        const service = sub?.service || (row.username && !isMac(row.username.toUpperCase()) ? 'PPPOE' : 'HOTSPOT');
+        const sessionKey = service === 'HOTSPOT' ? (row.mac || sub?.username || row.username) : (sub?.username || row.username);
+        if (!sessionKey) continue;
+        const mapKey = `${r.id}:${sessionKey}`;
+        const cur = best.get(mapKey);
+        if (!cur || row.idleSecs < cur.row.idleSecs) best.set(mapKey, { row, r, sub, sessionKey, service });
+      }
+
+      const perRouter = new Map<string, RadiusSessionRow[]>();
+      const matchedSubs = new Set<string>();
+      for (const { row, r, sub, sessionKey, service } of best.values()) {
+        const key = `${r.id}:${sessionKey}`;
         const prev = lastBytes.get(key);
         let up = 0, down = 0;
         if (prev) { const dt = (now - prev.at) / 1000; if (dt > 0 && dt < 300) { up = Math.max(0, Math.round(((row.inOctets - prev.in) * 8) / 1024 / dt)); down = Math.max(0, Math.round(((row.outOctets - prev.out) * 8) / 1024 / dt)); } }
@@ -638,8 +660,8 @@ function startRadiusSessionSync() {
           ipAddress: row.framedIp || null, macAddress: row.mac || null,
           uploadSpeed: up, downloadSpeed: down, uptime: String(row.sessionSecs),
           routerId: r.id, subscriberId: sub?.id || null, tenantId: r.tenantId,
-          sessionKey: row.mac || sub?.username || row.username,
-          service: sub?.service || (row.mac ? 'HOTSPOT' : 'PPPOE'), inOctets: row.inOctets, outOctets: row.outOctets, sessionSecs: row.sessionSecs,
+          sessionKey,
+          service, inOctets: row.inOctets, outOctets: row.outOctets, sessionSecs: row.sessionSecs,
         });
         perRouter.set(r.id, arr);
       }

@@ -450,7 +450,7 @@ export async function reapStaleRadacct(maxIdleMinutes = 15): Promise<number> {
 
 export interface RadiusActiveSession {
   username: string; nasIp: string; framedIp: string; mac: string;
-  sessionSecs: number; inOctets: number; outOctets: number;
+  sessionSecs: number; inOctets: number; outOctets: number; idleSecs: number;
 }
 
 // Read currently-open sessions straight from FreeRADIUS accounting (radacct). This is the RADIUS-
@@ -458,7 +458,10 @@ export interface RadiusActiveSession {
 // instead of every router polling the API. Open sessions = AcctStopTime IS NULL.
 export async function getRadiusActiveSessions(): Promise<RadiusActiveSession[]> {
   if (!radiusConfigured()) return [];
-  const sql = `SELECT username, COALESCE(nasipaddress::text,''), COALESCE(framedipaddress::text,''), COALESCE(callingstationid,''), GREATEST(0, EXTRACT(EPOCH FROM (now() - acctstarttime))::int), COALESCE(acctinputoctets,0), COALESCE(acctoutputoctets,0) FROM radacct WHERE acctstoptime IS NULL;`;
+  // idleSecs = seconds since the last interim update (or start, if none yet). The live row of a
+  // duplicated identity has the smallest idleSecs — that's how the reporter tells a live session from
+  // a zombie whose interims have stopped.
+  const sql = `SELECT username, COALESCE(nasipaddress::text,''), COALESCE(framedipaddress::text,''), COALESCE(callingstationid,''), GREATEST(0, EXTRACT(EPOCH FROM (now() - acctstarttime))::int), COALESCE(acctinputoctets,0), COALESCE(acctoutputoctets,0), GREATEST(0, EXTRACT(EPOCH FROM (now() - COALESCE(acctupdatetime, acctstarttime)))::int) FROM radacct WHERE acctstoptime IS NULL;`;
   const out = await radiusPsql(sql);
   const rows: RadiusActiveSession[] = [];
   for (const line of out.split('\n')) {
@@ -469,6 +472,7 @@ export async function getRadiusActiveSessions(): Promise<RadiusActiveSession[]> 
     rows.push({
       username: p[0], nasIp: p[1], framedIp: (p[2] || '').replace(/\/32$/, ''), mac: (p[3] || '').toUpperCase(),
       sessionSecs: parseInt(p[4] || '0', 10) || 0, inOctets: parseInt(p[5] || '0', 10) || 0, outOctets: parseInt(p[6] || '0', 10) || 0,
+      idleSecs: parseInt(p[7] || '0', 10) || 0,
     });
   }
   return rows;

@@ -296,8 +296,12 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
 
     // 5. PPPoE server
     add('# 5. PPPoE server');
-    add(`:if ([:len [/ip pool find name="${pppoePool}"]] = 0) do={ /ip pool add name=${pppoePool} ranges=${pppoeStart}-${pppoeEnd} }`);
-    add(`:if ([:len [/ppp profile find name="dartbit-pppoe"]] = 0) do={ /ppp profile add name=dartbit-pppoe local-address=${pppoeLocal} remote-address=${pppoePool} comment="Dartbit PPPoE" }`);
+    // Create-if-absent, then ALWAYS set the range/local-address — otherwise a change to the pool
+    // bounds or gateway in provisioning config would never reach a router that already has the pool
+    // (the old create-only form silently ignored resizes). Widening the range is non-disruptive:
+    // existing PPP sessions keep their negotiated address; only new assignments use the wider pool.
+    add(`:if ([:len [/ip pool find name="${pppoePool}"]] = 0) do={ /ip pool add name=${pppoePool} ranges=${pppoeStart}-${pppoeEnd} } else={ /ip pool set [find name="${pppoePool}"] ranges=${pppoeStart}-${pppoeEnd} }`);
+    add(`:if ([:len [/ppp profile find name="dartbit-pppoe"]] = 0) do={ /ppp profile add name=dartbit-pppoe local-address=${pppoeLocal} remote-address=${pppoePool} comment="Dartbit PPPoE" } else={ /ppp profile set [find name="dartbit-pppoe"] local-address=${pppoeLocal} remote-address=${pppoePool} }`);
     add(`:if ([:len [/interface pppoe-server server find service-name="dartbit"]] = 0) do={ /interface pppoe-server server add service-name=dartbit interface=${bridge} authentication=chap,pap default-profile=dartbit-pppoe one-session-per-host=yes disabled=no comment="Dartbit PPPoE Server" }`);
     // one-session-per-host=yes: RouterOS refuses a second PPPoE session for the same user and
     // replaces the old one cleanly, so a renewed/reconnecting client can't end up with two live
