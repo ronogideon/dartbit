@@ -419,6 +419,35 @@ export async function redeemVoucherInRadius(code: string, remainingSeconds: numb
   }
 }
 
+// Close ZOMBIE radacct sessions: open rows (acctstoptime IS NULL) whose last interim update is older
+// than 3× the 5-min interim interval. These are left behind when a PPPoE/hotspot session ends but its
+// Accounting-Stop never reaches FreeRADIUS — an abrupt CPE drop, or the RADIUS-accounting path over
+// WireGuard blipping — so RADIUS believes the session is still live forever. Because getRadiusActive-
+// Sessions re-reads every open row each cycle, a zombie keeps its OnlineSession row perpetually fresh,
+// so the Dartbit-side reaper (which keys on lastSeenAt) can NEVER clear it: the subscriber shows two
+// "Online" sessions (dead one on an old pool IP + the current one) and the stale row keeps holding a
+// pool address. Closing them at the SOURCE lets OnlineSession/SessionRecord reconcile to reality.
+//
+// interim-update=5m keeps every LIVE session's acctupdatetime fresh, so a 15-min cutoff leaves a safe
+// 3-interval margin — only genuinely-dead sessions are reaped. A brand-new session with no interim yet
+// falls back to acctstarttime (recent), so it is never touched. Uses a CTE so -tA psql returns the
+// exact count of rows closed.
+export async function reapStaleRadacct(maxIdleMinutes = 15): Promise<number> {
+  if (!radiusConfigured()) return 0;
+  const mins = Math.max(10, Math.floor(maxIdleMinutes));
+  const sql =
+    `WITH reaped AS (` +
+    `UPDATE radacct SET acctstoptime = now(), ` +
+    `acctterminatecause = COALESCE(NULLIF(acctterminatecause,''),'Dartbit-Reaped'), ` +
+    `acctsessiontime = COALESCE(acctsessiontime, GREATEST(0, EXTRACT(EPOCH FROM (COALESCE(acctupdatetime, acctstarttime) - acctstarttime))::int)) ` +
+    `WHERE acctstoptime IS NULL AND COALESCE(acctupdatetime, acctstarttime) < now() - interval '${mins} minutes' ` +
+    `RETURNING 1) SELECT count(*) FROM reaped;`;
+  const out = await radiusPsql(sql).catch(() => '');
+  const n = parseInt((out || '').trim(), 10);
+  if (n > 0) console.log(`[radius] reaped ${n} stale radacct session(s) (idle > ${mins}m)`);
+  return isNaN(n) ? 0 : n;
+}
+
 export interface RadiusActiveSession {
   username: string; nasIp: string; framedIp: string; mac: string;
   sessionSecs: number; inOctets: number; outOctets: number;

@@ -154,6 +154,9 @@ const server = app.listen(PORT, () => {
   // users on RADIUS routers show no active session. It only owns routers with RADIUS activity, so it
   // never collides with the router-side reporter used by non-RADIUS routers.
   startRadiusSessionSync();
+  // Close zombie radacct sessions (lost Acct-Stop) so a user can't show two "Online" sessions and a
+  // dead session can't keep holding a pool IP. Safe: only rows idle past 3× the 5-min interim window.
+  startRadacctReaper();
   startBillingStatusUpdater();
   startExpiryWatcher();
   startRouterOfflineWatcher();
@@ -565,6 +568,22 @@ function startFreeradiusHealthCheck() {
 // polling /router/sessions every 5s. One backend read replaces N routers × 12 fetches/min, which is
 // the biggest CPU/traffic saving on the router side. Mirrors radacct open sessions into OnlineSession,
 // resolving each to its subscriber by username or device MAC.
+// Periodically close zombie radacct sessions (see reapStaleRadacct). Runs every 5 min — matching the
+// interim window — so a lost Acct-Stop is reconciled within ~15-20 min instead of lingering forever.
+function startRadacctReaper() {
+  const run = async () => {
+    try {
+      const { radiusConfigured, reapStaleRadacct } = await import('./utils/radius');
+      if (!radiusConfigured()) return;
+      await reapStaleRadacct(15);
+    } catch (e) {
+      console.error('[radacct-reaper] error:', e instanceof Error ? e.message : e);
+    }
+  };
+  run();
+  setInterval(run, 5 * 60 * 1000);
+}
+
 function startRadiusSessionSync() {
   const prisma = new PrismaClient();
   const lastBytes = new Map<string, { in: number; out: number; at: number }>();
