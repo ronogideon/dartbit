@@ -90,7 +90,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.9');
+    add('# Dartbit ZTP Script v1.5.11');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -195,8 +195,17 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`/ip dhcp-server set [find name="dartbit-dhcp"] interface=${bridge} address-pool=dhcp-pool lease-time=1h disabled=no`);
     // CRITICAL: remove any OTHER DHCP server on this bridge that would conflict
     add(`:foreach d in=[/ip dhcp-server find interface="${bridge}"] do={ :if ([/ip dhcp-server get $d name] != "dartbit-dhcp") do={ /ip dhcp-server disable $d; :log info ("Dartbit: disabled conflicting DHCP server " . [/ip dhcp-server get $d name] . " on ${bridge}") } }`);
-    // Enable router's DNS server so it can answer queries from clients
-    add(`/ip dns set servers=${dns} allow-remote-requests=yes`);
+    // Enable router's DNS server so it can answer queries from clients. Larger cache because ALL
+    // PPPoE + LAN clients now resolve through the router (PPPoE dns-server + DNS-redirect below).
+    // use-doh-server: resolve upstream over HTTPS/443 (DoH) to 1.1.1.1. Many uplinks here HIJACK plain
+    // port-53 DNS (public resolvers time out while ICMP works), which silently breaks resolution for
+    // every client; DoH tunnels DNS inside 443, which those uplinks don't touch. servers= stays as a
+    // fallback for uplinks that don't block 53. The static entries below let DoH bootstrap without
+    // needing to resolve its own hostname first.
+    add(`/ip dns set servers=${dns} allow-remote-requests=yes cache-size=8192KiB use-doh-server=https://1.1.1.1/dns-query verify-doh-cert=no`);
+    add(`:foreach s in=[/ip dns static find comment=\"Dartbit DoH bootstrap\"] do={ /ip dns static remove $s }`);
+    add(`/ip dns static add name=cloudflare-dns.com address=1.1.1.1 comment=\"Dartbit DoH bootstrap\"`);
+    add(`/ip dns static add name=one.one.one.one address=1.1.1.1 comment=\"Dartbit DoH bootstrap\"`);
     add('');
 
     // 4. NAT
@@ -236,12 +245,16 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
       // Routing-mark tables.
       add(`:if ([:len [/routing table find name=\"to_wan1\"]] = 0) do={ /routing table add name=to_wan1 fib }`);
       add(`:if ([:len [/routing table find name=\"to_wan2\"]] = 0) do={ /routing table add name=to_wan2 fib }`);
-      // DHCP clients on both uplinks: baseline internet + native main-table failover for router/unmarked
-      // traffic (w1 distance 1, w2 distance 2). The scheduler owns the routing-mark tables.
-      add(`:if ([:len [/ip dhcp-client find interface=\"${w1}\"]] = 0) do={ /ip dhcp-client add interface=${w1} add-default-route=yes default-route-distance=1 comment=\"Dartbit LB wan1\" }`);
-      add(`/ip dhcp-client set [find interface=\"${w1}\"] add-default-route=yes default-route-distance=1`);
-      add(`:if ([:len [/ip dhcp-client find interface=\"${w2}\"]] = 0) do={ /ip dhcp-client add interface=${w2} add-default-route=yes default-route-distance=2 comment=\"Dartbit LB wan2\" }`);
-      add(`/ip dhcp-client set [find interface=\"${w2}\"] add-default-route=yes default-route-distance=2`);
+      // DHCP clients on both uplinks provide the ADDRESS + gateway only. add-default-route=no on
+      // purpose: DHCP default routes have NO through-WAN health (they only know the link is up), so a
+      // WAN whose gateway pings but whose path to the internet is dead would black-hole traffic — the
+      // exact failure that took this router down. The dartbit-lb script below is the SOLE routing
+      // authority and installs health-checked defaults (main + both marked tables) based on real
+      // through-WAN probes. If a WAN is up it carries traffic; if its path dies, the script pulls it.
+      add(`:if ([:len [/ip dhcp-client find interface=\"${w1}\"]] = 0) do={ /ip dhcp-client add interface=${w1} add-default-route=no use-peer-dns=no comment=\"Dartbit LB wan1\" }`);
+      add(`/ip dhcp-client set [find interface=\"${w1}\"] add-default-route=no use-peer-dns=no`);
+      add(`:if ([:len [/ip dhcp-client find interface=\"${w2}\"]] = 0) do={ /ip dhcp-client add interface=${w2} add-default-route=no use-peer-dns=no comment=\"Dartbit LB wan2\" }`);
+      add(`/ip dhcp-client set [find interface=\"${w2}\"] add-default-route=no use-peer-dns=no`);
       // PCC connection + routing marks. Only NEW (no-mark) connections are classified; established ones
       // keep their pinned mark. dst-address-type=!local skips router-bound traffic.
       add(`:foreach m in=[/ip firewall mangle find comment~\"Dartbit LB\"] do={ /ip firewall mangle remove \$m }`);
@@ -252,13 +265,22 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
       // Per-uplink masquerade (a connection that fails over to the other WAN needs that WAN's NAT).
       add(`:if ([:len [/ip firewall nat find comment=\"Dartbit LB NAT1\"]] = 0) do={ /ip firewall nat add chain=srcnat out-interface=${w1} action=masquerade comment=\"Dartbit LB NAT1\" }`);
       add(`:if ([:len [/ip firewall nat find comment=\"Dartbit LB NAT2\"]] = 0) do={ /ip firewall nat add chain=srcnat out-interface=${w2} action=masquerade comment=\"Dartbit LB NAT2\" }`);
-      // Scheduler + script: read both DHCP gateways; rebuild the marked default routes ONLY when they
-      // change. Each mark table has primary (its own WAN) + fallback (the other WAN), both check-gateway
-      // =ping, so a dead WAN moves that table's traffic to the survivor immediately.
+      // Scheduler + script (dartbit-lb): the health-checked routing brain. Every 30s it PROBES THROUGH
+      // each WAN — pinging 8.8.8.8 and 1.1.1.1 out that specific interface (a WAN counts as up if
+      // EITHER replies, so one dead probe target can't false-fail it). This is the fix for the whole
+      // saga: check-gateway=ping validated the gateway (which answered) while the path beyond it was
+      // dead, so half the traffic was routed into a black hole. Through-WAN probing measures reality.
+      //   • both WANs up  -> BALANCE: marked tables split (to_wan1->g1, to_wan2->g2), main via g1 then g2.
+      //   • one WAN down  -> FAILOVER: every table + main routes via the survivor's gateway.
+      //   • both down     -> leave the last-known routes untouched (don't nuke connectivity on a blip).
+      // On a WAN going DOWN it FLUSHES that WAN's pinned connections (connection-mark) so clients
+      // re-establish on the survivor instantly instead of hanging at 0B on stale NAT bindings — the
+      // missing piece that made failover require a manual conntrack flush every time. Routes are only
+      // rebuilt when health or a DHCP gateway actually changes (signature compare), so no 30s flap.
       add(`:foreach x in=[/system script find name=\"dartbit-lb\"] do={ /system script remove \$x }`);
       add(`:foreach x in=[/system scheduler find name=\"dartbit-lb\"] do={ /system scheduler remove \$x }`);
-      add(`/system script add name=dartbit-lb policy=read,write,test source={:do { :local g1 \"\"; :local g2 \"\"; :do { :set g1 [/ip dhcp-client get [find interface=\"${w1}\"] gateway] } on-error={}; :do { :set g2 [/ip dhcp-client get [find interface=\"${w2}\"] gateway] } on-error={}; :local c1 \"\"; :do { :set c1 [/ip route get [find comment=\"Dartbit LB mk r1a\"] gateway] } on-error={}; :local c2 \"\"; :do { :set c2 [/ip route get [find comment=\"Dartbit LB mk r2a\"] gateway] } on-error={}; :if ([:len \$g1] > 0 && [:len \$g2] > 0 && (\$c1 != \$g1 || \$c2 != \$g2)) do={ :foreach r in=[/ip route find comment~\"Dartbit LB mk\"] do={ /ip route remove \$r }; /ip route add dst-address=0.0.0.0/0 gateway=\$g1 routing-table=to_wan1 check-gateway=ping distance=1 comment=\"Dartbit LB mk r1a\"; /ip route add dst-address=0.0.0.0/0 gateway=\$g2 routing-table=to_wan1 check-gateway=ping distance=2 comment=\"Dartbit LB mk r1b\"; /ip route add dst-address=0.0.0.0/0 gateway=\$g2 routing-table=to_wan2 check-gateway=ping distance=1 comment=\"Dartbit LB mk r2a\"; /ip route add dst-address=0.0.0.0/0 gateway=\$g1 routing-table=to_wan2 check-gateway=ping distance=2 comment=\"Dartbit LB mk r2b\"; :log info \"Dartbit: load-balancing routes updated\" } } on-error={}}`);
-      add(`/system scheduler add name=dartbit-lb interval=1m on-event=\"/system script run dartbit-lb\" comment=\"Dartbit load-balancing route sync\"`);
+      add(`/system script add name=dartbit-lb policy=read,write,test source={:global dbU1; :global dbU2; :global dbSig; :do { :local w1 \"${w1}\"; :local w2 \"${w2}\"; :local g1 \"\"; :local g2 \"\"; :do { :set g1 [/ip dhcp-client get [find interface=$w1] gateway] } on-error={}; :do { :set g2 [/ip dhcp-client get [find interface=$w2] gateway] } on-error={}; :local u1 false; :local u2 false; :do { :if ([/ping 8.8.8.8 interface=$w1 count=2 interval=300ms] > 0) do={ :set u1 true } } on-error={}; :if ($u1 = false) do={ :do { :if ([/ping 1.1.1.1 interface=$w1 count=2 interval=300ms] > 0) do={ :set u1 true } } on-error={} }; :do { :if ([/ping 8.8.8.8 interface=$w2 count=2 interval=300ms] > 0) do={ :set u2 true } } on-error={}; :if ($u2 = false) do={ :do { :if ([/ping 1.1.1.1 interface=$w2 count=2 interval=300ms] > 0) do={ :set u2 true } } on-error={} }; :if ([:typeof $dbU1] = \"nothing\") do={ :set dbU1 true }; :if ([:typeof $dbU2] = \"nothing\") do={ :set dbU2 true }; :if ($dbU1 = true && $u1 = false) do={ /ip firewall connection remove [find connection-mark=wan1_conn]; :log warning \"Dartbit LB: WAN1 path down -> failover, flushed wan1 conns\" }; :if ($dbU2 = true && $u2 = false) do={ /ip firewall connection remove [find connection-mark=wan2_conn]; :log warning \"Dartbit LB: WAN2 path down -> failover, flushed wan2 conns\" }; :local sig ($u1 . \"|\" . $u2 . \"|\" . $g1 . \"|\" . $g2); :if ([:typeof $dbSig] = \"nothing\") do={ :set dbSig \"\" }; :if (($sig != $dbSig) && ($u1 = true || $u2 = true) && ([:len $g1] > 0 || [:len $g2] > 0)) do={ :foreach r in=[/ip route find comment~\"Dartbit LB mk\"] do={ /ip route remove $r }; :if ($u1 = true && $u2 = true) do={ /ip route add dst-address=0.0.0.0/0 gateway=$g1 routing-table=to_wan1 distance=1 comment=\"Dartbit LB mk r1a\"; /ip route add dst-address=0.0.0.0/0 gateway=$g2 routing-table=to_wan1 distance=2 comment=\"Dartbit LB mk r1b\"; /ip route add dst-address=0.0.0.0/0 gateway=$g2 routing-table=to_wan2 distance=1 comment=\"Dartbit LB mk r2a\"; /ip route add dst-address=0.0.0.0/0 gateway=$g1 routing-table=to_wan2 distance=2 comment=\"Dartbit LB mk r2b\"; /ip route add dst-address=0.0.0.0/0 gateway=$g1 distance=1 comment=\"Dartbit LB mk m1\"; /ip route add dst-address=0.0.0.0/0 gateway=$g2 distance=2 comment=\"Dartbit LB mk m2\"; :log info \"Dartbit LB: both WANs up -> balancing\" } else={ :local gs $g1; :if ($u2 = true) do={ :set gs $g2 }; /ip route add dst-address=0.0.0.0/0 gateway=$gs routing-table=to_wan1 distance=1 comment=\"Dartbit LB mk r1a\"; /ip route add dst-address=0.0.0.0/0 gateway=$gs routing-table=to_wan2 distance=1 comment=\"Dartbit LB mk r2a\"; /ip route add dst-address=0.0.0.0/0 gateway=$gs distance=1 comment=\"Dartbit LB mk m1\"; :log warning \"Dartbit LB: single WAN up -> all traffic via survivor\" }; :set dbSig $sig }; :set dbU1 $u1; :set dbU2 $u2 } on-error={}}`);
+      add(`/system scheduler add name=dartbit-lb interval=30s on-event=\"/system script run dartbit-lb\" comment=\"Dartbit load-balancing route sync\"`);
       add(`:do { /system script run dartbit-lb } on-error={}`);
     }
     add('');
@@ -294,6 +316,20 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`/ip firewall mangle add chain=forward protocol=tcp tcp-flags=syn action=change-mss new-mss=clamp-to-pmtu passthrough=yes comment="Dartbit MSS clamp"`);
     add('');
 
+    // 4d. Force PPPoE client DNS to the router. A CPE with a hardcoded/stale resolver (e.g. a dead
+    //     10.10.1.1) ignores the IPCP dns-server and resolves nothing — the session is up and routed
+    //     but the customer sees "no internet" because no name resolves. Transparently redirecting all
+    //     port-53 traffic from the PPPoE pool to the router's own resolver fixes every such CPE without
+    //     touching the client. Scoped to the PPPoE source range so it never interferes with the hotspot
+    //     captive portal (different subnet) or the router's own upstream queries. dst-address-type=!local
+    //     skips queries already aimed at the router (no loop). DNS-over-HTTPS/TLS (443/853) is untouched
+    //     and keeps working. Idempotent.
+    add('# 4d. Force PPPoE client DNS to the router (fixes CPEs pinned to a dead resolver)');
+    add(`:foreach n in=[/ip firewall nat find comment~"Dartbit DNS force"] do={ /ip firewall nat remove $n }`);
+    add(`/ip firewall nat add chain=dstnat protocol=udp dst-port=53 src-address=${pppoeStart}-${pppoeEnd} dst-address-type=!local action=redirect to-ports=53 comment="Dartbit DNS force udp"`);
+    add(`/ip firewall nat add chain=dstnat protocol=tcp dst-port=53 src-address=${pppoeStart}-${pppoeEnd} dst-address-type=!local action=redirect to-ports=53 comment="Dartbit DNS force tcp"`);
+    add('');
+
     // 5. PPPoE server
     add('# 5. PPPoE server');
     // Create-if-absent, then ALWAYS set the range/local-address — otherwise a change to the pool
@@ -301,7 +337,12 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // (the old create-only form silently ignored resizes). Widening the range is non-disruptive:
     // existing PPP sessions keep their negotiated address; only new assignments use the wider pool.
     add(`:if ([:len [/ip pool find name="${pppoePool}"]] = 0) do={ /ip pool add name=${pppoePool} ranges=${pppoeStart}-${pppoeEnd} } else={ /ip pool set [find name="${pppoePool}"] ranges=${pppoeStart}-${pppoeEnd} }`);
-    add(`:if ([:len [/ppp profile find name="dartbit-pppoe"]] = 0) do={ /ppp profile add name=dartbit-pppoe local-address=${pppoeLocal} remote-address=${pppoePool} comment="Dartbit PPPoE" } else={ /ppp profile set [find name="dartbit-pppoe"] local-address=${pppoeLocal} remote-address=${pppoePool} }`);
+    // dns-server=<gateway>: hand PPPoE clients the router as their resolver via IPCP. Without this,
+    // Dartbit assigned NO DNS to PPPoE and each CPE used whatever it had configured — a CPE pointed at
+    // a dead/foreign DNS (e.g. a stale 10.10.1.1) resolves nothing and looks offline despite a healthy,
+    // authenticated, routed session. Well-behaved CPEs honour this; the DNS-redirect in section 4d
+    // catches the ones that ignore IPCP and keep a hardcoded resolver.
+    add(`:if ([:len [/ppp profile find name="dartbit-pppoe"]] = 0) do={ /ppp profile add name=dartbit-pppoe local-address=${pppoeLocal} remote-address=${pppoePool} dns-server=${pppoeLocal} comment="Dartbit PPPoE" } else={ /ppp profile set [find name="dartbit-pppoe"] local-address=${pppoeLocal} remote-address=${pppoePool} dns-server=${pppoeLocal} }`);
     add(`:if ([:len [/interface pppoe-server server find service-name="dartbit"]] = 0) do={ /interface pppoe-server server add service-name=dartbit interface=${bridge} authentication=chap,pap default-profile=dartbit-pppoe one-session-per-host=yes disabled=no comment="Dartbit PPPoE Server" }`);
     // one-session-per-host=yes: RouterOS refuses a second PPPoE session for the same user and
     // replaces the old one cleanly, so a renewed/reconnecting client can't end up with two live
@@ -1290,8 +1331,9 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       // we toggle on the LIVE session below — no re-auth, no reboot.
       const effectiveProfile = profileName;
 
-      // Each line stays short — uses inline strings, no shared state needed.
-      add(`:if ([:len [/ppp profile find name="${profileName}"]] = 0) do={ /ppp profile add name=${profileName} local-address=10.10.10.1 remote-address=pppoe-pool rate-limit="${speed}" comment="Dartbit" }`);
+      // Each line stays short — uses inline strings, no shared state needed. dns-server=10.10.10.1
+      // hands the client the router as resolver (see routerZtp section 4d rationale).
+      add(`:if ([:len [/ppp profile find name="${profileName}"]] = 0) do={ /ppp profile add name=${profileName} local-address=10.10.10.1 remote-address=pppoe-pool rate-limit="${speed}" dns-server=10.10.10.1 comment="Dartbit" } else={ /ppp profile set [find name="${profileName}"] rate-limit="${speed}" dns-server=10.10.10.1 }`);
       add(`:if ([:len [/ppp secret find name="${sub.username}"]] = 0) do={ /ppp secret add name="${sub.username}" password="${sub.secret}" profile=${effectiveProfile} service=pppoe comment="Dartbit:${sub.id}" }`);
       add(`:if ([:len [/ppp secret find name="${sub.username}"]] > 0) do={ /ppp secret set [find name="${sub.username}"] password="${sub.secret}" profile=${effectiveProfile} disabled=${adminDisabled ? 'yes' : 'no'} }`);
       // Reconcile walled-garden membership WITHOUT touching the live session:
