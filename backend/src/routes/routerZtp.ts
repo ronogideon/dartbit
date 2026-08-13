@@ -90,7 +90,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.11');
+    add('# Dartbit ZTP Script v1.5.12');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -328,6 +328,14 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach n in=[/ip firewall nat find comment~"Dartbit DNS force"] do={ /ip firewall nat remove $n }`);
     add(`/ip firewall nat add chain=dstnat protocol=udp dst-port=53 src-address=${pppoeStart}-${pppoeEnd} dst-address-type=!local action=redirect to-ports=53 comment="Dartbit DNS force udp"`);
     add(`/ip firewall nat add chain=dstnat protocol=tcp dst-port=53 src-address=${pppoeStart}-${pppoeEnd} dst-address-type=!local action=redirect to-ports=53 comment="Dartbit DNS force tcp"`);
+    // The redirect delivers client DNS to the router's resolver, but the stock "drop all not coming
+    // from LAN" input rule drops PPPoE-sourced port-53 (PPPoE clients aren't in the trusted LAN
+    // interface-list), so the resolver never answers and clients see "no internet" despite a healthy
+    // session. Explicitly ACCEPT DNS from the PPPoE pool in the input chain, BEFORE that drop. Same
+    // pool range as the redirect (follows resizes). Idempotent (cleared by comment first).
+    add(`:foreach f in=[/ip firewall filter find comment~"Dartbit client DNS"] do={ /ip firewall filter remove $f }`);
+    add(`:local dnsdrop [/ip firewall filter find where chain=input action=drop comment~"not coming from LAN"]`);
+    add(`:if ([:len $dnsdrop] > 0) do={ /ip firewall filter add chain=input protocol=udp dst-port=53 src-address=${pppoeStart}-${pppoeEnd} action=accept comment="Dartbit client DNS" place-before=$dnsdrop; /ip firewall filter add chain=input protocol=tcp dst-port=53 src-address=${pppoeStart}-${pppoeEnd} action=accept comment="Dartbit client DNS" place-before=$dnsdrop } else={ /ip firewall filter add chain=input protocol=udp dst-port=53 src-address=${pppoeStart}-${pppoeEnd} action=accept comment="Dartbit client DNS"; /ip firewall filter add chain=input protocol=tcp dst-port=53 src-address=${pppoeStart}-${pppoeEnd} action=accept comment="Dartbit client DNS" }`);
     add('');
 
     // 5. PPPoE server

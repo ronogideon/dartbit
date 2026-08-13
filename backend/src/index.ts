@@ -104,8 +104,8 @@ app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.44', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.44', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.45', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.45', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
