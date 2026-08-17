@@ -90,7 +90,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.13');
+    add('# Dartbit ZTP Script v1.5.14');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -726,7 +726,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add('# 12. Active session + live-speed reporter (3s)');
     add(`:foreach s in=[/system scheduler find comment="Dartbit session sync"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-sessions"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . "|P,"); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :local mac [/ip hotspot active get \$a mac-address]; :local bi 0; :local bo 0; :do { :set bi [/ip hotspot active get \$a bytes-in]; :set bo [/ip hotspot active get \$a bytes-out]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$bi . "|" . \$bo . "|H|" . \$mac . ","); }; :local url ("${backendUrl}/router/sessions?apiKey=${apiKey}&pppoe=" . \$data); :do { /tool fetch url=\$url${fetchFlags} output=none as-value } on-error={}}`);
+    add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . "|P,"); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :local mac [/ip hotspot active get \$a mac-address]; :local bi 0; :local bo 0; :do { :set bi [/ip hotspot active get \$a bytes-in]; :set bo [/ip hotspot active get \$a bytes-out]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$bi . "|" . \$bo . "|H|" . \$mac . ","); }; :do { /tool fetch url="${backendUrl}/router/sessions?apiKey=${apiKey}" http-method=post http-header-field="content-type: text/plain" http-data=\$data${fetchFlags} output=none as-value } on-error={}}`);
     add(`/system scheduler add name=dartbit-sessions interval=3s on-event="/system script run dartbit-sessions" comment="Dartbit session sync"`);
     add('');
 
@@ -906,7 +906,11 @@ router.all('/sessions', async (req: Request, res: Response) => {
     const r = await prisma.mikrotikRouter.findUnique({ where: { apiKey } });
     if (!r) return sendError(res, 'Router not found', 404);
 
-    const pppoeStr = String(req.query.pppoe || '').replace(/[^a-zA-Z0-9_\-\.,:|\/]/g, '');
+    // Session data now arrives as a text/plain POST body (see dartbit-sessions script) so usernames
+    // with spaces/special chars and large lists can't produce a malformed/over-length URL => 400.
+    // Fall back to the query string for routers not yet reprovisioned onto the POST reporter.
+    const rawBody = typeof req.body === 'string' ? req.body : '';
+    const pppoeStr = (rawBody || String(req.query.pppoe || '')).replace(/[^a-zA-Z0-9_\-\.,:|\/ ]/g, '');
 
     // NOTE: no longer wiping all sessions here — see the upsert/targeted-delete below. Blanket
     // delete-then-recreate every ~3s destroyed every row's identity each cycle, which (a) reset

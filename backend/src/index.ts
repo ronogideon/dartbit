@@ -103,9 +103,13 @@ app.use(cors({
 app.use('/webhooks', webhookRoutes);
 
 app.use(express.json());
+// The router session reporter POSTs its session list as a text/plain body (not the query string) —
+// usernames can contain spaces/special chars and the list can be large, both of which produce a
+// malformed / over-length URL => 400 Bad Request. Scoped to text/plain so JSON routes are untouched.
+app.use(express.text({ type: 'text/plain', limit: '5mb' }));
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.46', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.46', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.47', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.47', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
