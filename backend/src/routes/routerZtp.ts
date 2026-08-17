@@ -90,7 +90,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.12');
+    add('# Dartbit ZTP Script v1.5.13');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -203,9 +203,12 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // fallback for uplinks that don't block 53. The static entries below let DoH bootstrap without
     // needing to resolve its own hostname first.
     add(`/ip dns set servers=${dns} allow-remote-requests=yes cache-size=8192KiB use-doh-server=https://1.1.1.1/dns-query verify-doh-cert=no`);
-    add(`:foreach s in=[/ip dns static find comment=\"Dartbit DoH bootstrap\"] do={ /ip dns static remove $s }`);
-    add(`/ip dns static add name=cloudflare-dns.com address=1.1.1.1 comment=\"Dartbit DoH bootstrap\"`);
-    add(`/ip dns static add name=one.one.one.one address=1.1.1.1 comment=\"Dartbit DoH bootstrap\"`);
+    // Bootstrap statics so DoH can resolve its own endpoint. Remove ANY existing entry for these names
+    // first (defconf ships them WITHOUT our comment, so a plain add would abort with "entry already
+    // exists"), then re-add. Wrapped in :do/on-error so provisioning never aborts on this line.
+    add(`:do { :foreach s in=[/ip dns static find where name="cloudflare-dns.com" || name="one.one.one.one"] do={ /ip dns static remove $s } } on-error={}`);
+    add(`:do { /ip dns static add name=cloudflare-dns.com address=1.1.1.1 comment="Dartbit DoH bootstrap" } on-error={}`);
+    add(`:do { /ip dns static add name=one.one.one.one address=1.1.1.1 comment="Dartbit DoH bootstrap" } on-error={}`);
     add('');
 
     // 4. NAT
