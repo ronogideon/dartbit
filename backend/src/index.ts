@@ -150,7 +150,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.35 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.11.48 running on port ${PORT}\n`);
   patchDatabase().catch(e => console.error('[patchDatabase] failed:', e instanceof Error ? e.message : e));
   startSessionCleanup();
   // RADIUS routers don't run the router-side session reporter (it's skipped as redundant), so this

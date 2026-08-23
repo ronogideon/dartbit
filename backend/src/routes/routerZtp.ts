@@ -90,7 +90,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.14');
+    add('# Dartbit ZTP Script v1.5.15 (WAN normalization + defconf teardown)');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -139,12 +139,28 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // notation and PPPoE-client WANs to the physical port). Used to keep the live uplink out of the
     // bridge even if the stored config names a different port.
     add(`:global wandet ""; :do { :local rt [/ip route find where dst-address="0.0.0.0/0" and active]; :if ([:len $rt] > 0) do={ :local gw [/ip route get [:pick $rt 0] immediate-gw]; :if ([:typeof $gw] = "str") do={ :local p [:find $gw "%"]; :if ([:typeof $p] = "num") do={ :set wandet [:pick $gw ($p+1) [:len $gw]] } else={ :set wandet $gw } } } } on-error={}; :do { :if ([:len [/interface pppoe-client find name=$wandet]] > 0) do={ :set wandet [/interface pppoe-client get [find name=$wandet] interface] } } on-error={}`);
-    // Uplinks must NEVER be bridged into the LAN. Keep both configured uplinks out of bridge-lan,
-    // always — this is what stops a second uplink (e.g. ether2) being swallowed by the auto-sweep.
+    // ===== WAN NORMALIZATION — fixes the "uplink trapped in the defconf bridge" class of bugs =====
+    // A freshly-reset MikroTik lands in defconf with the WAN port (often ether1) as a SLAVE inside the
+    // defconf bridge (bridgeLocal / bridge) and the DHCP client + default route living on that BRIDGE,
+    // not on the port. Left as-is this causes: (a) masquerade out-interface=<port> flagged INVALID
+    // ("interface is slave - use master") so dual-WAN clients egress un-NATted; (b) a second uplink
+    // can't be added cleanly; (c) the WAN rides an L2 bridge. For each configured uplink this block:
+    //   1. relocates its DHCP client OFF any non-LAN bridge that contains the port, onto the port;
+    //   2. removes the port from that bridge (extracting it, standalone);
+    //   3. guarantees exactly one DHCP client on the port — default route on the PRIMARY wan only
+    //      (a 2nd uplink gets add-default-route=no; the LB script owns its routing).
+    // Idempotent (re-provision of an already-clean router is a no-op) and on-error wrapped so a failure
+    // logs a warning instead of aborting the import — the heartbeat is already live above, so even a
+    // half-applied provision still reports in. NOTE: on a LIVE router the WAN client may be carrying the
+    // management path; relocating it briefly drops the default route, so live re-provisions run this in
+    // Safe Mode with local/MAC access. On a fresh-reset router (reached on the LAN) it is safe.
     const uplinks = [wan, wan2].filter(Boolean);
-    for (const up of uplinks) {
-      add(`:foreach p in=[/interface bridge port find interface="${up}" bridge="${bridge}"] do={ /interface bridge port remove $p; :log info "Dartbit: kept uplink ${up} out of ${bridge}" }`);
-    }
+    const normalizeUplink = (port: string, isPrimary: boolean) => {
+      const addDef = isPrimary ? 'yes' : 'no';
+      add(`:do { :local P "${port}"; :foreach bp in=[/interface bridge port find interface=$P] do={ :local B [/interface bridge port get $bp bridge]; :if ($B != "${bridge}") do={ :if ([:len [/ip dhcp-client find interface=$B]] > 0 && [:len [/ip dhcp-client find interface=$P]] = 0) do={ /ip dhcp-client remove [find interface=$B]; :log info ("Dartbit: moved WAN DHCP client off bridge " . $B . " -> ${port}") }; /interface bridge port remove $bp; :log info ("Dartbit: extracted uplink ${port} from bridge " . $B) } }; :if ([:len [/ip dhcp-client find interface=$P]] = 0) do={ /ip dhcp-client add interface=$P add-default-route=${addDef} use-peer-dns=no comment="Dartbit WAN" ; :log info "Dartbit: DHCP client created on standalone ${port}" } } on-error={:log warning "Dartbit: WAN normalization failed for ${port}"}`);
+    };
+    normalizeUplink(wan, true);
+    if (wan2) normalizeUplink(wan2, false);
     for (const port of lanInterfaces) {
       if (uplinks.includes(port)) continue; // never bridge an uplink even if mistakenly listed
       add(`:foreach p in=[/interface bridge port find interface="${port}"] do={ :local b [/interface bridge port get $p bridge]; :if ($b != "${bridge}") do={ /interface bridge port remove $p; :log info ("Dartbit: moved ${port} from " . $b . " to ${bridge}") } }`);
@@ -156,6 +172,14 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
       // (autoBridgeLan=false) so it can never grab another system's ports or a spare uplink.
       add(`:global wandet; :foreach i in=[/interface ethernet find where name!="${wan}"] do={ :local n [/interface ethernet get $i name]; :if ($n != $wandet && $n != "${wan2}" && [:len [/interface bridge port find interface=$n]] = 0 && [:len [/ip address find interface=$n]] = 0 && [:len [/ip dhcp-client find interface=$n]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$n comment="Dartbit LAN (auto)" } on-error={} } }`);
       add(`:foreach w in=[/interface find where type="wlan"] do={ :local n [/interface get $w name]; :if ([:len [/interface bridge port find interface=$n]] = 0 && [:len [/ip address find interface=$n]] = 0 && [:len [/ip dhcp-client find interface=$n]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$n comment="Dartbit WLAN (auto)" } on-error={} } }`);
+      // Defconf teardown (single-system routers only): with the WAN now extracted and LAN ports swept
+      // into bridge-lan, the defconf bridge (bridgeLocal / bridge) is left holding only spare unused
+      // ports plus a stray 192.168.88.x. Relocate those spare ETHERNET ports (no IP, no DHCP client —
+      // so never a WAN) into bridge-lan, then, once the defconf bridge is empty, strip its address(es)
+      // and delete it so "bridgeLocal" doesn't linger. Scoped to the defconf bridge NAMES only
+      // (bridgeLocal / bridge), never a custom bridge, so a coexisting system's bridge is never touched.
+      // autoBridgeLan is single-system by definition, so absorbing spare ports into the LAN is safe here.
+      add(`:foreach b in=[/interface bridge find where name="bridgeLocal" || name="bridge"] do={ :local bn [/interface bridge get $b name]; :do { :foreach bp in=[/interface bridge port find bridge=$bn] do={ :local pn [/interface bridge port get $bp interface]; :if ([:len [/ip address find interface=$pn]] = 0 && [:len [/ip dhcp-client find interface=$pn]] = 0) do={ /interface bridge port remove $bp; :if ([:len [/interface bridge port find interface=$pn bridge="${bridge}"]] = 0) do={ :do { /interface bridge port add bridge=${bridge} interface=$pn comment="Dartbit LAN (from defconf)" } on-error={} } } }; :if ([:len [/interface bridge port find bridge=$bn]] = 0) do={ :foreach a in=[/ip address find interface=$bn] do={ /ip address remove $a }; :foreach d in=[/ip dhcp-client find interface=$bn] do={ /ip dhcp-client remove $d }; /interface bridge remove $b; :log info ("Dartbit: removed emptied defconf bridge " . $bn) } else={ :log info ("Dartbit: defconf bridge " . $bn . " kept (still has ports)") } } on-error={:log warning ("Dartbit: defconf teardown skipped for " . $bn)} }`);
     } else if (lanInterfaces.length) {
       // Explicit mode (shared/multi-system routers): bridge-lan holds EXACTLY the listed LAN ports.
       // Remove any port in bridge-lan that's no longer assigned (e.g. moved to the other system) so a
