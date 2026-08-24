@@ -199,6 +199,12 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // CRITICAL: remove duplicate IP from any OTHER bridge first.
     // The defconf has 192.168.88.1/24 on the default 'bridge' which causes routing chaos.
     add(`:foreach a in=[/ip address find address="${lanGw}/24"] do={ :local iface [/ip address get $a interface]; :if ($iface != "${bridge}") do={ /ip address remove $a; :log info ("Dartbit: removed duplicate ${lanGw}/24 from " . $iface) } }`);
+    // Remove any STALE "Dartbit LAN Gateway" on the bridge that isn't the CURRENT lanGw. When the LAN
+    // gateway is changed in the frontend, the old address used to stay behind, stacking a SECOND subnet
+    // on bridge-lan. That silently breaks the hotspot: a hotspot binds to ONE hotspot-address, so clients
+    // landing on the other subnet never trigger the captive-portal auto-detect (they can still reach the
+    // portal by typing its IP, which masks the fault). Keep exactly one Dartbit gateway = the current one.
+    add(`:foreach a in=[/ip address find interface="${bridge}" comment="Dartbit LAN Gateway"] do={ :local ad [/ip address get $a address]; :if ($ad != "${lanGw}/24") do={ /ip address remove $a; :log info ("Dartbit: removed stale LAN gateway " . $ad . " from ${bridge}") } }`);
     add(`:if ([:len [/ip address find interface="${bridge}" address="${lanGw}/24"]] = 0) do={ /ip address add address=${lanGw}/24 interface=${bridge} comment="Dartbit LAN Gateway" }`);
     // CRITICAL: add the bridge to the LAN interface list so the default firewall
     // (chain=input action=drop in-interface-list=!LAN) doesn't block DNS/DHCP/portal traffic from clients
@@ -217,6 +223,10 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // CRITICAL: dns-server is the ROUTER's bridge IP, not 8.8.8.8. This way clients
     // send DNS queries to the router, which can hijack them and return the gateway IP
     // for unauthenticated users (this drives the captive portal redirect).
+    // Remove any STALE "Dartbit LAN" dhcp-server-network whose subnet isn't the current one — same
+    // gateway-changed leftover as the bridge address above. A second network entry hands a competing
+    // gateway/subnet to the bridge and is part of what breaks the hotspot captive-portal auto-detect.
+    add(`:foreach n in=[/ip dhcp-server network find comment="Dartbit LAN"] do={ :if ([/ip dhcp-server network get $n address] != "${lanSubnet}") do={ :local ad [/ip dhcp-server network get $n address]; /ip dhcp-server network remove $n; :log info ("Dartbit: removed stale DHCP network " . $ad) } }`);
     add(`:if ([:len [/ip dhcp-server network find address="${lanSubnet}"]] = 0) do={ /ip dhcp-server network add address=${lanSubnet} gateway=${lanGw} dns-server=${lanGw} comment="Dartbit LAN" }`);
     add(`/ip dhcp-server network set [find address="${lanSubnet}"] gateway=${lanGw} dns-server=${lanGw}`);
     // The DHCP server bound to the bridge — this is what actually hands out IPs

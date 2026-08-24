@@ -37,6 +37,24 @@ router.get('/login', async (req: Request, res: Response) => {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
 <title>${tenantName} WiFi</title>
+<script>
+(function(){
+  // Captive-portal auto-pop: OS detection probes (Android connectivitycheck, Apple
+  // captive.apple.com, Windows msftconnecttest, etc.) request a known URL, which MikroTik
+  // passes here as $(link-orig). A probe that receives a full 200 HTML page is treated by
+  // some OSes as "internet works" -> no popup. Bouncing the probe with an immediate
+  // redirect is what reliably triggers the "Sign in to network" prompt. Real browsers
+  // (link-orig is the user's own site, not a probe) fall through and render the portal.
+  try {
+    var orig = '$(link-orig)';
+    var loginUrl = '$(link-login-only)';
+    var probe = /(connectivitycheck|gstatic|clients3\\.google|captive\\.apple|msftconnecttest|msftncsi|nmcheck|network-test|detectportal|success\\.txt|hotspot-detect)/i;
+    if (orig && orig.indexOf('$(') !== 0 && probe.test(orig) && loginUrl && loginUrl.indexOf('$(') !== 0) {
+      window.location.replace(loginUrl);
+    }
+  } catch(e){}
+})();
+</script>
 <style>
 :root{--accent:${accent}}
 *{box-sizing:border-box;margin:0;padding:0}
