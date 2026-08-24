@@ -1,9 +1,8 @@
 import { Router, Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
+import prisma from '../utils/prisma';
 import bcrypt from 'bcryptjs';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 function generateSubdomain(name: string): string {
   return name

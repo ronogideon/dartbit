@@ -10,6 +10,7 @@ process.on('uncaughtException', (err) => { console.error('[uncaughtException]', 
 import express from 'express';
 import cors from 'cors';
 import { PrismaClient } from '@prisma/client';
+import sharedPrisma from './utils/prisma';
 import authRoutes from './routes/auth';
 import subscriberRoutes from './routes/subscribers';
 import packageRoutes from './routes/packages';
@@ -150,7 +151,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.51 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.11.52 running on port ${PORT}\n`);
   patchDatabase().catch(e => console.error('[patchDatabase] failed:', e instanceof Error ? e.message : e));
   startSessionCleanup();
   // RADIUS routers don't run the router-side session reporter (it's skipped as redundant), so this
@@ -186,7 +187,7 @@ const server = app.listen(PORT, () => {
 // Prune SessionRecords older than 30 days. Before deleting, ensure each subscriber's
 // lastOnlineAt reflects their most recent session (so we keep the "last seen" summary).
 function startSessionCleanup() {
-  const prisma = new PrismaClient();
+  const prisma = sharedPrisma;
   const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
   const run = async () => {
     try {
@@ -218,7 +219,7 @@ function startSessionCleanup() {
 // 30s, so 90s of silence (3 missed beats) is a safe, fast-reacting cutoff — long enough to absorb a
 // single dropped packet, short enough that OFFLINE means something within ~1.5 minutes of real loss.
 function startRouterOfflineWatcher() {
-  const prisma = new PrismaClient();
+  const prisma = sharedPrisma;
   const STALE_MS = 90 * 1000;
   const run = async () => {
     try {
@@ -244,7 +245,7 @@ function startRouterOfflineWatcher() {
 // PAID is set explicitly on payment confirmation (and cleared when a new cycle's
 // due date is set). This runs alongside session cleanup.
 function startBillingStatusUpdater() {
-  const prisma = new PrismaClient();
+  const prisma = sharedPrisma;
   const run = async () => {
     try {
       const now = Date.now();
@@ -280,7 +281,7 @@ function startBillingStatusUpdater() {
 // in-memory dedup set avoids re-pushing the same expiry every tick; entries age out after a few
 // minutes so a re-created session is caught again. The 60s sync remains the safety-net reconciler.
 function startExpiryWatcher() {
-  const prisma = new PrismaClient();
+  const prisma = sharedPrisma;
   const kicked = new Map<string, number>(); // subscriberId -> last-kick epoch (ms), to avoid hammering
   const walledSynced = new Map<string, number>(); // subscriberId -> expiresAt(ms) already pushed to walled-garden
   const wallBatchAt = new Map<string, number>(); // routerId -> last confinement-batch epoch (ms)
@@ -474,7 +475,7 @@ function startExpiryWatcher() {
 // Auto-close remote Winbox access once its window lapses: tears down the droplet DNAT so management
 // ports aren't left open. Runs every minute.
 function startWinboxAutoClose() {
-  const prisma = new PrismaClient();
+  const prisma = sharedPrisma;
   const run = async () => {
     try {
       const now = new Date();
@@ -516,7 +517,7 @@ function startWgStatusRefresher() {
 // (default 90 days; 0 = never). Applies to PPPoE, Hotspot, and Static. "Offline since" = lastOnlineAt
 // if known, otherwise createdAt (a subscriber that never came online). Cleans RADIUS first.
 function startAutoDeleteScheduler() {
-  const prisma = new PrismaClient();
+  const prisma = sharedPrisma;
   const run = async () => {
     try {
       const settings = await prisma.tenantSetting.findMany({ select: { tenantId: true, autoDeleteOfflineDays: true } as never }) as never as { tenantId: string; autoDeleteOfflineDays: number }[];
@@ -589,7 +590,7 @@ function startRadacctReaper() {
 }
 
 function startRadiusSessionSync() {
-  const prisma = new PrismaClient();
+  const prisma = sharedPrisma;
   const lastBytes = new Map<string, { in: number; out: number; at: number }>();
   const radiusRouters = new Set<string>(); // routers we've seen RADIUS sessions for — we own their OnlineSession rows
   const openRecs = new Map<string, string>(); // `${routerId}:${sessionKey}` -> open SessionRecord id (for history)
@@ -766,7 +767,7 @@ async function safeExec(prisma: PrismaClient, label: string, sql: string) {
 }
 
 async function patchDatabase() {
-  const prisma = new PrismaClient();
+  const prisma = sharedPrisma;
   try {
     console.log('🔧 Patching database schema...');
 

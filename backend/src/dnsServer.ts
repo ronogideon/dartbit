@@ -1,5 +1,5 @@
 import * as dgram from 'dgram';
-import { PrismaClient } from '@prisma/client';
+import prisma from './utils/prisma';
 
 // Dartbit filtering DNS resolver — runs at dns.dartbittech.com as an OPTIONAL second layer.
 //
@@ -17,7 +17,6 @@ const PORT = Number(process.env.DNS_PORT || 53);
 const UPSTREAM = process.env.DNS_UPSTREAM || '1.1.1.1';
 const REFRESH_MS = 60_000;
 
-const prisma = new PrismaClient();
 let blockedSet = new Set<string>();
 
 async function refreshBlocklist() {
