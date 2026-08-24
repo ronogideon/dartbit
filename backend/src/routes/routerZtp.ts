@@ -461,11 +461,15 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add('# 6a. Install Dartbit captive portal HTML');
     add(`:local hdir "hotspot"; :if ([:len [/file find where name="flash"]] > 0) do={ :set hdir "flash/hotspot" }`);
     add(`:do { /ip hotspot profile set [find name="hsprof-dartbit"] html-directory=$hdir; :local got [/ip hotspot profile get [find name="hsprof-dartbit"] html-directory]; :if ($got != $hdir) do={ /ip hotspot profile set [find name="hsprof-dartbit"] html-directory="hotspot" } } on-error={}`);
-    // Download our login.html — it's a tiny redirect page to the Dartbit-hosted portal
-    add(`/tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=($hdir . "/login.html")${fetchFlags}`);
+    // Download our login.html. CRITICAL: wrap in :do/on-error — a bare /tool fetch that times out
+    // (e.g. the WAN path briefly settling after normalization) throws a Script Error that ABORTS THE
+    // ENTIRE IMPORT at this line, so everything after — including the interface-list report the frontend
+    // waits on — never runs. Guarded + one retry: a transient failure just means the portal HTML arrives
+    // on the next dartbit-portal scheduler run (every 3 min) instead of killing provisioning.
+    add(`:do { /tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=($hdir . "/login.html")${fetchFlags} } on-error={ :delay 2s; :do { /tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=($hdir . "/login.html")${fetchFlags} } on-error={ :log warning "Dartbit: login.html fetch deferred to scheduler" } }`);
     add(`:delay 1s`);
-    // Also overwrite alogin.html which is shown on successful login
-    add(`/tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=($hdir . "/alogin.html")${fetchFlags}`);
+    // Also overwrite alogin.html which is shown on successful login — same guard.
+    add(`:do { /tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=($hdir . "/alogin.html")${fetchFlags} } on-error={ :log warning "Dartbit: alogin.html fetch deferred to scheduler" }`);
     add(`:delay 1s`);
     add('');
 
