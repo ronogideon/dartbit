@@ -93,6 +93,8 @@ export const updatePackage = (id: string, data: unknown) => api.put(`/packages/$
 export const deletePackage = (id: string) => api.delete(`/packages/${id}`).then((r) => r.data.data);
 
 export const getPayments = () => api.get('/payments').then((r) => r.data.data);
+export type PaymentSummary = { earnedToday: number; todayHotspot: number; thisWeek: number; thisMonth: number };
+export const getPaymentSummary = () => api.get('/payments/summary').then((r) => r.data.data as PaymentSummary);
 export const createPayment = (data: unknown) => api.post('/payments', data).then((r) => r.data.data);
 export const editPayment = (id: string, data: { amount?: number; notes?: string }) => api.patch(`/payments/${id}`, data).then((r) => r.data.data);
 export const deletePayment = (id: string) => api.delete(`/payments/${id}`).then((r) => r.data.data);

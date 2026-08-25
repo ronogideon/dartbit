@@ -31,6 +31,56 @@ router.get('/', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// GET /payments/summary — tenant earnings tiles (mirrors the expenses page):
+//   earnedToday       total received today, all services (PPPoE + hotspot + static)
+//   todayHotspot      received today from HOTSPOT service only
+//   thisWeek          total received since Monday 00:00 (week starts Monday), all services
+//   thisMonth         total received since the 1st of the month 00:00, all services
+// A payment's service is derived from its subscriber (falling back to its package); payments with
+// neither resolvable are still counted in the all-service totals but never in the hotspot-only tile.
+router.get('/summary', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return sendError(res, 'Tenant required', 400);
+
+    const now = new Date();
+    const todayStart = new Date(now); todayStart.setHours(0, 0, 0, 0);
+    const monthStart = new Date(now); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+    // Week starts Monday: getDay() is 0=Sun..6=Sat; days back to Monday = (day + 6) % 7.
+    const weekStart = new Date(now); weekStart.setHours(0, 0, 0, 0);
+    weekStart.setDate(weekStart.getDate() - ((now.getDay() + 6) % 7));
+
+    // One query covers all tiles: everything from the earliest boundary (month start) forward,
+    // with the service resolvable so the hotspot-only tile can be computed in-process.
+    const since = monthStart < weekStart ? monthStart : weekStart;
+    const rows = await prisma.payment.findMany({
+      where: { tenantId, createdAt: { gte: since } },
+      select: {
+        amount: true,
+        createdAt: true,
+        subscriber: { select: { service: true } },
+        package: { select: { service: true } },
+      },
+    });
+
+    let earnedToday = 0, todayHotspot = 0, thisWeek = 0, thisMonth = 0;
+    for (const p of rows) {
+      const amt = p.amount || 0;
+      const svc = p.subscriber?.service ?? p.package?.service ?? null;
+      if (p.createdAt >= monthStart) thisMonth += amt;
+      if (p.createdAt >= weekStart) thisWeek += amt;
+      if (p.createdAt >= todayStart) {
+        earnedToday += amt;
+        if (svc === 'HOTSPOT') todayHotspot += amt;
+      }
+    }
+
+    sendSuccess(res, { earnedToday, todayHotspot, thisWeek, thisMonth });
+  } catch {
+    sendError(res, 'Failed to fetch payments summary', 500);
+  }
+});
+
 router.post('/', async (req: AuthRequest, res: Response) => {
   try {
     const parsed = paymentSchema.safeParse(req.body);

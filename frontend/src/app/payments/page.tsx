@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getPayments, createPayment, editPayment, deletePayment, getSubscribers, getPromptTarget, promptPayment, getPromptStatus, type PromptTarget } from '@/lib/api';
+import { getPayments, getPaymentSummary, createPayment, editPayment, deletePayment, getSubscribers, getPromptTarget, promptPayment, getPromptStatus, type PromptTarget } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
@@ -18,6 +18,9 @@ interface Payment {
 interface Subscriber { id: string; fullName: string; username: string; }
 
 const emptyForm = { subscriberId: '', amount: '', method: 'MANUAL', reference: '', mpesaCode: '', notes: '' };
+
+// KES formatter — same as the expenses page tiles for visual consistency.
+const kes = (n: number) => `KES ${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 
 // A payment is automatic when it was created by a gateway (M-Pesa callback); manual when an admin
 // recorded it. The backend stamps `source`; we fall back to mpesaCode for any legacy row.
@@ -111,21 +114,22 @@ export default function PaymentsPage() {
   const [search, setSearch] = useState('');
 
   const { data: payments = [], isPending } = useQuery({ queryKey: ['payments'], queryFn: getPayments });
+  const { data: summary } = useQuery({ queryKey: ['payment-summary'], queryFn: getPaymentSummary });
   const { data: subscribers = [] } = useQuery({ queryKey: ['subscribers'], queryFn: getSubscribers });
 
   const createMut = useMutation({
     mutationFn: createPayment,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['payments'] }); toast.success('Payment recorded'); setModalOpen(false); setForm(emptyForm); setTab('MANUAL'); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['payments'] }); qc.invalidateQueries({ queryKey: ['payment-summary'] }); toast.success('Payment recorded'); setModalOpen(false); setForm(emptyForm); setTab('MANUAL'); },
     onError: () => toast.error('Failed to record payment'),
   });
   const editMut = useMutation({
     mutationFn: ({ id, data }: { id: string; data: { amount?: number; notes?: string } }) => editPayment(id, data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['payments'] }); toast.success('Payment updated'); setEditing(null); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['payments'] }); qc.invalidateQueries({ queryKey: ['payment-summary'] }); toast.success('Payment updated'); setEditing(null); },
     onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed to update payment'),
   });
   const deleteMut = useMutation({
     mutationFn: deletePayment,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['payments'] }); toast.success('Payment deleted'); setDeleteId(null); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['payments'] }); qc.invalidateQueries({ queryKey: ['payment-summary'] }); toast.success('Payment deleted'); setDeleteId(null); },
     onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed to delete payment'),
   });
 
@@ -171,6 +175,30 @@ export default function PaymentsPage() {
         <div className="flex items-center gap-2">
           <button onClick={() => setPromptOpen(true)} className="btn-secondary flex items-center gap-2"><Smartphone size={16} /> Prompt Payment</button>
           <button onClick={() => setModalOpen(true)} className="btn-primary flex items-center gap-2"><Plus size={16} /> Record Payment</button>
+        </div>
+      </div>
+
+      {/* Earnings summary tiles — week starts Monday, month from the 1st; all services except the hotspot tile */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div className="card p-5">
+          <div className="text-sm text-gray-500 mb-1">Earned Today</div>
+          <div className="text-2xl font-bold">{kes(summary?.earnedToday || 0)}</div>
+          <div className="text-xs text-gray-400 mt-1">All services</div>
+        </div>
+        <div className="card p-5">
+          <div className="text-sm text-gray-500 mb-1">Today — Hotspot</div>
+          <div className="text-2xl font-bold">{kes(summary?.todayHotspot || 0)}</div>
+          <div className="text-xs text-gray-400 mt-1">Hotspot only</div>
+        </div>
+        <div className="card p-5">
+          <div className="text-sm text-gray-500 mb-1">This Week</div>
+          <div className="text-2xl font-bold">{kes(summary?.thisWeek || 0)}</div>
+          <div className="text-xs text-gray-400 mt-1">Since Monday</div>
+        </div>
+        <div className="card p-5">
+          <div className="text-sm text-gray-500 mb-1">This Month</div>
+          <div className="text-2xl font-bold">{kes(summary?.thisMonth || 0)}</div>
+          <div className="text-xs text-gray-400 mt-1">Since the 1st</div>
         </div>
       </div>
 
