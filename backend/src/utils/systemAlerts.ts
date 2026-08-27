@@ -63,7 +63,7 @@ async function tickOnce() {
             for (const phone of recipients) {
               await sendNotification({
                 tenantId: r.tenantId, phone, body, category: 'SYSTEM',
-                dedupKey: `SYS:ROUTER_ONLINE:${r.id}:${Math.floor(downStart / 1000)}`,
+                dedupKey: `SYS:ROUTER_ONLINE:${r.id}:${Math.floor(downStart / 1000)}:${phone}`,
               }).catch(e => console.error('[alerts] router online send:', e instanceof Error ? e.message : e));
             }
           }
@@ -92,7 +92,7 @@ async function tickOnce() {
     for (const phone of recipients) {
       await sendNotification({
         tenantId: r.tenantId, phone, body, category: 'SYSTEM',
-        dedupKey: `SYS:ROUTER_OFFLINE:${r.id}:${Math.floor(lastSeen / 1000)}`,
+        dedupKey: `SYS:ROUTER_OFFLINE:${r.id}:${Math.floor(lastSeen / 1000)}:${phone}`,
       }).catch(e => console.error('[alerts] router offline send:', e instanceof Error ? e.message : e));
     }
     await prisma.mikrotikRouter.update({ where: { id: r.id }, data: { offlineAlertSent: true } }).catch(() => {});
@@ -126,7 +126,7 @@ async function tickOnce() {
     for (const phone of recipients) {
       await sendNotification({
         tenantId: w.tenantId, phone, body, category: 'SYSTEM',
-        dedupKey: `SYS:LOW_BAL:${w.tenantId}:${Date.now()}`,
+        dedupKey: `SYS:LOW_BAL:${w.tenantId}:${phone}`,
       }).catch(e => console.error('[alerts] low balance send:', e instanceof Error ? e.message : e));
     }
     await prisma.smsWallet.update({ where: { tenantId: w.tenantId }, data: { lowBalanceAlerted: true } }).catch(() => {});

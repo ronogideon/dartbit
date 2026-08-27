@@ -9,6 +9,42 @@ import { extractSubdomain } from '../utils/tenantResolve';
 
 const router = Router();
 
+// ─── Login origin classification ────────────────────────────────────────────
+// The tenant portal and the superadmin portal share this /auth/login endpoint but
+// live on different origins. We use the request Origin to decide which portal a
+// login is coming from, so we can:
+//   • block ALL logins from the bare tenant apex (dartbittech.com) — a tenant admin
+//     must sign in from their own subdomain (acme.dartbittech.com);
+//   • keep superadmins OUT of tenant portals (subdomain or apex);
+//   • never lock superadmins out of their own portal.
+// The Origin is only used to route WHICH rule applies — the real security boundary is
+// still credentials + the tenantId match below, so a spoofed Origin can at most
+// downgrade the attacker's own access, never escalate it.
+function originHost(req: Request): string {
+  const raw = String(req.headers.origin || req.headers.referer || '');
+  if (!raw) return '';
+  try { return new URL(raw).hostname.toLowerCase(); } catch { return ''; }
+}
+// NOTE: this default is only for classifying the Origin host; it does NOT feed
+// extractSubdomain (which reads its own PORTAL_BASE_DOMAIN / X-Tenant and stays inert
+// on the apex). Keep them independent.
+const PORTAL_BASE = (process.env.PORTAL_BASE_DOMAIN || 'dartbittech.com').toLowerCase();
+function isTenantApexHost(host: string): boolean {
+  return host === PORTAL_BASE || host === `www.${PORTAL_BASE}`;
+}
+function isDevHost(host: string): boolean {
+  return host === 'localhost' || host === '127.0.0.1' || host.endsWith('.up.railway.app');
+}
+function isSuperadminOrigin(req: Request, host: string): boolean {
+  const origin = String(req.headers.origin || req.headers.referer || '');
+  const saUrl = process.env.SUPERADMIN_URL;
+  if (saUrl) { try { if (host && host === new URL(saUrl).hostname.toLowerCase()) return true; } catch { /* ignore */ } }
+  const firstLabel = host.split('.')[0];
+  if (firstLabel === 'superadmin' || firstLabel === 'admin') return true;
+  if (/localhost:3001|127\.0\.0\.1:3001/.test(origin)) return true; // local superadmin dev
+  return false;
+}
+
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
@@ -29,22 +65,42 @@ router.post('/login', async (req: Request, res: Response) => {
     // Deactivated system users cannot log in
     if (user.isActive === false) return sendError(res, 'Your account has been deactivated. Contact your administrator.', 403);
 
-    // SUBDOMAIN ISOLATION: when the request comes from a tenant subdomain
-    // (dart.dartbittech.com → "dart"), the user MUST belong to that tenant. This keeps
-    // each tenant's login scoped to its own subdomain — two tenants can have users with
-    // the same email/name without one logging into the other's portal. Superadmins are
-    // exempt (they manage all tenants and sign in from the apex/app host).
-    const reqSubdomain = extractSubdomain(req); // from Host subdomain or X-Tenant header
-    if (reqSubdomain && user.role !== 'SUPERADMIN' && user.role !== 'SUPERADMIN_VIEWER') {
-      const subTenant = await prisma.tenant.findUnique({
-        where: { subdomain: reqSubdomain },
-        select: { id: true },
-      });
-      if (!subTenant) return sendError(res, 'Unknown portal', 404);
-      if (user.tenantId !== subTenant.id) {
-        // Don't reveal whether the email exists elsewhere — generic message.
-        return sendError(res, 'Invalid credentials for this portal', 401);
+    // ─── PORTAL GATE ─────────────────────────────────────────────────────────
+    // Decide which portal this login is coming from, then enforce isolation.
+    const host = originHost(req);
+    const reqSubdomain = extractSubdomain(req);         // tenant context (X-Tenant / ?t=)
+    const isSuper = user.role === 'SUPERADMIN' || user.role === 'SUPERADMIN_VIEWER';
+
+    if (isSuper) {
+      // Superadmins may sign in ONLY from the superadmin portal (or dev) — never through a
+      // tenant subdomain portal or the tenant apex. This is why superadmin creds stop
+      // working on dartbittech.com / <tenant>.dartbittech.com.
+      if (reqSubdomain || isTenantApexHost(host)) {
+        return sendError(res, 'Superadmins sign in from the admin portal.', 403);
       }
+    } else {
+      // Tenant staff.
+      // (a) A tenant user has no business in the superadmin portal.
+      if (isSuperadminOrigin(req, host)) return sendError(res, 'Invalid credentials', 401);
+
+      if (reqSubdomain) {
+        // (b) On a tenant subdomain: the user MUST belong to that tenant. Blocks tenant A
+        //     signing in on tenant B's subdomain even if they lie about X-Tenant.
+        const subTenant = await prisma.tenant.findUnique({
+          where: { subdomain: reqSubdomain },
+          select: { id: true },
+        });
+        if (!subTenant) return sendError(res, 'Unknown portal', 404);
+        if (user.tenantId !== subTenant.id) {
+          // Don't reveal whether the email exists elsewhere — generic message.
+          return sendError(res, 'Invalid credentials for this portal', 401);
+        }
+      } else if (!isDevHost(host)) {
+        // (c) No tenant context on a real (non-dev) origin = the bare apex. NO login here —
+        //     tenant admins must use their own subdomain.
+        return sendError(res, 'Please sign in from your portal address, e.g. yourname.dartbittech.com', 403);
+      }
+      // dev origin with no subdomain → allowed (local development convenience).
     }
 
     const token = signToken({ userId: user.id, role: user.role, tenantId: user.tenantId || undefined });

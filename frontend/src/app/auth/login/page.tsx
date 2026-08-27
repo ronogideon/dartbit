@@ -19,6 +19,7 @@ export default function LoginPage() {
   // The themed /portal is now the single login entry for both staff and customers. On a tenant
   // subdomain, send /auth/login there. (Apex/superadmin keeps this page.)
   const [redirecting, setRedirecting] = useState(false);
+  const [apexBlocked, setApexBlocked] = useState(false);
   const [fpOpen, setFpOpen] = useState(false);
   const [fpStep, setFpStep] = useState(1);
   const [fpId, setFpId] = useState('');
@@ -30,7 +31,14 @@ export default function LoginPage() {
     if (tenantSubdomainFromHost()) {
       setRedirecting(true);
       window.location.replace('/portal');
+      return;
     }
+    // No subdomain. If this is the real production apex (not localhost/preview), there is no
+    // login here — tenant staff/customers sign in from their own subdomain. Block the form.
+    const host = window.location.hostname.toLowerCase();
+    const base = (process.env.NEXT_PUBLIC_PORTAL_BASE_DOMAIN || 'dartbittech.com').toLowerCase();
+    const isDev = host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.up.railway.app') || /^\d+\.\d+\.\d+\.\d+$/.test(host);
+    if (!isDev && (host === base || host === `www.${base}`)) setApexBlocked(true);
   }, []);
 
   // On a tenant subdomain, brand the page with the ISP's name (wifi icon placeholder).
@@ -106,6 +114,14 @@ export default function LoginPage() {
 
         {/* Card */}
         <div className="bg-gray-900 rounded-2xl border border-gray-800 p-6 shadow-xl">
+          {apexBlocked ? (
+            <div className="text-center py-2">
+              <h2 className="text-base font-semibold text-white mb-2">Sign in from your portal</h2>
+              <p className="text-sm text-gray-400">Staff and customers sign in at their ISP&apos;s own address —{' '}
+                <span className="text-gray-300">yourname.dartbittech.com</span>. There&apos;s no sign-in on this page.</p>
+            </div>
+          ) : (
+          <>
           <h2 className="text-base font-semibold text-white mb-5">Sign in to your account</h2>
 
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -142,6 +158,8 @@ export default function LoginPage() {
               {loading ? 'Signing in...' : <><span>Sign in</span><ArrowRight size={15} /></>}
             </button>
           </form>
+          </>
+          )}
         </div>
 
         {/* Signup CTA — only on the apex (new ISPs), not on a tenant portal */}
