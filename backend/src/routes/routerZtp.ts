@@ -90,7 +90,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.17 (explicit-only bridging; no auto-add)');
+    add('# Dartbit ZTP Script v1.5.18 (self-cleaning provision; explicit-only bridging; no auto-add)');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -120,6 +120,35 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`/system script add name=dartbit-heartbeat policy=read,write,test source={/tool fetch url="${backendUrl}/router/heartbeat?apiKey=${apiKey}"${fetchFlags} keep-result=no}`);
     add(`/system scheduler add name=dartbit-heartbeat interval=30s on-event="/system script run dartbit-heartbeat" comment="Dartbit heartbeat"`);
     add(`:do { /system script run dartbit-heartbeat } on-error={}`);
+
+    // 0c. DEEP PURGE of stale Dartbit NETWORK artifacts — the real fix for the captive-portal popup
+    // dying after repeated reprovisions. Each section below only clears its OWN current-version
+    // signature, so objects left by an OLDER script version, or by a config path not taken this run
+    // (e.g. dual-WAN LB rules after switching to single-WAN), accumulate and start conflicting. The
+    // classic casualty is the hotspot walled-garden filling with duplicate/orphaned (incl. DYNAMIC)
+    // entries until native captive interception stops firing and "sign in to network" never pops. This
+    // sweep removes ALL Dartbit-signed walled-garden / NAT / forward-filter / DNS-static objects up
+    // front; the sections below then re-create exactly the correct current set within this same import.
+    //
+    // SOFT + SAFE by construction — it deliberately does NOT touch anything whose absence would cut
+    // management or drop customers, even for the sub-second gap before re-creation:
+    //   • WireGuard tunnel (dartbit-vpn) + its "Dartbit VPN" peer/address, and the "Dartbit VPN mgmt"
+    //     INPUT accept rule — the droplet's path back in. (We only sweep chain=forward + non-masquerade.)
+    //   • /radius entries (§8e rewrites atomically) and the dartbit-cmd poller (§11) + heartbeat (above).
+    //   • WAN/LB srcnat masquerades (action=masquerade) — losing these = no customer internet.
+    //   • DoH bootstrap DNS statics — losing these = the router can't resolve to fetch anything.
+    //   • Hotspot profile/server, bridge, DHCP — heavy stateful objects the sections set in place.
+    // Everything is scoped to the "Dartbit" signature, so a coexisting system (e.g. centipid) is never
+    // touched, and every removal is wrapped in :do{}on-error={} so a stubborn/dynamic entry (which
+    // RouterOS may refuse to delete) can never abort the whole reprovision.
+    add('# 0c. Deep purge of stale Dartbit network artifacts (walled-garden / NAT / forward-filter / DNS)');
+    add(`:foreach w in=[/ip hotspot walled-garden find where comment~"Dartbit"] do={ :do { /ip hotspot walled-garden remove $w } on-error={} }`);
+    add(`:foreach w in=[/ip hotspot walled-garden ip find where comment~"Dartbit"] do={ :do { /ip hotspot walled-garden ip remove $w } on-error={} }`);
+    add(`:foreach n in=[/ip firewall nat find where comment~"Dartbit"] do={ :do { :if ([/ip firewall nat get $n action] != "masquerade") do={ /ip firewall nat remove $n } } on-error={} }`);
+    add(`:foreach f in=[/ip firewall filter find where comment~"Dartbit" chain=forward] do={ :do { /ip firewall filter remove $f } on-error={} }`);
+    add(`:foreach s in=[/ip dns static find where comment~"Dartbit"] do={ :do { :if ([/ip dns static get $s comment] != "Dartbit DoH bootstrap") do={ /ip dns static remove $s } } on-error={} }`);
+    add('');
+
     // NOTE: we do NOT remove /radius entries here. Section 8e removes+re-adds them atomically when
     // RADIUS is active. Stripping them unconditionally here would wipe a working router's RADIUS
     // config whenever the backend's RADIUS env switch is momentarily off — and never restore it,
