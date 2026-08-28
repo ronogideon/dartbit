@@ -224,7 +224,7 @@ export default function DashboardPage() {
         <div className="card p-5">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold flex items-center gap-2"><CreditCard size={16} /> Recent Payments</h2>
-            <span className="text-sm text-gray-500">Total: KES {hideMoney ? '••••••' : totalRevenue.toLocaleString()}</span>
+            {!isTechnician && <span className="text-sm text-gray-500">Total: KES {hideMoney ? '••••••' : totalRevenue.toLocaleString()}</span>}
           </div>
           <div className="space-y-2">
             {(payments as { id: string; subscriber?: { id?: string; fullName?: string }; amount: number; method: string; createdAt: string }[]).slice(0, 5).map((p) => (

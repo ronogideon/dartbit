@@ -85,12 +85,24 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const pppoeStart = cfg?.pppoePoolStart   ?? '10.10.10.10';
     const pppoeEnd   = cfg?.pppoePoolEnd     ?? '10.10.10.200';
 
+    // Per-tenant captive-portal host. Historically every tenant shared "dartbit.login", so a bypass
+    // payload (.ehi) crafted against one tenant's captive host worked on all of them. We derive a
+    // unique "<tenant>.login" from the tenant subdomain; an explicitly-customised
+    // provConfig.hotspotDnsName still wins. SAFE to change: login.html never references this name — it
+    // redirects via MikroTik's built-in $(link-redirect) and the baked-in backend URL — so the popup
+    // and portal are unaffected, only the internal captive hostname differs per tenant.
+    const tenantSub = String(r.tenant?.subdomain ?? '').toLowerCase().replace(/[^a-z0-9-]/g, '');
+    const rawDnsName = String(cfg?.hotspotDnsName ?? 'dartbit.login').trim();
+    const hotspotDnsName = (((rawDnsName === '') || (rawDnsName === 'dartbit.login')) && tenantSub)
+      ? `${tenantSub}.login`
+      : ((rawDnsName || 'dartbit.login').toLowerCase().replace(/[^a-z0-9.-]/g, '') || 'dartbit.login');
+
     const lanInterfaces = lan.split(',').map(s => s.trim()).filter(Boolean);
 
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.18 (self-cleaning provision; explicit-only bridging; no auto-add)');
+    add('# Dartbit ZTP Script v1.5.19 (per-tenant captive host; tightened walled-garden; tunnel guard)');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -443,11 +455,11 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     //  EXPIRED device (cookie is its own credential, independent of the user existing), bouncing it
     //  in a reconnect loop on the captive portal and blocking the purchase flow. MAC auth alone
     //  gives robust auto-login for active devices without that loop.
-    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=dartbit.login login-by=mac,http-pap mac-auth-password=dartbit use-radius=no }`);
+    add(`:if ([:len [/ip hotspot profile find name="hsprof-dartbit"]] = 0) do={ /ip hotspot profile add name=hsprof-dartbit hotspot-address=${lanGw} dns-name=${hotspotDnsName} login-by=mac,http-pap mac-auth-password=dartbit use-radius=no }`);
     // Always sync the profile settings (idempotent — no disruption). use-radius is intentionally NOT
     // set here: new profiles default to use-radius=no (the create above), and section 8e flips it to
     // =yes when RADIUS is active — so we never downgrade a RADIUS-mode profile on reprovision.
-    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=dartbit.login login-by=mac,http-pap mac-auth-password=dartbit`);
+    add(`/ip hotspot profile set [find name="hsprof-dartbit"] hotspot-address=${lanGw} dns-name=${hotspotDnsName} login-by=mac,http-pap mac-auth-password=dartbit`);
     // User profile — one device per credential. No add-mac-cookie (cookie auth removed; MAC auth
     // via the MAC-named user is the reconnect mechanism and it cleanly stops at expiry).
     add(`:if ([:len [/ip hotspot user profile find name="dartbit-default"]] = 0) do={ /ip hotspot user profile add name=dartbit-default rate-limit="10M/10M" shared-users=1 }`);
@@ -545,29 +557,27 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach n in=[/ip firewall nat find comment~"Dartbit redirect"] do={ /ip firewall nat remove $n }`);
     add('');
 
-    // 7. Walled garden — allow Dartbit backend AND the portal page so unauth/expired users can
-    //    reach it to renew. We whitelist BOTH the API host and the portal frontend domain.
+    // 7. Walled garden — allow ONLY the exact hosts the pre-login purchase/renew flow needs.
+    //    NO WILDCARDS: a "*.dartbittech.com" / "*.safaricom.co.ke" entry lets an HTTP-Injector user
+    //    spoof SNI/Host to any subdomain and tunnel out. We whitelist the precise API + portal hosts
+    //    and lean on the resolved-IP pins below. NOTE: because api.dartbittech.com is Cloudflare-fronted,
+    //    even an exact-host allow is domain-frontable to a Cloudflare Worker — the dartbit-guard tunnel
+    //    detector (byte cap on unauthenticated hosts) is the real backstop for that residual path.
     const portalBase = (process.env.PORTAL_BASE_DOMAIN || 'dartbittech.com').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-    add('# 7. Walled garden — allow Dartbit portal & backend');
-    add(`:foreach w in=[/ip hotspot walled-garden find comment~"Dartbit" !dynamic] do={ /ip hotspot walled-garden remove $w }`);
+    add('# 7. Walled garden — exact hosts only (no wildcards; Safaricom removed — STK push is phone-side)');
+    add(`:foreach w in=[/ip hotspot walled-garden find comment~"Dartbit"] do={ :do { /ip hotspot walled-garden remove $w } on-error={} }`);
     add(`/ip hotspot walled-garden add dst-host=${backendHost} comment="Dartbit backend"`);
-    add(`/ip hotspot walled-garden add dst-host=*.${backendHost} comment="Dartbit backend wildcard"`);
-    // The customer portal lives on the tenant subdomain of the portal base domain — allow it
-    // (and the apex) so an expired customer can load the portal page and renew without a plan.
+    // The customer portal apex + the tenant's OWN portal subdomain — the exact hosts a customer hits
+    // to buy/renew. Exact only; no apex wildcard.
     add(`/ip hotspot walled-garden add dst-host=${portalBase} comment="Dartbit portal"`);
-    add(`/ip hotspot walled-garden add dst-host=*.${portalBase} comment="Dartbit portal wildcard"`);
-    // The tenant's OWN portal subdomain, explicitly (not just via the wildcard above) — this is the
-    // exact host a customer hits to buy/renew, so it must always be reachable pre-login.
     if (tenantPortalHost) add(`/ip hotspot walled-garden add dst-host=${tenantPortalHost} comment="Dartbit tenant portal"`);
-    // Safaricom — so the M-Pesa STK/Daraja flow and the customer's M-Pesa interactions are reachable
-    // from the captive portal before the device is authenticated.
-    add(`/ip hotspot walled-garden add dst-host=safaricom.co.ke comment="Dartbit safaricom"`);
-    add(`/ip hotspot walled-garden add dst-host=*.safaricom.co.ke comment="Dartbit safaricom wildcard"`);
+    // Safaricom is intentionally NOT whitelisted: with STK push the browser only talks to the Dartbit
+    // backend (which calls Daraja server-side and receives the callback). Removing "*.safaricom.co.ke"
+    // closes a large SNI-spoof surface with no impact on payment.
     if (tenantDomain) {
       add(`/ip hotspot walled-garden add dst-host=${tenantDomain} comment="Dartbit tenant domain"`);
-      add(`/ip hotspot walled-garden add dst-host=*.${tenantDomain} comment="Dartbit tenant domain wildcard"`);
     }
-    add(`:foreach w in=[/ip hotspot walled-garden ip find comment~"Dartbit" !dynamic] do={ /ip hotspot walled-garden ip remove $w }`);
+    add(`:foreach w in=[/ip hotspot walled-garden ip find comment~"Dartbit"] do={ :do { /ip hotspot walled-garden ip remove $w } on-error={} }`);
     // Walled-garden IP list lets unauthenticated traffic to these IPs pass through MikroTik's hotspot rejection
     for (const ip of allowIps) {
       add(`/ip hotspot walled-garden ip add dst-address=${ip} comment="Dartbit backend IP"`);
@@ -790,6 +800,24 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach s in=[/system script find name="dartbit-sessions"] do={ /system script remove $s }`);
     add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . "|P,"); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :local mac [/ip hotspot active get \$a mac-address]; :local bi 0; :local bo 0; :do { :set bi [/ip hotspot active get \$a bytes-in]; :set bo [/ip hotspot active get \$a bytes-out]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$bi . "|" . \$bo . "|H|" . \$mac . ","); }; :do { /tool fetch url="${backendUrl}/router/sessions?apiKey=${apiKey}" http-method=post http-header-field="content-type: text/plain" http-data=\$data${fetchFlags} output=none as-value } on-error={}}`);
     add(`/system scheduler add name=dartbit-sessions interval=3s on-event="/system script run dartbit-sessions" comment="Dartbit session sync"`);
+    add('');
+
+    // 12b. Tunnel guard — the backstop against HTTP-Injector / SNI-fronting bypass. A legitimate,
+    // still-unpaid device only moves a few MB pre-login (portal page + STK-push AJAX). A device that
+    // tunnels its traffic through a whitelisted host (incl. the Cloudflare-fronted API, which exact-host
+    // allow-listing can't fully close) moves far more while STILL unauthenticated. This scans only
+    // UNAUTHENTICATED hotspot hosts every minute and, if one has pushed more than the cap, blocks its
+    // MAC via ip-binding and drops the host. Paid/authenticated users are never examined, so it cannot
+    // kick a paying customer; the cap (20 MB) sits ~5-10x above any real pre-login flow. Every field
+    // read and action is :do{}on-error={}-guarded, so on any RouterOS build where a counter is absent
+    // the guard simply degrades to a no-op — it can never abort provisioning or break the hotspot.
+    // Tune the cap by editing the ":local thresh" value (bytes). Blocks persist across reprovisions by
+    // design (§0/§0c never touch ip-binding); review/clear them under /ip hotspot ip-binding.
+    add('# 12b. Tunnel guard — byte cap on unauthenticated hotspot hosts (anti HTTP-Injector)');
+    add(`:foreach s in=[/system scheduler find name="dartbit-guard"] do={ /system scheduler remove $s }`);
+    add(`:foreach s in=[/system script find name="dartbit-guard"] do={ /system script remove $s }`);
+    add(`/system script add name=dartbit-guard policy=read,write,test source={:local thresh 20971520; :foreach h in=[/ip hotspot host find where !authorized] do={ :do { :local byp false; :do { :set byp [/ip hotspot host get \$h bypassed] } on-error={}; :if (!\$byp) do={ :local mac [/ip hotspot host get \$h mac-address]; :local bi [/ip hotspot host get \$h bytes-in]; :local bo [/ip hotspot host get \$h bytes-out]; :if ((\$bi + \$bo) > \$thresh) do={ :if ([:len [/ip hotspot ip-binding find where mac-address=\$mac]] = 0) do={ /ip hotspot ip-binding add mac-address=\$mac type=blocked comment="Dartbit tunnel-block" }; :do { /ip hotspot host remove \$h } on-error={}; :log warning ("Dartbit tunnel-block " . \$mac) } } } on-error={} } }`);
+    add(`/system scheduler add name=dartbit-guard interval=1m on-event="/system script run dartbit-guard" comment="Dartbit guard"`);
     add('');
 
     // 13. Provisioning-complete signal — a clear log line on the router AND a callback so the

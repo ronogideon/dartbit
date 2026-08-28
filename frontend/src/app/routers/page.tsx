@@ -641,6 +641,8 @@ function StatBox({ label, value, mono, accent }: { label: string; value: string;
 // Clickable-router detail: Info (health + VPN + Winbox), Users (subscribers on this router), Payments
 // (this month's collections by service). Data from /mikrotiks/:id/overview + the subscribers list.
 function RouterDetailModal({ router, isOpen, onClose }: { router: { id: string; name: string; status?: string; uptime?: string } | null; isOpen: boolean; onClose: () => void }) {
+  const { user } = useAuth();
+  const isTechnician = user?.role === 'TENANT_VIEWER';
   const [tab, setTab] = useState<'info' | 'users' | 'payments' | 'dns'>('info');
   const [vpnOpen, setVpnOpen] = useState(false);
   const { data: overview } = useQuery({
@@ -657,7 +659,7 @@ function RouterDetailModal({ router, isOpen, onClose }: { router: { id: string; 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={router.name} size="lg">
       <div className="flex gap-1 mb-4 border-b border-gray-100 dark:border-gray-800">
-        {(['info', 'users', 'payments', 'dns'] as const).map(t => (
+        {(['info', 'users', 'payments', 'dns'] as const).filter(t => !isTechnician || (t !== 'payments' && t !== 'dns')).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-3 py-2 text-sm font-medium capitalize border-b-2 -mb-px ${tab === t ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>{t === 'dns' ? 'DNS / Firewall' : t}</button>
         ))}
@@ -672,12 +674,14 @@ function RouterDetailModal({ router, isOpen, onClose }: { router: { id: string; 
             <StatBox label="VPN IP" value={overview?.vpn?.wgIp || '—'} mono />
           </div>
           <p className="text-xs text-gray-400">Last seen: {overview?.health?.lastSeenAt ? new Date(overview.health.lastSeenAt).toLocaleString() : '—'}</p>
-          {overview?.vpn?.wgIp
+          {!isTechnician && (overview?.vpn?.wgIp
             ? <WinboxAccess routerId={router.id} />
-            : <p className="text-xs text-gray-400 border-t border-gray-100 dark:border-gray-800 pt-3">Set up the VPN below to enable remote Winbox access.</p>}
-          <button onClick={() => setVpnOpen(true)} className="btn-secondary w-full text-sm flex items-center justify-center gap-2">
-            <Network size={14} /> VPN setup &amp; status
-          </button>
+            : <p className="text-xs text-gray-400 border-t border-gray-100 dark:border-gray-800 pt-3">Set up the VPN below to enable remote Winbox access.</p>)}
+          {!isTechnician && (
+            <button onClick={() => setVpnOpen(true)} className="btn-secondary w-full text-sm flex items-center justify-center gap-2">
+              <Network size={14} /> VPN setup &amp; status
+            </button>
+          )}
           <VpnModal isOpen={vpnOpen} onClose={() => setVpnOpen(false)} routerId={router.id} routerName={router.name} />
         </div>
       )}

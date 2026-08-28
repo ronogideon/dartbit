@@ -5,8 +5,8 @@ import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/lib/auth';
 import { useTheme } from '@/lib/useTheme';
-import { getTenantInfo } from '@/lib/api';
-import { Menu, Sun, Moon, Settings as SettingsIcon, LogOut, Building2, X, Palette } from 'lucide-react';
+import { getTenantInfo, changeSystemUserPassword } from '@/lib/api';
+import { Menu, Sun, Moon, Settings as SettingsIcon, LogOut, Building2, X, Palette, KeyRound } from 'lucide-react';
 import clsx from 'clsx';
 
 interface TenantInfo {
@@ -21,6 +21,7 @@ export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
   const { theme, toggle } = useTheme();
   const router = useRouter();
   const [accountOpen, setAccountOpen] = useState(false);
+  const [pwOpen, setPwOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
   const isTenantAdmin = user?.role === 'TENANT_ADMIN';
@@ -87,10 +88,16 @@ export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
               {/* Header */}
               <div className="p-4 border-b border-gray-100 dark:border-gray-800">
                 <div className="flex items-start justify-between">
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold truncate">{user?.name}</p>
+                  <button
+                    type="button"
+                    onClick={() => { setAccountOpen(false); setPwOpen(true); }}
+                    className="min-w-0 text-left group"
+                    title="Change your password"
+                  >
+                    <p className="text-sm font-semibold truncate group-hover:text-blue-600">{user?.name}</p>
                     <p className="text-xs text-gray-500 truncate">{user?.email}</p>
-                  </div>
+                    <p className="text-[10px] text-gray-400 group-hover:text-blue-500 mt-0.5">Tap to change password</p>
+                  </button>
                   <button onClick={() => setAccountOpen(false)} className="text-gray-400 hover:text-gray-600 p-0.5 -mr-1">
                     <X size={16} />
                   </button>
@@ -108,6 +115,12 @@ export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
 
               {/* Account links */}
               <div className="p-1.5">
+                <button
+                  onClick={() => { setAccountOpen(false); setPwOpen(true); }}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
+                >
+                  <KeyRound size={16} /> Change password
+                </button>
                 {!isTechnician && (
                   <Link
                     href="/settings"
@@ -148,6 +161,84 @@ export default function TopBar({ onMenuClick }: { onMenuClick: () => void }) {
           )}
         </div>
       </div>
+      {user && <ChangePasswordModal userId={user.id} isOpen={pwOpen} onClose={() => setPwOpen(false)} />}
     </header>
+  );
+}
+
+// Self-service password change — available to every signed-in user (including technicians).
+// Backend (/users/:id/change-password) verifies the current password for non-admins, so a
+// technician can only change their own account and must know their existing password.
+function ChangePasswordModal({ userId, isOpen, onClose }: { userId: string; isOpen: boolean; onClose: () => void }) {
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [err, setErr] = useState('');
+  const [ok, setOk] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) { setCurrent(''); setNext(''); setConfirm(''); setErr(''); setOk(false); setSaving(false); }
+  }, [isOpen]);
+
+  if (!isOpen) return null;
+
+  const submit = async () => {
+    setErr('');
+    if (next.length < 6) { setErr('New password must be at least 6 characters.'); return; }
+    if (next !== confirm) { setErr('New passwords do not match.'); return; }
+    setSaving(true);
+    try {
+      await changeSystemUserPassword(userId, next, current);
+      setOk(true);
+      setTimeout(onClose, 1200);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : 'Could not change password.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onMouseDown={onClose}>
+      <div
+        className="w-full max-w-sm rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-2xl"
+        onMouseDown={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between p-4 border-b border-gray-100 dark:border-gray-800">
+          <h3 className="text-sm font-semibold flex items-center gap-2"><KeyRound size={16} /> Change password</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-0.5"><X size={16} /></button>
+        </div>
+        <div className="p-4 space-y-3">
+          {ok ? (
+            <p className="text-sm text-green-600 py-4 text-center">Password changed successfully.</p>
+          ) : (
+            <>
+              <div>
+                <label className="text-xs text-gray-500">Current password</label>
+                <input type="password" value={current} onChange={e => setCurrent(e.target.value)} autoComplete="current-password"
+                  className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-transparent px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500">New password</label>
+                <input type="password" value={next} onChange={e => setNext(e.target.value)} autoComplete="new-password"
+                  className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-transparent px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500">Confirm new password</label>
+                <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="new-password"
+                  onKeyDown={e => { if (e.key === 'Enter') submit(); }}
+                  className="mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-700 bg-transparent px-3 py-2 text-sm" />
+              </div>
+              {err && <p className="text-xs text-red-600">{err}</p>}
+              <button onClick={submit} disabled={saving}
+                className="w-full btn-primary text-sm py-2 disabled:opacity-60">
+                {saving ? 'Saving…' : 'Update password'}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

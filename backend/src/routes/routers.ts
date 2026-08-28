@@ -193,6 +193,7 @@ const WINBOX_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
 router.post('/:id/winbox/open', async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user?.tenantId;
+    if (req.user?.role === 'TENANT_VIEWER') return sendError(res, 'Technicians cannot open remote router access', 403);
     const r = await prisma.mikrotikRouter.findUnique({ where: { id: req.params.id } });
     if (!r) return sendError(res, 'Router not found', 404);
     if (tenantId && r.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
@@ -249,6 +250,7 @@ router.post('/:id/winbox/open', async (req: AuthRequest, res: Response) => {
 router.post('/:id/winbox/close', async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user?.tenantId;
+    if (req.user?.role === 'TENANT_VIEWER') return sendError(res, 'Technicians cannot manage remote router access', 403);
     const r = await prisma.mikrotikRouter.findUnique({ where: { id: req.params.id } });
     if (!r) return sendError(res, 'Router not found', 404);
     if (tenantId && r.tenantId !== tenantId) return sendError(res, 'Not authorized', 403);
