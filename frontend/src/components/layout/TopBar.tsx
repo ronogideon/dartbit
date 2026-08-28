@@ -1,5 +1,6 @@
 'use client';
 import { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
@@ -181,7 +182,7 @@ function ChangePasswordModal({ userId, isOpen, onClose }: { userId: string; isOp
     if (isOpen) { setCurrent(''); setNext(''); setConfirm(''); setErr(''); setOk(false); setSaving(false); }
   }, [isOpen]);
 
-  if (!isOpen) return null;
+  if (!isOpen || typeof document === 'undefined') return null;
 
   const submit = async () => {
     setErr('');
@@ -193,16 +194,17 @@ function ChangePasswordModal({ userId, isOpen, onClose }: { userId: string; isOp
       setOk(true);
       setTimeout(onClose, 1200);
     } catch (e: unknown) {
-      setErr(e instanceof Error ? e.message : 'Could not change password.');
+      const ax = e as { response?: { data?: { error?: string } }; message?: string };
+      setErr(ax?.response?.data?.error || ax?.message || 'Could not change password.');
     } finally {
       setSaving(false);
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onMouseDown={onClose}>
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" onMouseDown={onClose}>
       <div
-        className="w-full max-w-sm rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-2xl"
+        className="w-full max-w-sm max-h-[90vh] overflow-y-auto rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-2xl"
         onMouseDown={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between p-4 border-b border-gray-100 dark:border-gray-800">
@@ -239,6 +241,7 @@ function ChangePasswordModal({ userId, isOpen, onClose }: { userId: string; isOp
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

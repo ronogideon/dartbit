@@ -102,7 +102,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.19 (per-tenant captive host; tightened walled-garden; tunnel guard)');
+    add('# Dartbit ZTP Script v1.5.20 (self-cleaning now covers LB routing: routes, mangle, marked tables)');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -159,6 +159,17 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach n in=[/ip firewall nat find where comment~"Dartbit"] do={ :do { :if ([/ip firewall nat get $n action] != "masquerade") do={ /ip firewall nat remove $n } } on-error={} }`);
     add(`:foreach f in=[/ip firewall filter find where comment~"Dartbit" chain=forward] do={ :do { /ip firewall filter remove $f } on-error={} }`);
     add(`:foreach s in=[/ip dns static find where comment~"Dartbit"] do={ :do { :if ([/ip dns static get $s comment] != "Dartbit DoH bootstrap") do={ /ip dns static remove $s } } on-error={} }`);
+    // ROUTING areas — the gap that stranded WAN2 customers on 401l. The "Dartbit LB mk" routes are
+    // created by the dartbit-lb SCRIPT at runtime, so no section ever removed them; when a dual-WAN
+    // router was reprovisioned with load-balancing OFF, §0 stripped the dartbit-lb brain, the LB branch
+    // was skipped, and these routes + mangle marks were orphaned with nothing to health-check them —
+    // leaving half of customer flows pinned to a dead WAN. Sweep them unconditionally: if LB is ON, the
+    // LB section + dartbit-lb re-create the correct set within this run; if LB is OFF, they stay gone.
+    // Scoped to "Dartbit LB" / "to_wan", so DHCP default routes, the WireGuard route, and any coexisting
+    // (e.g. centipid) routes are untouched. Order: mangle marks first, then routes, then the tables.
+    add(`:foreach m in=[/ip firewall mangle find where comment~"Dartbit LB"] do={ :do { /ip firewall mangle remove $m } on-error={} }`);
+    add(`:foreach r in=[/ip route find where comment~"Dartbit LB"] do={ :do { /ip route remove $r } on-error={} }`);
+    add(`:foreach t in=[/routing table find where name~"to_wan"] do={ :do { /routing table remove $t } on-error={} }`);
     add('');
 
     // NOTE: we do NOT remove /radius entries here. Section 8e removes+re-adds them atomically when
