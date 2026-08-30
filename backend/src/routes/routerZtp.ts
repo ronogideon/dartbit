@@ -96,13 +96,19 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const hotspotDnsName = (((rawDnsName === '') || (rawDnsName === 'dartbit.login')) && tenantSub)
       ? `${tenantSub}.login`
       : ((rawDnsName || 'dartbit.login').toLowerCase().replace(/[^a-z0-9.-]/g, '') || 'dartbit.login');
+    // Persist the resolved value so the dashboard shows EXACTLY what the router uses — otherwise the
+    // stored default ("dartbit.login") and the derived per-tenant name ("dart.login") disagree, which
+    // is confusing and makes manual edits look like they did nothing.
+    if (cfg && cfg.hotspotDnsName !== hotspotDnsName) {
+      await prisma.routerProvisioningConfig.update({ where: { routerId: r.id }, data: { hotspotDnsName } }).catch(() => { /* non-fatal */ });
+    }
 
     const lanInterfaces = lan.split(',').map(s => s.trim()).filter(Boolean);
 
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.22 (reprovision rebuilds hotspot server+profile from scratch; WG preserved)');
+    add('# Dartbit ZTP Script v1.5.24 (comprehensive LB cleanup + abort-proof LB block; dns-name persisted)');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -170,6 +176,11 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach m in=[/ip firewall mangle find where comment~"Dartbit LB"] do={ :do { /ip firewall mangle remove $m } on-error={} }`);
     add(`:foreach r in=[/ip route find where comment~"Dartbit LB"] do={ :do { /ip route remove $r } on-error={} }`);
     add(`:foreach t in=[/routing table find where name~"to_wan"] do={ :do { /routing table remove $t } on-error={} }`);
+    // The earlier §0c NAT sweep SPARES masquerades (to protect the WAN masquerade), so the LB per-uplink
+    // masquerades slip through — remove them explicitly here, plus the WAN interface-list members, so a
+    // reprovision starts LB from a truly clean slate instead of layering new rules over old ones.
+    add(`:foreach n in=[/ip firewall nat find where comment~"Dartbit LB"] do={ :do { /ip firewall nat remove $n } on-error={} }`);
+    add(`:foreach lm in=[/interface list member find where comment~"Dartbit LB"] do={ :do { /interface list member remove $lm } on-error={} }`);
     // HOTSPOT — the reason the "sign in to network" popup survives a fresh build but dies on reprovision.
     // §6 SETS the profile/server in place, so it can't clear accumulated DYNAMIC hotspot state (dynamic
     // walled-garden children, cookies, hosts, active sessions) or a stale profile attribute left by an
@@ -178,7 +189,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // first (that releases the profile and flushes all its dynamic children), THEN the profile. The
     // WireGuard tunnel + its "Dartbit VPN mgmt" input rule are never touched, so Winbox-over-VPN stays up
     // throughout; the sub-second gap before §6 rebuilds only affects hotspot clients, who simply re-auth.
-    add(`:foreach h in=[/ip hotspot find where name="dartbit-hotspot"] do={ :do { /ip hotspot remove $h } on-error={} }`);
+    add(`:foreach h in=[/ip hotspot find where interface="${bridge}"] do={ :do { /ip hotspot remove $h } on-error={} }`);
     add(`:foreach p in=[/ip hotspot profile find where name="hsprof-dartbit"] do={ :do { /ip hotspot profile remove $p } on-error={} }`);
     add('');
 
@@ -342,20 +353,20 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
       // w2 stays add-default-route=no. The LB machinery (mangle/NAT/script/scheduler) is installed but
       // ACTIVATION is left to the 30s dartbit-lb scheduler, which fires AFTER the import completes and
       // then promotes both WANs to the distance-250 safety nets + balanced routing on its own.
-      add(`:if ([:len [/ip dhcp-client find interface=\"${w1}\"]] = 0) do={ /ip dhcp-client add interface=${w1} add-default-route=yes default-route-distance=1 use-peer-dns=no comment=\"Dartbit LB wan1\" }`);
+      add(`:if ([:len [/ip dhcp-client find interface=\"${w1}\"]] = 0) do={ :do { /ip dhcp-client add interface=${w1} add-default-route=yes default-route-distance=1 use-peer-dns=no comment=\"Dartbit LB wan1\" } on-error={} }`);
       add(`/ip dhcp-client set [find interface=\"${w1}\"] add-default-route=yes default-route-distance=1 use-peer-dns=no`);
-      add(`:if ([:len [/ip dhcp-client find interface=\"${w2}\"]] = 0) do={ /ip dhcp-client add interface=${w2} add-default-route=no use-peer-dns=no comment=\"Dartbit LB wan2\" }`);
+      add(`:if ([:len [/ip dhcp-client find interface=\"${w2}\"]] = 0) do={ :do { /ip dhcp-client add interface=${w2} add-default-route=no use-peer-dns=no comment=\"Dartbit LB wan2\" } on-error={} }`);
       add(`/ip dhcp-client set [find interface=\"${w2}\"] add-default-route=no use-peer-dns=no`);
       // PCC connection + routing marks. Only NEW (no-mark) connections are classified; established ones
       // keep their pinned mark. dst-address-type=!local skips router-bound traffic.
       add(`:foreach m in=[/ip firewall mangle find comment~\"Dartbit LB\"] do={ /ip firewall mangle remove \$m }`);
-      add(`/ip firewall mangle add chain=prerouting in-interface-list=!WAN connection-mark=no-mark dst-address-type=!local per-connection-classifier=both-addresses-and-ports:2/0 action=mark-connection new-connection-mark=wan1_conn passthrough=yes comment=\"Dartbit LB c1\"`);
-      add(`/ip firewall mangle add chain=prerouting in-interface-list=!WAN connection-mark=no-mark dst-address-type=!local per-connection-classifier=both-addresses-and-ports:2/1 action=mark-connection new-connection-mark=wan2_conn passthrough=yes comment=\"Dartbit LB c2\"`);
-      add(`/ip firewall mangle add chain=prerouting in-interface-list=!WAN connection-mark=wan1_conn action=mark-routing new-routing-mark=to_wan1 passthrough=no comment=\"Dartbit LB m1\"`);
-      add(`/ip firewall mangle add chain=prerouting in-interface-list=!WAN connection-mark=wan2_conn action=mark-routing new-routing-mark=to_wan2 passthrough=no comment=\"Dartbit LB m2\"`);
+      add(`:do { /ip firewall mangle add chain=prerouting in-interface-list=!WAN connection-mark=no-mark dst-address-type=!local per-connection-classifier=both-addresses-and-ports:2/0 action=mark-connection new-connection-mark=wan1_conn passthrough=yes comment=\"Dartbit LB c1\" } on-error={}`);
+      add(`:do { /ip firewall mangle add chain=prerouting in-interface-list=!WAN connection-mark=no-mark dst-address-type=!local per-connection-classifier=both-addresses-and-ports:2/1 action=mark-connection new-connection-mark=wan2_conn passthrough=yes comment=\"Dartbit LB c2\" } on-error={}`);
+      add(`:do { /ip firewall mangle add chain=prerouting in-interface-list=!WAN connection-mark=wan1_conn action=mark-routing new-routing-mark=to_wan1 passthrough=no comment=\"Dartbit LB m1\" } on-error={}`);
+      add(`:do { /ip firewall mangle add chain=prerouting in-interface-list=!WAN connection-mark=wan2_conn action=mark-routing new-routing-mark=to_wan2 passthrough=no comment=\"Dartbit LB m2\" } on-error={}`);
       // Per-uplink masquerade (a connection that fails over to the other WAN needs that WAN's NAT).
-      add(`:if ([:len [/ip firewall nat find comment=\"Dartbit LB NAT1\"]] = 0) do={ /ip firewall nat add chain=srcnat out-interface=${w1} action=masquerade comment=\"Dartbit LB NAT1\" }`);
-      add(`:if ([:len [/ip firewall nat find comment=\"Dartbit LB NAT2\"]] = 0) do={ /ip firewall nat add chain=srcnat out-interface=${w2} action=masquerade comment=\"Dartbit LB NAT2\" }`);
+      add(`:if ([:len [/ip firewall nat find comment=\"Dartbit LB NAT1\"]] = 0) do={ :do { /ip firewall nat add chain=srcnat out-interface=${w1} action=masquerade comment=\"Dartbit LB NAT1\" } on-error={} }`);
+      add(`:if ([:len [/ip firewall nat find comment=\"Dartbit LB NAT2\"]] = 0) do={ :do { /ip firewall nat add chain=srcnat out-interface=${w2} action=masquerade comment=\"Dartbit LB NAT2\" } on-error={} }`);
       // Scheduler + script (dartbit-lb): the health-checked routing brain. Every 30s it PROBES THROUGH
       // each WAN — pinging 8.8.8.8 and 1.1.1.1 out that specific interface (a WAN counts as up if
       // EITHER replies, so one dead probe target can't false-fail it). This is the fix for the whole
@@ -491,11 +502,11 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // internet (and new devices see "pool <dhcp-pool> is empty"). Users keep their DHCP IP instead.
     add(`:do { /ip hotspot user profile set [find name="dartbit-default"] add-mac-cookie=yes address-pool=none } on-error={}`);
     // Hotspot itself on the bridge
-    add(`:if ([:len [/ip hotspot find name="dartbit-hotspot"]] = 0) do={ /ip hotspot add name=dartbit-hotspot interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no }`);
+    add(`:do { :if ([:len [/ip hotspot find name="dartbit-hotspot"]] = 0) do={ /ip hotspot add name=dartbit-hotspot interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no } } on-error={}`);
     // Sync hotspot settings — idempotent, RouterOS handles no-op gracefully
-    add(`/ip hotspot set [find name="dartbit-hotspot"] interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no`);
+    add(`:do { /ip hotspot set [find name="dartbit-hotspot"] interface=${bridge} address-pool=dhcp-pool profile=hsprof-dartbit disabled=no } on-error={}`);
     // Remove any other hotspots on this interface (e.g. from other tools)
-    add(`:foreach h in=[/ip hotspot find interface="${bridge}"] do={ :if ([/ip hotspot get $h name] != "dartbit-hotspot") do={ /ip hotspot remove $h } }`);
+    add(`:foreach h in=[/ip hotspot find interface="${bridge}"] do={ :do { :if ([/ip hotspot get $h name] != "dartbit-hotspot") do={ /ip hotspot remove $h } } on-error={} }`);
     // Diagnostic logging
     add('');
 
