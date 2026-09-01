@@ -111,7 +111,7 @@ router.post('/stk', async (req: Request, res: Response) => {
       creds,
       phone,
       amount: pkg.price,
-      accountRef: 'Dartbit',
+      accountRef: normalizePhone(phone) || 'Dartbit',
       description: 'Internet',
       callbackUrl: `${BACKEND_URL}/hotspot/stk-callback/${tx.id}`,
     })

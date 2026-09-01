@@ -128,7 +128,7 @@ export async function stkPush(params: {
     PartyB: params.creds.shortcode,
     PhoneNumber: phone,
     CallBackURL: params.callbackUrl,
-    AccountReference: params.accountRef.slice(0, 12),
+    AccountReference: (params.accountRef.replace(/[^a-zA-Z0-9]/g, '') || 'Dartbit').slice(0, 12),
     TransactionDesc: params.description.slice(0, 13),
   });
 

@@ -235,7 +235,7 @@ router.post('/renew', authSubscriber, async (req: SubReq, res: Response) => {
     try {
       const result = await stkPush({
         creds, phone, amount: pkg.price,
-        accountRef: 'Dartbit', description: 'Renewal',
+        accountRef: subUsername || 'Dartbit', description: 'Renewal',
         callbackUrl: `${normalizeBackendUrl()}/hotspot/stk-callback/${tx.id}`,
       });
       await prisma.mpesaTransaction.update({ where: { id: tx.id }, data: { checkoutRequestId: result.checkoutRequestId, merchantRequestId: result.merchantRequestId } });

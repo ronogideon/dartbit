@@ -279,7 +279,7 @@ router.post('/prompt', async (req: AuthRequest, res: Response) => {
     try {
       const result = await stkPush({
         creds, phone: phoneRaw, amount,
-        accountRef: 'Dartbit', description: 'Subscription',
+        accountRef: sub.username || 'Dartbit', description: 'Subscription',
         callbackUrl: `${normalizeBackendUrl()}/hotspot/stk-callback/${tx.id}`,
       });
       await prisma.mpesaTransaction.update({

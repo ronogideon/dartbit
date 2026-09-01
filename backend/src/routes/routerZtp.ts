@@ -79,7 +79,6 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const dhcpStart  = cfg?.dhcpPoolStart    ?? '192.168.88.10';
     const dhcpEnd    = cfg?.dhcpPoolEnd      ?? '192.168.88.254';
     const lanSubnet  = cfg?.lanSubnet        ?? '192.168.88.0/24';
-    const dns        = cfg?.dnsServers       ?? '8.8.8.8,8.8.4.4';
     const pppoeLocal = cfg?.pppoeLocalAddress ?? '10.10.10.1';
     const pppoePool  = cfg?.pppoeRemotePool  ?? 'pppoe-pool';
     const pppoeStart = cfg?.pppoePoolStart   ?? '10.10.10.10';
@@ -108,7 +107,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.24 (comprehensive LB cleanup + abort-proof LB block; dns-name persisted)');
+    add('# Dartbit ZTP Script v1.5.25 (DNS via uplink gateway/peer resolver; DoH removed)');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -281,18 +280,18 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach d in=[/ip dhcp-server find interface="${bridge}"] do={ :if ([/ip dhcp-server get $d name] != "dartbit-dhcp") do={ /ip dhcp-server disable $d; :log info ("Dartbit: disabled conflicting DHCP server " . [/ip dhcp-server get $d name] . " on ${bridge}") } }`);
     // Enable router's DNS server so it can answer queries from clients. Larger cache because ALL
     // PPPoE + LAN clients now resolve through the router (PPPoE dns-server + DNS-redirect below).
-    // use-doh-server: resolve upstream over HTTPS/443 (DoH) to 1.1.1.1. Many uplinks here HIJACK plain
-    // port-53 DNS (public resolvers time out while ICMP works), which silently breaks resolution for
-    // every client; DoH tunnels DNS inside 443, which those uplinks don't touch. servers= stays as a
-    // fallback for uplinks that don't block 53. The static entries below let DoH bootstrap without
-    // needing to resolve its own hostname first.
-    add(`/ip dns set servers=${dns} allow-remote-requests=yes cache-size=8192KiB use-doh-server=https://1.1.1.1/dns-query verify-doh-cert=no`);
-    // Bootstrap statics so DoH can resolve its own endpoint. Remove ANY existing entry for these names
-    // first (defconf ships them WITHOUT our comment, so a plain add would abort with "entry already
-    // exists"), then re-add. Wrapped in :do/on-error so provisioning never aborts on this line.
-    add(`:do { :foreach s in=[/ip dns static find where name="cloudflare-dns.com" || name="one.one.one.one"] do={ /ip dns static remove $s } } on-error={}`);
-    add(`:do { /ip dns static add name=cloudflare-dns.com address=1.1.1.1 comment="Dartbit DoH bootstrap" } on-error={}`);
-    add(`:do { /ip dns static add name=one.one.one.one address=1.1.1.1 comment="Dartbit DoH bootstrap" } on-error={}`);
+    // DNS: use the uplink's own resolver (the gateway/ISP DNS handed out via DHCP), NOT DoH. The ISP
+    // blocks port-53 to PUBLIC resolvers (8.8.8.8) — which is why DoH was used — but the gateway DNS it
+    // hands out (e.g. 192.168.x.1) rides the ISP's own link and isn't blocked. DoH to 1.1.1.1 was
+    // resetting/timing out here ("DoH server connection error"), which intermittently broke ALL
+    // resolution — captive-portal popup, heartbeat, and reporter fetches. We drop DoH + the blocked
+    // static servers and rely on peer DNS from the WAN dhcp-clients (set below).
+    add(`/ip dns set servers="" allow-remote-requests=yes cache-size=8192KiB use-doh-server="" verify-doh-cert=no`);
+    // Feed each Dartbit-managed WAN dhcp-client's peer (gateway) DNS into the resolver. Covers the
+    // single-WAN "Dartbit WAN" client (created by onboarding) and, on reprovision, any LB clients.
+    add(`:foreach c in=[/ip dhcp-client find where comment~"Dartbit"] do={ :do { /ip dhcp-client set $c use-peer-dns=yes } on-error={} }`);
+    // Clean up stale DoH bootstrap statics from earlier versions (no-op if absent).
+    add(`:do { :foreach s in=[/ip dns static find where comment="Dartbit DoH bootstrap"] do={ /ip dns static remove $s } } on-error={}`);
     add('');
 
     // 4. NAT
@@ -353,10 +352,10 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
       // w2 stays add-default-route=no. The LB machinery (mangle/NAT/script/scheduler) is installed but
       // ACTIVATION is left to the 30s dartbit-lb scheduler, which fires AFTER the import completes and
       // then promotes both WANs to the distance-250 safety nets + balanced routing on its own.
-      add(`:if ([:len [/ip dhcp-client find interface=\"${w1}\"]] = 0) do={ :do { /ip dhcp-client add interface=${w1} add-default-route=yes default-route-distance=1 use-peer-dns=no comment=\"Dartbit LB wan1\" } on-error={} }`);
-      add(`/ip dhcp-client set [find interface=\"${w1}\"] add-default-route=yes default-route-distance=1 use-peer-dns=no`);
-      add(`:if ([:len [/ip dhcp-client find interface=\"${w2}\"]] = 0) do={ :do { /ip dhcp-client add interface=${w2} add-default-route=no use-peer-dns=no comment=\"Dartbit LB wan2\" } on-error={} }`);
-      add(`/ip dhcp-client set [find interface=\"${w2}\"] add-default-route=no use-peer-dns=no`);
+      add(`:if ([:len [/ip dhcp-client find interface=\"${w1}\"]] = 0) do={ :do { /ip dhcp-client add interface=${w1} add-default-route=yes default-route-distance=1 use-peer-dns=yes comment=\"Dartbit LB wan1\" } on-error={} }`);
+      add(`/ip dhcp-client set [find interface=\"${w1}\"] add-default-route=yes default-route-distance=1 use-peer-dns=yes`);
+      add(`:if ([:len [/ip dhcp-client find interface=\"${w2}\"]] = 0) do={ :do { /ip dhcp-client add interface=${w2} add-default-route=no use-peer-dns=yes comment=\"Dartbit LB wan2\" } on-error={} }`);
+      add(`/ip dhcp-client set [find interface=\"${w2}\"] add-default-route=no use-peer-dns=yes`);
       // PCC connection + routing marks. Only NEW (no-mark) connections are classified; established ones
       // keep their pinned mark. dst-address-type=!local skips router-bound traffic.
       add(`:foreach m in=[/ip firewall mangle find comment~\"Dartbit LB\"] do={ /ip firewall mangle remove \$m }`);
