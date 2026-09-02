@@ -1,10 +1,26 @@
 'use client';
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import dynamic from 'next/dynamic';
 import { useQuery } from '@tanstack/react-query';
 import { getSubscribers, getRouters, getPayments, getOnlineSessions, getSmsBalance, getExpenseSummary } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
-import DashboardAnalytics from '@/components/DashboardAnalytics';
+
+// Recharts is heavy (~100KB+), only shown to non-technicians, and never the LCP element. Loading it
+// lazily keeps it out of the dashboard's initial JS bundle — the skeleton (sized to match the real
+// panel to avoid layout shift) shows while both the chunk and its data resolve, then swaps in.
+const DashboardAnalytics = dynamic(() => import('@/components/DashboardAnalytics'), {
+  ssr: false,
+  loading: () => (
+    <div className="mb-8">
+      <div className="flex items-center justify-between mb-4">
+        <div className="h-6 w-44 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
+        <div className="h-8 w-56 bg-gray-100 dark:bg-gray-800 rounded animate-pulse" />
+      </div>
+      <div className="card p-8 h-64 animate-pulse" />
+    </div>
+  ),
+});
 import { useAuth } from '@/lib/auth';
 import SearchInput from '@/components/ui/SearchInput';
 import SubscriberLink from '@/components/ui/SubscriberLink';

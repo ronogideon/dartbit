@@ -28,21 +28,6 @@ export function formatExpiryRelative(expiresAt: string | null | undefined): stri
   return `in ${val} ${plural}`;
 }
 
-// Tiered expiry for colored status pills:
-//  - 'none'    → no expiry set (render a dash)
-//  - 'expired' → past expiry (red)
-//  - 'soon'    → <= 5 days left (orange)
-//  - 'ok'      → > 5 days left (green)
-export type ExpiryTier = 'none' | 'expired' | 'soon' | 'ok';
-export function expiryInfo(expiresAt: string | null | undefined): { tier: ExpiryTier; text: string } {
-  if (!expiresAt) return { tier: 'none', text: '—' };
-  const ms = new Date(expiresAt).getTime() - Date.now();
-  if (ms <= 0) return { tier: 'expired', text: 'Expired' };
-  const days = ms / 86400000;
-  const tier: ExpiryTier = days >= 7 ? 'ok' : 'soon';
-  return { tier, text: formatExpiryRelative(expiresAt) };
-}
-
 // Traffic-light expiry badge: red = expired, yellow = under 7 days, green = 7+ days, with brighter
 // hues the longer the remaining time. Returns the text plus a ready-to-use Tailwind class so every
 // surface (admin tables, customer portal) renders it identically.
