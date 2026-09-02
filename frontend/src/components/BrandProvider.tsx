@@ -3,7 +3,23 @@ import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/lib/auth';
 import { getBranding } from '@/lib/api';
-import { fontStack } from '@/lib/fonts';
+import { fontStack, singleFontHref } from '@/lib/fonts';
+
+// Ensures exactly one <link> for the tenant's chosen webfont is present (or none for the system
+// default). Called from BrandProvider once branding resolves, so the initial paint uses the system
+// font (fast) and the single branded font swaps in when it arrives.
+function setTenantFontLink(href: string) {
+  const id = 'tenant-font';
+  let link = document.getElementById(id) as HTMLLinkElement | null;
+  if (!href) { if (link) link.remove(); return; }
+  if (!link) {
+    link = document.createElement('link');
+    link.id = id;
+    link.rel = 'stylesheet';
+    document.head.appendChild(link);
+  }
+  if (link.href !== href) link.href = href;
+}
 
 // Applies the tenant's chosen theme colour + font across the admin app at runtime. Because the
 // app's Tailwind classes bake in blue at build time, we inject a <style> block that re-points the
@@ -47,9 +63,13 @@ export default function BrandProvider({ children }: { children: React.ReactNode 
 
     if (isSuper || (!color && !font)) {
       if (el) el.remove();
+      setTenantFontLink('');
       document.documentElement.style.removeProperty('--brand-font');
       return;
     }
+
+    // Load only the tenant's chosen family (empty href for the system default → no download).
+    setTenantFontLink(singleFontHref(font));
 
     if (!el) { el = document.createElement('style'); el.id = styleId; document.head.appendChild(el); }
     const c = color && /^#[0-9a-f]{6}$/i.test(color) ? color : '#2563eb';
