@@ -4,7 +4,7 @@ import api from '@/lib/api';
 import { login as adminLogin, forgotPassword, resetPasswordWithCode } from '@/lib/api';
 import toast from 'react-hot-toast';
 import { fontStack } from '@/lib/fonts';
-import { singleFontHref } from '@/lib/fonts';
+import { googleFontsHref } from '@/lib/fonts';
 import { expiryBadge } from '@/lib/format';
 import { Wifi, Calendar, Download, Upload, LogOut, Clock, RefreshCw, Zap } from 'lucide-react';
 
@@ -48,21 +48,20 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
   const [renewing, setRenewing] = useState(false);
 
   useEffect(() => {
+    // Load the tenant fonts so the chosen fontFamily actually renders on the subdomain portal
+    // (without this the font-family was set but the webfont never downloaded → system fallback).
+    if (typeof document !== 'undefined' && !document.getElementById('portal-fonts')) {
+      const link = document.createElement('link');
+      link.id = 'portal-fonts';
+      link.rel = 'stylesheet';
+      link.href = googleFontsHref();
+      document.head.appendChild(link);
+    }
     api.get(`/portal/tenant${qs}`).then(r => {
       if (r.data.success) {
         const t = r.data.tenant;
         setTenantName(t.name);
         setBrand({ logoUrl: t.logoUrl, themeColor: t.themeColor, fontFamily: t.fontFamily, supportPhone: t.supportPhone });
-        // Load only the tenant's chosen font (skips entirely for the system default) — one webfont
-        // download instead of all 15. Same host as before, so the walled-garden allowlist is unchanged.
-        const href = singleFontHref(t.fontFamily);
-        if (href && typeof document !== 'undefined' && !document.getElementById('portal-fonts')) {
-          const link = document.createElement('link');
-          link.id = 'portal-fonts';
-          link.rel = 'stylesheet';
-          link.href = href;
-          document.head.appendChild(link);
-        }
       }
     }).catch(() => {});
     // If the unified login already authenticated a customer, pick up the handoff token.

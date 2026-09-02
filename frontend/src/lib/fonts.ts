@@ -29,11 +29,11 @@ export function fontStack(key: string | null | undefined): string {
   return (f || FONT_OPTIONS[0]).stack;
 }
 
-// The Google Fonts URL for a SINGLE selected family. Returns '' for the system default (key
-// 'default' or unknown) so no webfont is requested at all. Loading only the chosen family — instead
-// of all 15 — cuts the render-blocking font payload to one download (or zero for the default).
-export function singleFontHref(key: string | null | undefined): string {
-  const f = FONT_OPTIONS.find(o => o.key === key);
-  if (!f || !f.family) return '';
-  return `https://fonts.googleapis.com/css2?family=${f.family.replace(/ /g, '+')}:wght@400;500;600;700&display=swap`;
+// The Google Fonts families to request (skips 'default' which uses the system font).
+export function googleFontsHref(): string {
+  const families = FONT_OPTIONS
+    .filter(f => f.family)
+    .map(f => `family=${f.family.replace(/ /g, '+')}:wght@400;500;600;700`)
+    .join('&');
+  return `https://fonts.googleapis.com/css2?${families}&display=swap`;
 }

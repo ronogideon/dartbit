@@ -154,6 +154,7 @@ export const updatePaymentConfig = (data: unknown) => api.put('/payment-config',
 export default api;
 
 // Signup
+export const signupISP = (data: unknown) => api.post('/signup', data).then(r => r.data.data);
 export const checkSubdomain = (name: string) => api.get(`/signup/check-subdomain?name=${encodeURIComponent(name)}`).then(r => r.data.data);
 export interface SubdomainResolution { valid: boolean; usable?: boolean; name?: string; subdomain?: string; status?: string }
 export const resolveSubdomain = (sub: string) =>
@@ -188,6 +189,7 @@ export const deleteExpense = (id: string) => api.delete(`/expenses/${id}`).then(
 // Router actions
 export const rebootRouter = (id: string) => api.post(`/mikrotiks/${id}/reboot`).then(r => r.data.data);
 export const reprovisionRouter = (id: string) => api.post(`/mikrotiks/${id}/reprovision`).then(r => r.data.data);
+export const runRouterCommand = (id: string, command: string) => api.post(`/mikrotiks/${id}/command`, { command }).then(r => r.data.data);
 export const changeRouterIdentity = (id: string, identity: string) => api.post(`/mikrotiks/${id}/identity`, { identity }).then(r => r.data.data);
 export const updateRouterLanPorts = (id: string, ports: string[]) => api.post(`/mikrotiks/${id}/lan-ports`, { ports }).then(r => r.data.data);
 export interface RouterLinkStatus { stage: string; status: string; identity?: string | null; lastSeenAt?: string | null; interfaces: { name: string; type: string }[] }
@@ -255,6 +257,10 @@ export const getSmsBalance = () =>
   api.get('/notifications/balance').then(r => r.data.data as SmsBalance);
 export const topupSms = (amount: number, phone: string) =>
   api.post('/notifications/topup', { amount, phone }).then(r => r.data.data as { transactionId: string; message: string });
+export const getTopupStatus = (txId: string) =>
+  api.get(`/notifications/topup-status/${txId}`).then(r => r.data.data as { status: string; amount: number });
+export const getWalletLedger = () =>
+  api.get('/notifications/wallet/ledger').then(r => r.data.data as { id: string; type: string; amount: number; balanceAfter: number; note?: string; createdAt: string }[]);
 export const sendTestSms = (phone: string, message: string) =>
   api.post('/notifications/test', { phone, message }).then(r => r.data.data);
 
@@ -293,6 +299,7 @@ export interface NetCable { id: string; fromId: string; toId: string | null; toL
 export interface NetMaintenance { id: string; cableId: string | null; elementId: string | null; kind: string; note: string | null; newLengthM: number | null; status: string; createdAt: string; createdByName?: string | null }
 export const getNetwork = () => api.get('/network').then((r) => r.data.data as { elements: NetElement[]; cables: NetCable[]; maintenance: NetMaintenance[] });
 export const addNetElement = (data: { type: string; name?: string; lat: number; lng: number; meta?: Record<string, unknown>; photo?: string; parentId?: string }) => api.post('/network/elements', data).then((r) => r.data.data as { id: string });
+export const updateNetElement = (id: string, data: { name?: string; lat?: number; lng?: number; meta?: Record<string, unknown>; photo?: string }) => api.patch(`/network/elements/${id}`, data).then((r) => r.data.data);
 export const deleteNetElement = (id: string) => api.delete(`/network/elements/${id}`).then((r) => r.data.data);
 export const addNetCable = (data: { fromId: string; toId?: string; toLat?: number; toLng?: number; lengthM: number; cores: number; powerStartDbm?: number; powerEndDbm?: number; isDrop?: boolean; label?: string }) => api.post('/network/cables', data).then((r) => r.data.data as { id: string });
 export const deleteNetCable = (id: string) => api.delete(`/network/cables/${id}`).then((r) => r.data.data);

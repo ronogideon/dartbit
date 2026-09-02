@@ -1,35 +1,10 @@
 'use client';
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import dynamic from 'next/dynamic';
 import { useQuery } from '@tanstack/react-query';
 import { getSubscribers, getRouters, getPayments, getOnlineSessions, getSmsBalance, getExpenseSummary } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
-import LazyMount from '@/components/LazyMount';
-
-// Skeleton sized to match the real analytics panel so mounting it later causes no layout shift.
-// Reused as both the dynamic-import fallback and the pre-scroll placeholder.
-function AnalyticsSkeleton() {
-  return (
-    <div className="mb-8">
-      <div className="flex items-center justify-between mb-4">
-        <div className="h-6 w-44 bg-gray-200 dark:bg-gray-800 rounded animate-pulse" />
-        <div className="h-8 w-56 bg-gray-100 dark:bg-gray-800 rounded animate-pulse" />
-      </div>
-      <div className="card p-8 h-64 animate-pulse" />
-    </div>
-  );
-}
-
-// Recharts is heavy (~100KB+), only shown to non-technicians, and never the LCP element. It's both
-// code-split (dynamic import) AND gated behind LazyMount below, so its chunk isn't fetched or
-// executed until the panel scrolls into view — keeping it entirely out of the initial load window,
-// which is what actually removes it from Total Blocking Time (the plain code-split alone didn't,
-// because the panel used to render on mount).
-const DashboardAnalytics = dynamic(() => import('@/components/DashboardAnalytics'), {
-  ssr: false,
-  loading: () => <AnalyticsSkeleton />,
-});
+import DashboardAnalytics from '@/components/DashboardAnalytics';
 import { useAuth } from '@/lib/auth';
 import SearchInput from '@/components/ui/SearchInput';
 import SubscriberLink from '@/components/ui/SubscriberLink';
@@ -242,11 +217,7 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {!isTechnician && (
-        <LazyMount placeholder={<AnalyticsSkeleton />}>
-          <DashboardAnalytics />
-        </LazyMount>
-      )}
+      {!isTechnician && <DashboardAnalytics />}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Recent Payments */}
