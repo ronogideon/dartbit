@@ -107,7 +107,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.25 (DNS via uplink gateway/peer resolver; DoH removed)');
+    add('# Dartbit ZTP Script v1.5.26 (adds boot-time hotspot re-assert; DNS via uplink gateway/peer resolver)');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -657,6 +657,27 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     //     user (which exists only while valid), so unknown/expired devices are always re-prompted.
     add('# 8c. Force hotspot to re-bind to bridge (picks up newly added ports)');
     add(`:foreach h in=[/ip hotspot find name="dartbit-hotspot"] do={ /ip hotspot set $h address-pool=dhcp-pool profile=hsprof-dartbit; /ip hotspot disable $h; :delay 500ms; /ip hotspot enable $h }`);
+    add('');
+
+    // 8c-2. Re-assert the same hotspot binding automatically after a REBOOT.
+    //   Symptom this fixes: the captive-portal popup works after provisioning, then stops after a
+    //   power cut, and only a reprovision brings it back. Every Dartbit scheduler is interval-based,
+    //   so nothing re-ran the one-shot force-rebind above (8c) — at boot the hotspot server comes up
+    //   on whatever ordering RouterOS gives it. If the bridge/DHCP/IP isn't settled when the hotspot
+    //   binds, the server ends up not intercepting (classic MikroTik "hotspot invalid after reboot"),
+    //   and the DNS resolver can come up with no servers because the WAN dhcp-clients hadn't leased
+    //   yet to supply peer DNS.
+    //   Fix: run the fix-relevant subset of a reprovision on a start-time=startup scheduler, after a
+    //   delay long enough for uplinks to lease and the bridge to settle.
+    //   Deliberately does NOT touch login-by / use-radius: on RADIUS-enabled routers those are set
+    //   later (§RADIUS) to mac,http-chap,http-pap + use-radius=yes, and blindly re-asserting the
+    //   non-RADIUS values here would silently regress hotspot auth after every reboot.
+    //   Every step is wrapped in :do{}on-error={} so one failure can't abort the rest.
+    add('# 8c-2. Boot-time re-assert (fixes popup dying after a power cut)');
+    add(`:foreach s in=[/system scheduler find name="dartbit-boot"] do={ /system scheduler remove $s }`);
+    add(`:foreach s in=[/system script find name="dartbit-boot"] do={ /system script remove $s }`);
+    add(`/system script add name=dartbit-boot policy=read,write,test source={:delay 60s; :do { /ip dns set allow-remote-requests=yes } on-error={}; :foreach c in=[/ip dhcp-client find where comment~\"Dartbit\"] do={ :do { /ip dhcp-client set \$c use-peer-dns=yes } on-error={} }; :do { /ip hotspot profile set [find name=\"hsprof-dartbit\"] hotspot-address=${lanGw} dns-name=${hotspotDnsName} } on-error={}; :local hdir \"hotspot\"; :if ([:len [/file find where name=\"flash\"]] > 0) do={ :set hdir \"flash/hotspot\" }; :do { /ip hotspot profile set [find name=\"hsprof-dartbit\"] html-directory=\$hdir; :local got [/ip hotspot profile get [find name=\"hsprof-dartbit\"] html-directory]; :if (\$got != \$hdir) do={ /ip hotspot profile set [find name=\"hsprof-dartbit\"] html-directory=\"hotspot\" } } on-error={}; :do { :foreach h in=[/ip hotspot find name=\"dartbit-hotspot\"] do={ /ip hotspot set \$h address-pool=dhcp-pool profile=hsprof-dartbit; /ip hotspot disable \$h; :delay 2s; /ip hotspot enable \$h } } on-error={}; :log info \"Dartbit: boot re-assert complete\"}`);
+    add(`/system scheduler add name=dartbit-boot start-time=startup interval=0 on-event="/system script run dartbit-boot" comment="Dartbit boot re-assert"`);
     add('');
 
     // === Heartbeat ===
