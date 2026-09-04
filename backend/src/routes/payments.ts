@@ -14,6 +14,13 @@ const paymentSchema = z.object({
   reference: z.string().optional(),
   mpesaCode: z.string().optional(),
   notes: z.string().optional(),
+  // Which kind of payment this is. PACKAGE = payment for an internet package: the chosen package
+  // is assigned to the subscriber and expiry is extended by THAT package's validity. OTHER = any
+  // non-package payment (installation, equipment, support call-out...) — it never touches expiry
+  // and requires `notes` to record the reason.
+  kind: z.enum(['PACKAGE', 'OTHER']).default('PACKAGE'),
+  // The package actually paid for. Only meaningful when kind === 'PACKAGE'.
+  packageId: z.string().optional(),
 });
 
 router.get('/', async (req: AuthRequest, res: Response) => {
@@ -97,21 +104,62 @@ router.post('/', async (req: AuthRequest, res: Response) => {
 
     if (!subscriber) return sendError(res, 'Subscriber not found', 404);
 
+    const { kind, packageId: paidPackageId, ...paymentFields } = parsed.data;
+
+    // A non-package payment (installation, equipment, support...) must say what it was for —
+    // otherwise the ledger fills with unexplained amounts that nobody can reconcile later.
+    if (kind === 'OTHER' && !paymentFields.notes?.trim()) {
+      return sendError(res, 'A reason is required for payments that are not for a package', 400);
+    }
+
+    // Resolve the package actually being paid for. Previously this always used the subscriber's
+    // CURRENTLY ASSIGNED package, so paying for a 30-day plan while still assigned a 1-day one
+    // extended expiry by a single day. Now the package chosen at payment time wins, and it is only
+    // consulted for PACKAGE payments.
+    let paidPackage = null as { id: string; validityMinutes: number } | null;
+    if (kind === 'PACKAGE') {
+      if (paidPackageId) {
+        const pkg = await prisma.package.findFirst({
+          where: { id: paidPackageId, tenantId },
+          select: { id: true, validityMinutes: true },
+        });
+        if (!pkg) return sendError(res, 'Package not found', 404);
+        paidPackage = pkg;
+      } else if (subscriber.package) {
+        paidPackage = { id: subscriber.package.id, validityMinutes: subscriber.package.validityMinutes };
+      } else {
+        return sendError(res, 'Select a package for this payment, or record it as an other payment with a reason', 400);
+      }
+    }
+
     const payment = await prisma.payment.create({
-      data: { ...parsed.data, source: 'MANUAL', packageId: subscriber.packageId || null, tenantId },
+      data: {
+        ...paymentFields,
+        source: 'MANUAL',
+        // OTHER payments are deliberately not attributed to a package so income-by-package
+        // analytics stay honest.
+        packageId: kind === 'PACKAGE' ? (paidPackage?.id ?? null) : null,
+        tenantId,
+      },
     });
 
-    // Extend expiry automatically if subscriber has a package
-    if (subscriber.package) {
+    // Extend expiry only for package payments, by the validity of the package that was paid for.
+    if (kind === 'PACKAGE' && paidPackage) {
       const now = new Date();
       const currentExpiry = subscriber.expiresAt && subscriber.expiresAt > now
         ? subscriber.expiresAt
         : now;
-      const newExpiry = new Date(currentExpiry.getTime() + subscriber.package.validityMinutes * 60 * 1000);
+      const newExpiry = new Date(currentExpiry.getTime() + paidPackage.validityMinutes * 60 * 1000);
 
       await prisma.subscriber.update({
         where: { id: subscriber.id },
-        data: { expiresAt: newExpiry, isActive: true },
+        data: {
+          expiresAt: newExpiry,
+          isActive: true,
+          // Paying for a package makes it the subscriber's current plan, so renewals and the
+          // router-side profile follow what they actually bought.
+          packageId: paidPackage.id,
+        },
       });
 
       // Mirror the new expiry into RADIUS so gateway-managed routers enforce the extended window.

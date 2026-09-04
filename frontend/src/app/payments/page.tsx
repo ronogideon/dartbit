@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getPayments, getPaymentSummary, createPayment, editPayment, deletePayment, getSubscribers, getPromptTarget, promptPayment, getPromptStatus, type PromptTarget } from '@/lib/api';
+import { getPayments, getPaymentSummary, createPayment, editPayment, deletePayment, getSubscribers, getPromptTarget, promptPayment, getPromptStatus, getPackages, type PromptTarget } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
@@ -15,9 +15,21 @@ interface Payment {
   id: string; amount: number; method: string; source?: string; reference?: string; mpesaCode?: string;
   notes?: string; createdAt: string; subscriber?: { id?: string; fullName: string; username: string };
 }
-interface Subscriber { id: string; fullName: string; username: string; }
+interface Subscriber { id: string; fullName: string; username: string; packageId?: string | null; }
+interface Pkg { id: string; name: string; price: number; validityMinutes: number; isActive?: boolean; }
 
-const emptyForm = { subscriberId: '', amount: '', method: 'MANUAL', reference: '', mpesaCode: '', notes: '' };
+// kind: PACKAGE = payment for an internet package (assigns the package and extends expiry by ITS
+// validity). OTHER = anything else (installation, equipment, support) — never touches expiry and
+// requires a reason, which is stored in notes.
+const emptyForm = { subscriberId: '', amount: '', method: 'MANUAL', reference: '', mpesaCode: '', notes: '', kind: 'PACKAGE' as 'PACKAGE' | 'OTHER', packageId: '' };
+
+// Human-readable validity so the tenant can see what they're granting before recording.
+function validityLabel(mins: number): string {
+  if (mins % 43200 === 0) return `${mins / 43200} month${mins / 43200 > 1 ? 's' : ''}`;
+  if (mins % 1440 === 0) return `${mins / 1440} day${mins / 1440 > 1 ? 's' : ''}`;
+  if (mins % 60 === 0) return `${mins / 60} hr`;
+  return `${mins} min`;
+}
 
 // KES formatter — same as the expenses page tiles for visual consistency.
 const kes = (n: number) => `KES ${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
@@ -116,6 +128,7 @@ export default function PaymentsPage() {
   const { data: payments = [], isPending } = useQuery({ queryKey: ['payments'], queryFn: getPayments });
   const { data: summary } = useQuery({ queryKey: ['payment-summary'], queryFn: getPaymentSummary });
   const { data: subscribers = [] } = useQuery({ queryKey: ['subscribers'], queryFn: getSubscribers });
+  const { data: packages = [] } = useQuery({ queryKey: ['packages'], queryFn: getPackages });
 
   const createMut = useMutation({
     mutationFn: createPayment,
@@ -133,9 +146,56 @@ export default function PaymentsPage() {
     onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed to delete payment'),
   });
 
+  // Selecting a subscriber prefills their current package (and therefore the amount), so the common
+  // case — renewing the plan they're already on — is a two-click operation.
+  const onPickSubscriber = (id: string) => {
+    const sub = (subscribers as Subscriber[]).find(x => x.id === id);
+    const pkg = sub?.packageId ? (packages as Pkg[]).find(p => p.id === sub.packageId) : undefined;
+    setForm(f => ({
+      ...f,
+      subscriberId: id,
+      packageId: pkg ? pkg.id : '',
+      amount: f.kind === 'PACKAGE' && pkg ? String(pkg.price) : f.amount,
+    }));
+  };
+
+  // Choosing a package always refreshes the amount to that package's price.
+  const onPickPackage = (pkgId: string) => {
+    const pkg = (packages as Pkg[]).find(p => p.id === pkgId);
+    setForm(f => ({ ...f, packageId: pkgId, amount: pkg ? String(pkg.price) : f.amount }));
+  };
+
+  // Switching to OTHER clears the package attribution and the prefilled amount, because an "other"
+  // payment is deliberately not tied to a plan and must not extend expiry.
+  const onPickKind = (kind: 'PACKAGE' | 'OTHER') => {
+    setForm(f => {
+      if (kind === 'OTHER') return { ...f, kind, packageId: '', amount: '' };
+      const sub = (subscribers as Subscriber[]).find(x => x.id === f.subscriberId);
+      const pkg = sub?.packageId ? (packages as Pkg[]).find(p => p.id === sub.packageId) : undefined;
+      return { ...f, kind, packageId: pkg ? pkg.id : '', amount: pkg ? String(pkg.price) : '' };
+    });
+  };
+
+  const selectedPkg = (packages as Pkg[]).find(p => p.id === form.packageId);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    createMut.mutate({ ...form, amount: Number(form.amount), reference: form.reference || undefined, mpesaCode: form.mpesaCode || undefined, notes: form.notes || undefined });
+    if (form.kind === 'PACKAGE' && !form.packageId) {
+      return toast.error('Select the package being paid for, or switch to Other payment');
+    }
+    if (form.kind === 'OTHER' && !form.notes.trim()) {
+      return toast.error('Enter a reason for this payment');
+    }
+    createMut.mutate({
+      subscriberId: form.subscriberId,
+      amount: Number(form.amount),
+      method: form.method,
+      kind: form.kind,
+      packageId: form.kind === 'PACKAGE' ? form.packageId : undefined,
+      reference: form.reference || undefined,
+      mpesaCode: form.mpesaCode || undefined,
+      notes: form.notes || undefined,
+    });
   };
 
   const openEdit = (p: Payment) => { setEditing(p); setEditForm({ amount: String(p.amount), notes: p.notes || '' }); };
@@ -269,11 +329,45 @@ export default function PaymentsPage() {
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="label">Subscriber</label>
-            <select className="input" value={form.subscriberId} onChange={e => setForm(f => ({ ...f, subscriberId: e.target.value }))} required>
+            <select className="input" value={form.subscriberId} onChange={e => onPickSubscriber(e.target.value)} required>
               <option value="">-- Select Subscriber --</option>
               {(subscribers as Subscriber[]).map(s => <option key={s.id} value={s.id}>{s.fullName} ({s.username})</option>)}
             </select>
           </div>
+
+          {/* What is being paid for. Package is the default: it assigns the plan and extends expiry
+              by that plan's validity. Other is for non-package income and never touches expiry. */}
+          <div>
+            <label className="label">Payment for</label>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => onPickKind('PACKAGE')}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm border transition-colors ${form.kind === 'PACKAGE' ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300'}`}>
+                Internet package
+              </button>
+              <button type="button" onClick={() => onPickKind('OTHER')}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm border transition-colors ${form.kind === 'OTHER' ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300'}`}>
+                Other payment
+              </button>
+            </div>
+          </div>
+
+          {form.kind === 'PACKAGE' && (
+            <div>
+              <label className="label">Package</label>
+              <select className="input" value={form.packageId} onChange={e => onPickPackage(e.target.value)} required>
+                <option value="">-- Select Package --</option>
+                {(packages as Pkg[]).filter(p => p.isActive !== false).map(p => (
+                  <option key={p.id} value={p.id}>{p.name} — KES {p.price.toLocaleString()} / {validityLabel(p.validityMinutes)}</option>
+                ))}
+              </select>
+              {selectedPkg && (
+                <p className="text-xs text-gray-500 mt-1">
+                  Extends expiry by {validityLabel(selectedPkg.validityMinutes)} and sets this as the subscriber&apos;s package.
+                </p>
+              )}
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="label">Amount (KES)</label>
@@ -296,8 +390,18 @@ export default function PaymentsPage() {
             </div>
           </div>
           <div>
-            <label className="label">Notes</label>
-            <textarea className="input" rows={2} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+            <label className="label">{form.kind === 'OTHER' ? 'Reason for payment' : 'Notes'}</label>
+            <textarea
+              className="input"
+              rows={2}
+              required={form.kind === 'OTHER'}
+              placeholder={form.kind === 'OTHER' ? 'e.g. Installation fee, router purchase, relocation…' : 'Optional'}
+              value={form.notes}
+              onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+            />
+            {form.kind === 'OTHER' && (
+              <p className="text-xs text-gray-500 mt-1">This payment will not change the subscriber&apos;s expiry.</p>
+            )}
           </div>
           <div className="flex gap-3 justify-end pt-2">
             <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button>

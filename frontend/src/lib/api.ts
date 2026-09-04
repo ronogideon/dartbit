@@ -276,11 +276,23 @@ export interface MessageRow {
   createdAt: string;
 }
 export const getMessages = () => api.get('/messages').then(r => r.data.data as MessageRow[]);
-export const sendMessage = (recipient: string, body: string) =>
-  api.post('/messages', { type: 'SMS', recipient, body }).then(r => r.data.data as MessageRow);
+// subscriberId is optional: set when the tenant picked a subscriber from the dropdown, so the sent
+// message links back to their profile (and placeholders resolve from the exact subscriber).
+export const sendMessage = (recipient: string, body: string, subscriberId?: string) =>
+  api.post('/messages', { type: 'SMS', recipient, body, subscriberId }).then(r => r.data.data as MessageRow);
 export interface BroadcastResult { matched: number; sent: number; failed: number }
-export const broadcastMessage = (data: { body: string; routerIds?: string[]; services?: string[]; statuses?: string[] }) =>
+export interface AudienceFilters {
+  routerIds?: string[];
+  services?: string[];
+  statuses?: string[];
+  packageIds?: string[];
+  expiringSoon?: boolean;
+}
+export const broadcastMessage = (data: { body: string } & AudienceFilters) =>
   api.post('/messages/broadcast', data).then(r => r.data.data as BroadcastResult);
+// How many subscribers the current filter selection reaches — shown before sending.
+export const countBroadcastRecipients = (data: AudienceFilters) =>
+  api.post('/messages/broadcast/count', data).then(r => r.data.data as { count: number });
 
 export interface Announcement { id: string; title: string; body: string; level: 'INFO' | 'WARNING' | 'CRITICAL'; createdAt: string; }
 export const getAnnouncements = () => api.get('/announcements').then((r) => r.data.data as Announcement[]);

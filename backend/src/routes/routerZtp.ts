@@ -107,7 +107,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.27 (LB no longer breaks hotspot popup; guarded conntrack flush)');
+    add('# Dartbit ZTP Script v1.5.28 (Cloudflare DoH with peer-DNS fallback; LB hotspot-popup fix)');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -280,18 +280,122 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach d in=[/ip dhcp-server find interface="${bridge}"] do={ :if ([/ip dhcp-server get $d name] != "dartbit-dhcp") do={ /ip dhcp-server disable $d; :log info ("Dartbit: disabled conflicting DHCP server " . [/ip dhcp-server get $d name] . " on ${bridge}") } }`);
     // Enable router's DNS server so it can answer queries from clients. Larger cache because ALL
     // PPPoE + LAN clients now resolve through the router (PPPoE dns-server + DNS-redirect below).
-    // DNS: use the uplink's own resolver (the gateway/ISP DNS handed out via DHCP), NOT DoH. The ISP
-    // blocks port-53 to PUBLIC resolvers (8.8.8.8) — which is why DoH was used — but the gateway DNS it
-    // hands out (e.g. 192.168.x.1) rides the ISP's own link and isn't blocked. DoH to 1.1.1.1 was
-    // resetting/timing out here ("DoH server connection error"), which intermittently broke ALL
-    // resolution — captive-portal popup, heartbeat, and reporter fetches. We drop DoH + the blocked
-    // static servers and rely on peer DNS from the WAN dhcp-clients (set below).
-    add(`/ip dns set servers="" allow-remote-requests=yes cache-size=8192KiB use-doh-server="" verify-doh-cert=no`);
-    // Feed each Dartbit-managed WAN dhcp-client's peer (gateway) DNS into the resolver. Covers the
-    // single-WAN "Dartbit WAN" client (created by onboarding) and, on reprovision, any LB clients.
-    add(`:foreach c in=[/ip dhcp-client find where comment~"Dartbit"] do={ :do { /ip dhcp-client set $c use-peer-dns=yes } on-error={} }`);
-    // Clean up stale DoH bootstrap statics from earlier versions (no-op if absent).
-    add(`:do { :foreach s in=[/ip dns static find where comment="Dartbit DoH bootstrap"] do={ /ip dns static remove $s } } on-error={}`);
+    add('');
+
+    // NOTE: we do NOT remove /radius entries here. Section 8e removes+re-adds them atomically when
+    // RADIUS is active. Stripping them unconditionally here would wipe a working router's RADIUS
+    // config whenever the backend's RADIUS env switch is momentarily off — and never restore it,
+    // leaving the router sending nothing to FreeRADIUS ("times out, no requests").
+    add('');
+
+    // 0b. Identity — make the MikroTik system identity match the dashboard name, so there's ONE name
+    // across the whole system. Renaming the router in the dashboard updates the identity on next push.
+    const identity = (r.name || 'dartbit').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32) || 'dartbit';
+    add(`/system identity set name="${identity}"`);
+    add('');
+
+    // 1. Bridge
+    add('# 1. Bridge');
+    add(`:if ([:len [/interface bridge find name="${bridge}"]] = 0) do={ /interface bridge add name=${bridge} comment="Dartbit LAN" }`);
+    // Runtime WAN detection: the interface carrying the active default route (resolving "gw%iface"
+    // notation and PPPoE-client WANs to the physical port). Used ONLY to keep the live uplink out of
+    // the bridge. We do NOT touch the WAN's DHCP client or default route — every MikroTik ships with
+    // its uplink (ether1) already working from defconf, and disturbing it mid-provision drops the
+    // router's own internet and breaks the fetches that follow. Leave the uplink exactly as it is.
+    add(`:global wandet ""; :do { :local rt [/ip route find where dst-address="0.0.0.0/0" and active]; :if ([:len $rt] > 0) do={ :local gw [/ip route get [:pick $rt 0] immediate-gw]; :if ([:typeof $gw] = "str") do={ :local p [:find $gw "%"]; :if ([:typeof $p] = "num") do={ :set wandet [:pick $gw ($p+1) [:len $gw]] } else={ :set wandet $gw } } } } on-error={}; :do { :if ([:len [/interface pppoe-client find name=$wandet]] > 0) do={ :set wandet [/interface pppoe-client get [find name=$wandet] interface] } } on-error={}`);
+    // Uplinks must NEVER be bridged into the LAN — keep both configured uplinks (and the live-detected
+    // WAN) out of bridge-lan so a port meant to be a WAN2 later stays standalone. This only removes an
+    // uplink from the bridge if it somehow got added; it never touches the uplink's addressing/route.
+    const uplinks = [wan, wan2].filter(Boolean);
+    for (const up of uplinks) {
+      add(`:foreach p in=[/interface bridge port find interface="${up}" bridge="${bridge}"] do={ /interface bridge port remove $p; :log info "Dartbit: kept uplink ${up} out of ${bridge}" }`);
+    }
+    // EXPLICIT-ONLY bridging: bridge-lan holds EXACTLY the LAN ports the user selected in the frontend.
+    // Nothing is ever auto-added. This is deliberate — it keeps every unselected port free so the user
+    // can later designate one as WAN2 without it having been swallowed into the bridge (a bridged port
+    // becomes an L2 slave and can't run an independent WAN, which broke dual-WAN failover before).
+    // Add each selected LAN port (moving it out of any other bridge first); never bridge an uplink.
+    for (const port of lanInterfaces) {
+      if (uplinks.includes(port)) continue; // never bridge an uplink even if mistakenly listed
+      add(`:global wandet; :if ("${port}" = $wandet) do={ :log warning "Dartbit: skipped bridging ${port} — it is the live WAN" } else={ :foreach p in=[/interface bridge port find interface="${port}"] do={ :local b [/interface bridge port get $p bridge]; :if ($b != "${bridge}") do={ /interface bridge port remove $p; :log info ("Dartbit: moved ${port} from " . $b . " to ${bridge}") } }; :if ([:len [/interface bridge port find interface="${port}" bridge="${bridge}"]] = 0) do={ /interface bridge port add bridge=${bridge} interface=${port} comment="Dartbit LAN port" } }`);
+    }
+    // Prune bridge-lan to EXACTLY the selected LAN ports: drop any member that's no longer selected
+    // (e.g. a port being repurposed as WAN2). Only touches bridge-lan membership — never other bridges,
+    // and never the WAN. If no LAN ports are selected, bridge-lan is left empty by design.
+    if (lanInterfaces.length) {
+      const keepCond = lanInterfaces.filter(pp => !uplinks.includes(pp)).map(pp => `$n != "${pp}"`).join(' && ') || 'true';
+      add(`:foreach p in=[/interface bridge port find bridge="${bridge}"] do={ :local n [/interface bridge port get $p interface]; :if (${keepCond}) do={ /interface bridge port remove $p; :log info ("Dartbit: removed " . $n . " from ${bridge} (not a selected LAN port)") } }`);
+    }
+    add('');
+
+    // 2. LAN gateway IP
+    add('# 2. LAN gateway IP');
+    // CRITICAL: remove duplicate IP from any OTHER bridge first.
+    // The defconf has 192.168.88.1/24 on the default 'bridge' which causes routing chaos.
+    add(`:foreach a in=[/ip address find address="${lanGw}/24"] do={ :local iface [/ip address get $a interface]; :if ($iface != "${bridge}") do={ /ip address remove $a; :log info ("Dartbit: removed duplicate ${lanGw}/24 from " . $iface) } }`);
+    // Remove any STALE "Dartbit LAN Gateway" on the bridge that isn't the CURRENT lanGw. When the LAN
+    // gateway is changed in the frontend, the old address used to stay behind, stacking a SECOND subnet
+    // on bridge-lan. That silently breaks the hotspot: a hotspot binds to ONE hotspot-address, so clients
+    // landing on the other subnet never trigger the captive-portal auto-detect (they can still reach the
+    // portal by typing its IP, which masks the fault). Keep exactly one Dartbit gateway = the current one.
+    add(`:foreach a in=[/ip address find interface="${bridge}" comment="Dartbit LAN Gateway"] do={ :local ad [/ip address get $a address]; :if ($ad != "${lanGw}/24") do={ /ip address remove $a; :log info ("Dartbit: removed stale LAN gateway " . $ad . " from ${bridge}") } }`);
+    add(`:if ([:len [/ip address find interface="${bridge}" address="${lanGw}/24"]] = 0) do={ /ip address add address=${lanGw}/24 interface=${bridge} comment="Dartbit LAN Gateway" }`);
+    // CRITICAL: add the bridge to the LAN interface list so the default firewall
+    // (chain=input action=drop in-interface-list=!LAN) doesn't block DNS/DHCP/portal traffic from clients
+    add(`:if ([:len [/interface list find name="LAN"]] = 0) do={ /interface list add name=LAN }`);
+    add(`:if ([:len [/interface list member find list="LAN" interface="${bridge}"]] = 0) do={ /interface list member add list=LAN interface=${bridge} comment="Dartbit LAN" }`);
+    // Also disable the defconf DHCP server on the original bridge — it was serving the same subnet
+    add(`:foreach d in=[/ip dhcp-server find name="defconf"] do={ /ip dhcp-server disable $d; :log info "Dartbit: disabled defconf DHCP (subnet conflict)" }`);
+    add('');
+
+    // 3. DHCP pool + DHCP server on the bridge (hotspot doesn't auto-create one in all RouterOS versions)
+    add('# 3. DHCP pool + server');
+    add(`:if ([:len [/ip pool find name="dhcp-pool"]] = 0) do={ /ip pool add name=dhcp-pool ranges=${dhcpStart}-${dhcpEnd} }`);
+    // Always update the pool range in case it changed
+    add(`/ip pool set [find name="dhcp-pool"] ranges=${dhcpStart}-${dhcpEnd}`);
+    // DHCP network entry — tells DHCP clients their gateway/DNS
+    // CRITICAL: dns-server is the ROUTER's bridge IP, not 8.8.8.8. This way clients
+    // send DNS queries to the router, which can hijack them and return the gateway IP
+    // for unauthenticated users (this drives the captive portal redirect).
+    // Remove any STALE "Dartbit LAN" dhcp-server-network whose subnet isn't the current one — same
+    // gateway-changed leftover as the bridge address above. A second network entry hands a competing
+    // gateway/subnet to the bridge and is part of what breaks the hotspot captive-portal auto-detect.
+    add(`:foreach n in=[/ip dhcp-server network find comment="Dartbit LAN"] do={ :if ([/ip dhcp-server network get $n address] != "${lanSubnet}") do={ :local ad [/ip dhcp-server network get $n address]; /ip dhcp-server network remove $n; :log info ("Dartbit: removed stale DHCP network " . $ad) } }`);
+    add(`:if ([:len [/ip dhcp-server network find address="${lanSubnet}"]] = 0) do={ /ip dhcp-server network add address=${lanSubnet} gateway=${lanGw} dns-server=${lanGw} comment="Dartbit LAN" }`);
+    add(`/ip dhcp-server network set [find address="${lanSubnet}"] gateway=${lanGw} dns-server=${lanGw}`);
+    // The DHCP server bound to the bridge — this is what actually hands out IPs
+    add(`:if ([:len [/ip dhcp-server find name="dartbit-dhcp"]] = 0) do={ /ip dhcp-server add name=dartbit-dhcp interface=${bridge} address-pool=dhcp-pool lease-time=1h disabled=no }`);
+    add(`/ip dhcp-server set [find name="dartbit-dhcp"] interface=${bridge} address-pool=dhcp-pool lease-time=1h disabled=no`);
+    // CRITICAL: remove any OTHER DHCP server on this bridge that would conflict
+    add(`:foreach d in=[/ip dhcp-server find interface="${bridge}"] do={ :if ([/ip dhcp-server get $d name] != "dartbit-dhcp") do={ /ip dhcp-server disable $d; :log info ("Dartbit: disabled conflicting DHCP server " . [/ip dhcp-server get $d name] . " on ${bridge}") } }`);
+    // Enable router's DNS server so it can answer queries from clients. Larger cache because ALL
+    // PPPoE + LAN clients now resolve through the router (PPPoE dns-server + DNS-redirect below).
+    // DNS: Cloudflare DoH (encrypted, over 443) so the upstream ISP cannot read subscriber query
+    // CONTENT, with the uplink's own gateway resolver retained underneath as a fallback.
+    //   History that shapes this block: DoH to Cloudflare was previously enabled ALONE with
+    //   servers="" and it reset/timed out on these uplinks ("DoH server connection error"), taking
+    //   down ALL resolution - captive portal, heartbeat, reporter fetches. The lesson was not "DoH
+    //   is wrong" but "a single upstream resolver is a single point of failure". Three things make
+    //   it survivable now:
+    //     1. use-peer-dns stays ON (below), so dynamic-servers keeps the ISP gateway resolver
+    //        populated. If DoH stalls, resolution degrades to plaintext instead of blacking out.
+    //        That is also the privacy caveat: on DoH failure, queries fall back to the ISP.
+    //     2. Bootstrap statics for the DoH hostname are ADDED (v1.5.25-27 removed them). DoH must
+    //        resolve cloudflare-dns.com before it can resolve anything; without these the resolver
+    //        deadlocks on itself. The 0c cleanup already exempts this exact comment string.
+    //     3. verify-doh-cert=no - cert validation needs a populated CA store; with an empty store
+    //        every DoH query fails closed. Traffic is still TLS-encrypted from the ISP's view.
+    //   Hotspot and PPPoE alike: clients still ask the router (allow-remote-requests), the router
+    //   resolves upstream over DoH, so ip-of-dns-name / captive-portal behaviour is unchanged.
+    add(`/ip dns set servers=\"\" allow-remote-requests=yes cache-size=8192KiB use-doh-server=\"https://cloudflare-dns.com/dns-query\" verify-doh-cert=no`);
+    // Feed each Dartbit-managed WAN dhcp-client's peer (gateway) DNS into the resolver - this is
+    // the DoH fallback path. Covers the single-WAN "Dartbit WAN" client and any LB clients.
+    add(`:foreach c in=[/ip dhcp-client find where comment~\"Dartbit\"] do={ :do { /ip dhcp-client set $c use-peer-dns=yes } on-error={} }`);
+    // Bootstrap A-records for the DoH host itself (the resolver cannot resolve its own upstream).
+    // Cleared by comment first so reprovisioning refreshes rather than duplicates.
+    add(`:do { :foreach s in=[/ip dns static find where comment=\"Dartbit DoH bootstrap\"] do={ /ip dns static remove $s } } on-error={}`);
+    add(`:do { /ip dns static add name=cloudflare-dns.com address=104.16.248.249 ttl=1d comment=\"Dartbit DoH bootstrap\" } on-error={}`);
+    add(`:do { /ip dns static add name=cloudflare-dns.com address=104.16.249.249 ttl=1d comment=\"Dartbit DoH bootstrap\" } on-error={}`);
     add('');
 
     // 4. NAT
@@ -689,7 +793,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add('# 8c-2. Boot-time re-assert (fixes popup dying after a power cut)');
     add(`:foreach s in=[/system scheduler find name="dartbit-boot"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-boot"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-boot policy=read,write,test source={:delay 60s; :do { /ip dns set allow-remote-requests=yes } on-error={}; :foreach c in=[/ip dhcp-client find where comment~\"Dartbit\"] do={ :do { /ip dhcp-client set \$c use-peer-dns=yes } on-error={} }; :do { /ip hotspot profile set [find name=\"hsprof-dartbit\"] hotspot-address=${lanGw} dns-name=${hotspotDnsName} } on-error={}; :local hdir \"hotspot\"; :if ([:len [/file find where name=\"flash\"]] > 0) do={ :set hdir \"flash/hotspot\" }; :do { /ip hotspot profile set [find name=\"hsprof-dartbit\"] html-directory=\$hdir; :local got [/ip hotspot profile get [find name=\"hsprof-dartbit\"] html-directory]; :if (\$got != \$hdir) do={ /ip hotspot profile set [find name=\"hsprof-dartbit\"] html-directory=\"hotspot\" } } on-error={}; :do { :foreach h in=[/ip hotspot find name=\"dartbit-hotspot\"] do={ /ip hotspot set \$h address-pool=dhcp-pool profile=hsprof-dartbit; /ip hotspot disable \$h; :delay 2s; /ip hotspot enable \$h } } on-error={}; :log info \"Dartbit: boot re-assert complete\"}`);
+    add(`/system script add name=dartbit-boot policy=read,write,test source={:delay 60s; :do { /ip dns set allow-remote-requests=yes use-doh-server=\"https://cloudflare-dns.com/dns-query\" verify-doh-cert=no } on-error={}; :foreach c in=[/ip dhcp-client find where comment~\"Dartbit\"] do={ :do { /ip dhcp-client set \$c use-peer-dns=yes } on-error={} }; :do { /ip hotspot profile set [find name=\"hsprof-dartbit\"] hotspot-address=${lanGw} dns-name=${hotspotDnsName} } on-error={}; :local hdir \"hotspot\"; :if ([:len [/file find where name=\"flash\"]] > 0) do={ :set hdir \"flash/hotspot\" }; :do { /ip hotspot profile set [find name=\"hsprof-dartbit\"] html-directory=\$hdir; :local got [/ip hotspot profile get [find name=\"hsprof-dartbit\"] html-directory]; :if (\$got != \$hdir) do={ /ip hotspot profile set [find name=\"hsprof-dartbit\"] html-directory=\"hotspot\" } } on-error={}; :do { :foreach h in=[/ip hotspot find name=\"dartbit-hotspot\"] do={ /ip hotspot set \$h address-pool=dhcp-pool profile=hsprof-dartbit; /ip hotspot disable \$h; :delay 2s; /ip hotspot enable \$h } } on-error={}; :log info \"Dartbit: boot re-assert complete\"}`);
     add(`/system scheduler add name=dartbit-boot start-time=startup interval=0 on-event="/system script run dartbit-boot" comment="Dartbit boot re-assert"`);
     add('');
 

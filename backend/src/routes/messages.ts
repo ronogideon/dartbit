@@ -13,6 +13,10 @@ const messageSchema = z.object({
   type: z.enum(['SMS', 'EMAIL']).default('SMS'),
   recipient: z.string(),
   body: z.string(),
+  // Set when the tenant picked a subscriber from the searchable dropdown rather than typing a raw
+  // number. Gives an exact subscriber for placeholder rendering (instead of a fuzzy phone match)
+  // and links the Message row so the Messages list can hyperlink the username.
+  subscriberId: z.string().optional(),
 });
 
 // Broadcast a manual SMS to a group of subscribers, with placeholder support.
@@ -21,11 +25,77 @@ const messageSchema = z.object({
 //   routerIds: string[] — limit to subscribers on these MikroTik routers
 //   services: ('PPPOE'|'STATIC'|'HOTSPOT')[] — limit to these user types
 //   statuses: ('ACTIVE'|'EXPIRED')[] — limit by subscription status
-const broadcastSchema = z.object({
-  body: z.string().min(1).max(1000),
+const audienceSchema = {
   routerIds: z.array(z.string()).optional(),
   services: z.array(z.enum(['PPPOE', 'STATIC', 'HOTSPOT'])).optional(),
   statuses: z.array(z.enum(['ACTIVE', 'EXPIRED'])).optional(),
+  // Limit to subscribers currently on these packages.
+  packageIds: z.array(z.string()).optional(),
+  // Only subscribers whose subscription lapses within EXPIRING_SOON_DAYS (and hasn't already).
+  expiringSoon: z.boolean().optional(),
+};
+
+// "Expiring soon" means 4 days or less remaining, matching the renewal-reminder window.
+const EXPIRING_SOON_DAYS = 4;
+
+type AudienceFilters = {
+  routerIds?: string[];
+  services?: string[];
+  statuses?: string[];
+  packageIds?: string[];
+  expiringSoon?: boolean;
+};
+
+// Single source of truth for who a broadcast targets, shared by the live recipient count and the
+// actual send. If these two ever diverged, the tenant would be shown one number and bill for
+// another — so both callers must go through here.
+function buildAudienceWhere(tenantId: string, f: AudienceFilters): Record<string, unknown> {
+  const where: Record<string, unknown> = { tenantId, phone: { not: null } };
+  const and: object[] = [];
+
+  if (f.routerIds?.length) where.routerId = { in: f.routerIds };
+  if (f.services?.length) where.service = { in: f.services };
+  if (f.packageIds?.length) where.packageId = { in: f.packageIds };
+
+  const now = new Date();
+  if (f.statuses?.length) {
+    const conds: object[] = [];
+    if (f.statuses.includes('ACTIVE')) conds.push({ isActive: true, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] });
+    if (f.statuses.includes('EXPIRED')) conds.push({ OR: [{ isActive: false }, { expiresAt: { lte: now } }] });
+    if (conds.length) and.push({ OR: conds });
+  }
+
+  if (f.expiringSoon) {
+    const cutoff = new Date(now.getTime() + EXPIRING_SOON_DAYS * 24 * 60 * 60 * 1000);
+    // Not already expired, and lapsing inside the window.
+    and.push({ expiresAt: { gt: now, lte: cutoff } });
+  }
+
+  // Combined with AND so status and expiring-soon can't clobber each other's OR clause.
+  if (and.length) where.AND = and;
+  return where;
+}
+
+// POST /broadcast/count — how many subscribers the current filter selection would reach. Drives the
+// live recipient count in the compose UI so the tenant sees the blast radius BEFORE sending.
+const countSchema = z.object(audienceSchema);
+router.post('/broadcast/count', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return sendError(res, 'Tenant required', 400);
+    const parsed = countSchema.safeParse(req.body);
+    if (!parsed.success) return sendError(res, parsed.error.errors[0]?.message || 'Invalid input', 400);
+    const where = buildAudienceWhere(tenantId, parsed.data);
+    const count = await prisma.subscriber.count({ where: where as never });
+    sendSuccess(res, { count });
+  } catch {
+    sendError(res, 'Failed to count recipients', 500);
+  }
+});
+
+const broadcastSchema = z.object({
+  body: z.string().min(1).max(1000),
+  ...audienceSchema,
 });
 
 router.post('/broadcast', async (req: AuthRequest, res: Response) => {
@@ -34,19 +104,9 @@ router.post('/broadcast', async (req: AuthRequest, res: Response) => {
     if (!tenantId) return sendError(res, 'Tenant required', 400);
     const parsed = broadcastSchema.safeParse(req.body);
     if (!parsed.success) return sendError(res, parsed.error.errors[0]?.message || 'Invalid input', 400);
-    const { body, routerIds, services, statuses } = parsed.data;
+    const { body } = parsed.data;
 
-    // Build the subscriber filter from the selected groups.
-    const where: Record<string, unknown> = { tenantId, phone: { not: null } };
-    if (routerIds && routerIds.length) where.routerId = { in: routerIds };
-    if (services && services.length) where.service = { in: services };
-    if (statuses && statuses.length) {
-      const now = new Date();
-      const conds: object[] = [];
-      if (statuses.includes('ACTIVE')) conds.push({ isActive: true, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] });
-      if (statuses.includes('EXPIRED')) conds.push({ OR: [{ isActive: false }, { expiresAt: { lte: now } }] });
-      if (conds.length) where.OR = conds;
-    }
+    const where = buildAudienceWhere(tenantId, parsed.data);
 
     const subs = await prisma.subscriber.findMany({
       where: where as never,
@@ -108,10 +168,16 @@ router.post('/', async (req: AuthRequest, res: Response) => {
     if (parsed.data.type === 'SMS') {
       // Render any {placeholders} in the manual message. If the recipient phone matches a
       // subscriber, fill from their details; otherwise unknown placeholders are dropped.
-      const sub = await prisma.subscriber.findFirst({
-        where: { tenantId, phone: parsed.data.recipient },
-        select: { fullName: true, username: true, expiresAt: true, package: { select: { name: true } } },
-      });
+      // Prefer the explicitly chosen subscriber; fall back to a phone match for raw-number sends.
+      const sub = parsed.data.subscriberId
+        ? await prisma.subscriber.findFirst({
+            where: { tenantId, id: parsed.data.subscriberId },
+            select: { id: true, fullName: true, username: true, expiresAt: true, package: { select: { name: true } } },
+          })
+        : await prisma.subscriber.findFirst({
+            where: { tenantId, phone: parsed.data.recipient },
+            select: { id: true, fullName: true, username: true, expiresAt: true, package: { select: { name: true } } },
+          });
       const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true } });
       const body = renderTemplate(parsed.data.body, {
         tenant: tenant?.name || '', name: sub?.fullName || '', username: sub?.username || '',
@@ -132,6 +198,17 @@ router.post('/', async (req: AuthRequest, res: Response) => {
         where: { tenantId, gatewayMsgId: result.messageId },
         orderBy: { createdAt: 'desc' },
       });
+      // Stamp the subscriber link/username so the Messages list can open the profile pane.
+      if (latest && sub) {
+        try {
+          await prisma.message.update({
+            where: { id: latest.id },
+            data: { subscriberId: sub.id, username: sub.username },
+          });
+          (latest as { subscriberId?: string | null }).subscriberId = sub.id;
+          (latest as { username?: string | null }).username = sub.username;
+        } catch { /* display-only linkage; never fail the send over it */ }
+      }
       sendSuccess(res, latest, 201);
     } else {
       // EMAIL not yet wired to a provider — record as PENDING for now.

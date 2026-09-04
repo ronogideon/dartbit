@@ -1,19 +1,31 @@
 'use client';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getMessages, sendMessage, getSmsBalance, topupSms, broadcastMessage, getRouters, type MessageRow } from '@/lib/api';
+import { getMessages, sendMessage, getSmsBalance, topupSms, broadcastMessage, countBroadcastRecipients, getRouters, getSubscribers, getPackages, type MessageRow } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import toast from 'react-hot-toast';
 import { Plus, MessageSquare, Wallet, RefreshCw, Users, Send } from 'lucide-react';
 import SearchInput from '@/components/ui/SearchInput';
+import SubscriberDetail from '@/components/SubscriberDetail';
+
+interface SubOpt { id: string; fullName: string; username: string; phone?: string | null; }
+interface PkgOpt { id: string; name: string; isActive?: boolean; }
 
 export default function MessagesPage() {
   const qc = useQueryClient();
+  const router = useRouter();
   const [modalOpen, setModalOpen] = useState(false);
   const [topupOpen, setTopupOpen] = useState(false);
   const [bcastOpen, setBcastOpen] = useState(false);
-  const [bcast, setBcast] = useState<{ body: string; routerIds: string[]; services: string[]; statuses: string[] }>({ body: '', routerIds: [], services: [], statuses: [] });
+  const [bcast, setBcast] = useState<{ body: string; routerIds: string[]; services: string[]; statuses: string[]; packageIds: string[]; expiringSoon: boolean }>({ body: '', routerIds: [], services: [], statuses: [], packageIds: [], expiringSoon: false });
+  // Opens the same subscriber profile pane used by the subscribers and active-users lists.
+  const [detailId, setDetailId] = useState<string | null>(null);
+  // Single-send: which subscriber was picked from the searchable dropdown (blank = raw number).
+  const [subQuery, setSubQuery] = useState('');
+  const [pickedSub, setPickedSub] = useState<SubOpt | null>(null);
+  const [subOpen, setSubOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [form, setForm] = useState({ recipient: '', body: '' });
   const [topup, setTopup] = useState({ amount: 500, phone: '' });
@@ -31,6 +43,26 @@ export default function MessagesPage() {
   });
 
   const { data: routers = [] } = useQuery({ queryKey: ['routers'], queryFn: getRouters, staleTime: 60000 });
+  const { data: subscribers = [] } = useQuery({ queryKey: ['subscribers'], queryFn: getSubscribers, staleTime: 60000 });
+  const { data: packages = [] } = useQuery({ queryKey: ['packages'], queryFn: getPackages, staleTime: 60000 });
+
+  // Live recipient count. Keyed on the filter selection so it re-runs as the tenant changes groups,
+  // and computed server-side by the SAME query the send uses — so the number shown is the number
+  // billed. Only runs while the broadcast modal is open.
+  const audience = useMemo(() => ({
+    routerIds: bcast.routerIds.length ? bcast.routerIds : undefined,
+    services: bcast.services.length ? bcast.services : undefined,
+    statuses: bcast.statuses.length ? bcast.statuses : undefined,
+    packageIds: bcast.packageIds.length ? bcast.packageIds : undefined,
+    expiringSoon: bcast.expiringSoon || undefined,
+  }), [bcast.routerIds, bcast.services, bcast.statuses, bcast.packageIds, bcast.expiringSoon]);
+
+  const { data: audienceCount, isFetching: countLoading } = useQuery({
+    queryKey: ['broadcast-count', audience],
+    queryFn: () => countBroadcastRecipients(audience),
+    enabled: bcastOpen,
+    staleTime: 10000,
+  });
 
   const bcastMut = useMutation({
     mutationFn: () => broadcastMessage({
@@ -38,25 +70,41 @@ export default function MessagesPage() {
       routerIds: bcast.routerIds.length ? bcast.routerIds : undefined,
       services: bcast.services.length ? bcast.services : undefined,
       statuses: bcast.statuses.length ? bcast.statuses : undefined,
+      packageIds: bcast.packageIds.length ? bcast.packageIds : undefined,
+      expiringSoon: bcast.expiringSoon || undefined,
     }),
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ['messages'] });
       qc.invalidateQueries({ queryKey: ['sms-balance'] });
       toast.success(`Sent to ${r.sent} of ${r.matched}${r.failed ? ` (${r.failed} failed)` : ''}`);
       setBcastOpen(false);
-      setBcast({ body: '', routerIds: [], services: [], statuses: [] });
+      setBcast({ body: '', routerIds: [], services: [], statuses: [], packageIds: [], expiringSoon: false });
     },
     onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Broadcast failed'),
   });
 
+  // Client-side filter over the already-loaded subscriber list; capped so a large tenant doesn't
+  // render thousands of rows into the dropdown.
+  const subMatches = useMemo(() => {
+    const q = subQuery.trim().toLowerCase();
+    if (!q) return [] as SubOpt[];
+    return (subscribers as SubOpt[])
+      .filter(sub =>
+        sub.fullName?.toLowerCase().includes(q) ||
+        sub.username?.toLowerCase().includes(q) ||
+        (sub.phone || '').toLowerCase().includes(q))
+      .slice(0, 20);
+  }, [subQuery, subscribers]);
+
   const sendMut = useMutation({
-    mutationFn: () => sendMessage(form.recipient, form.body),
+    mutationFn: () => sendMessage(form.recipient, form.body, pickedSub?.id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['messages'] });
       qc.invalidateQueries({ queryKey: ['sms-balance'] });
       toast.success('Message sent');
       setModalOpen(false);
       setForm({ recipient: '', body: '' });
+      setPickedSub(null); setSubQuery('');
     },
     onError: (e: unknown) => toast.error((e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Failed to send message'),
   });
@@ -161,7 +209,17 @@ export default function MessagesPage() {
               ) : list.map(m => (
                 <tr key={m.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/30">
                   <td className="table-td text-gray-500 whitespace-nowrap text-xs">{new Date(m.createdAt).toLocaleString()}</td>
-                  <td className="table-td font-medium">{m.username || '—'}</td>
+                  <td className="table-td font-medium">
+                    {m.username && m.subscriberId ? (
+                      <button
+                        onClick={() => setDetailId(m.subscriberId!)}
+                        className="text-blue-600 dark:text-blue-400 hover:underline font-medium"
+                        title="Open subscriber profile"
+                      >
+                        {m.username}
+                      </button>
+                    ) : (m.username || '—')}
+                  </td>
                   <td className="table-td font-mono text-xs">{m.recipient}</td>
                   <td className="table-td text-gray-600 dark:text-gray-400 max-w-md truncate" title={m.body}>{m.body}</td>
                   <td className="table-td">{categoryBadge(m.category)}</td>
@@ -183,8 +241,58 @@ export default function MessagesPage() {
 
       <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title="Send SMS">
         <form onSubmit={(e) => { e.preventDefault(); sendMut.mutate(); }} className="space-y-4">
+          {/* Searchable subscriber picker. Choosing a subscriber fills the phone number and links
+              the sent message to their profile; a raw number can still be typed below. */}
+          <div className="relative">
+            <label className="label">Subscriber</label>
+            {pickedSub ? (
+              <div className="flex items-center justify-between rounded-lg border border-gray-300 dark:border-gray-700 px-3 py-2">
+                <span className="text-sm">
+                  <span className="font-medium">{pickedSub.fullName}</span>
+                  <span className="text-gray-500"> ({pickedSub.username})</span>
+                </span>
+                <button type="button" className="text-xs text-blue-600 hover:underline"
+                  onClick={() => { setPickedSub(null); setSubQuery(''); setForm(f => ({ ...f, recipient: '' })); }}>
+                  Change
+                </button>
+              </div>
+            ) : (
+              <>
+                <input
+                  className="input"
+                  value={subQuery}
+                  onChange={e => { setSubQuery(e.target.value); setSubOpen(true); }}
+                  onFocus={() => setSubOpen(true)}
+                  placeholder="Search by name, username or phone…"
+                />
+                {subOpen && subQuery.trim() !== '' && (
+                  <div className="absolute z-20 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg">
+                    {subMatches.length === 0 ? (
+                      <div className="px-3 py-2 text-sm text-gray-400">No subscribers match</div>
+                    ) : subMatches.map(sub => (
+                      <button
+                        key={sub.id}
+                        type="button"
+                        onClick={() => {
+                          setPickedSub(sub);
+                          setSubOpen(false);
+                          setForm(f => ({ ...f, recipient: sub.phone || '' }));
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800"
+                      >
+                        <span className="font-medium">{sub.fullName}</span>
+                        <span className="text-gray-500"> ({sub.username})</span>
+                        {sub.phone && <span className="block text-xs text-gray-400 font-mono">{sub.phone}</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
           <div>
-            <label className="label">Recipient</label>
+            <label className="label">Recipient phone</label>
             <input
               className="input"
               value={form.recipient}
@@ -293,6 +401,38 @@ export default function MessagesPage() {
           </div>
 
           <div>
+            <label className="label">Package</label>
+            <div className="flex flex-wrap gap-2 max-h-28 overflow-y-auto">
+              {(packages as PkgOpt[]).filter(p => p.isActive !== false).length === 0 ? <span className="text-sm text-gray-400">No packages</span> :
+                (packages as PkgOpt[]).filter(p => p.isActive !== false).map(p => {
+                  const on = bcast.packageIds.includes(p.id);
+                  return <button key={p.id} type="button" onClick={() => setBcast(b => ({ ...b, packageIds: on ? b.packageIds.filter(x => x !== p.id) : [...b.packageIds, p.id] }))}
+                    className={`px-3 py-1.5 rounded-lg text-sm border ${on ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300'}`}>{p.name}</button>;
+                })}
+            </div>
+          </div>
+
+          <div>
+            <label className="label">Expiry</label>
+            <button type="button" onClick={() => setBcast(b => ({ ...b, expiringSoon: !b.expiringSoon }))}
+              className={`px-3 py-1.5 rounded-lg text-sm border ${bcast.expiringSoon ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300'}`}>
+              Expiring soon (4 days or less)
+            </button>
+            <p className="text-xs text-gray-400 mt-1">Only subscribers who haven&apos;t expired yet but lapse within 4 days.</p>
+          </div>
+
+          {/* Blast radius, computed server-side from the same filter query the send uses. */}
+          <div className="flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 px-3 py-2">
+            <Users size={16} className="text-gray-400" />
+            <span className="text-sm text-gray-600 dark:text-gray-300">
+              {countLoading ? 'Counting recipients…'
+                : audienceCount
+                  ? <>This will send to <span className="font-semibold text-gray-900 dark:text-gray-100">{audienceCount.count.toLocaleString()}</span> subscriber{audienceCount.count === 1 ? '' : 's'}</>
+                  : 'Select filters to see recipients'}
+            </span>
+          </div>
+
+          <div>
             <label className="label">Message</label>
             <textarea className="input min-h-[90px]" value={bcast.body} onChange={e => setBcast(b => ({ ...b, body: e.target.value }))} placeholder="Hi {name}, your {package} plan expires on {expiry}…" />
             <p className="text-xs text-gray-400 mt-1">{bcast.body.length} chars · ~{Math.max(1, Math.ceil(bcast.body.length / 160))} SMS each</p>
@@ -306,6 +446,13 @@ export default function MessagesPage() {
           </div>
         </div>
       </Modal>
-    </AppLayout>
+    
+      {/* Same profile pane used by the subscribers and active-users lists. */}
+      <SubscriberDetail
+        subscriberId={detailId}
+        onClose={() => setDetailId(null)}
+        onEdit={(id) => router.push(`/subscribers?edit=${id}`)}
+      />
+</AppLayout>
   );
 }
