@@ -109,8 +109,8 @@ app.use(express.json());
 // malformed / over-length URL => 400 Bad Request. Scoped to text/plain so JSON routes are untouched.
 app.use(express.text({ type: 'text/plain', limit: '5mb' }));
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.74', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.74', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.75', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.75', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -151,7 +151,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.74 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.11.75 running on port ${PORT}\n`);
   patchDatabase().catch(e => console.error('[patchDatabase] failed:', e instanceof Error ? e.message : e));
   startSessionCleanup();
   // RADIUS routers don't run the router-side session reporter (it's skipped as redundant), so this
@@ -1073,7 +1073,7 @@ async function patchDatabase() {
     await safeExec(prisma, 'MpesaTx payoutStatus', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutStatus" TEXT`);
     await safeExec(prisma, 'MpesaTx payoutRef', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutRef" TEXT`);
     await safeExec(prisma, 'MpesaTx payoutAt', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutAt" TIMESTAMP(3)`);
-    // v1.11.74: reason for a non-package ("other service") prompt payment, carried to the Payment row.
+    // v1.11.75: reason for a non-package ("other service") prompt payment, carried to the Payment row.
     await safeExec(prisma, 'MpesaTx notes', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "notes" TEXT`);
     // v1.10.76 disbursement: payout cadence + enable flag + last-payout marker on PaymentConfig
     await safeExec(prisma, 'PayCfg payoutCadence', `ALTER TABLE "PaymentConfig" ADD COLUMN IF NOT EXISTS "payoutCadence" TEXT DEFAULT 'INSTANT'`);

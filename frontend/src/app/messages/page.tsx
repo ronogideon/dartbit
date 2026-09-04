@@ -365,6 +365,13 @@ export default function MessagesPage() {
         <div className="space-y-4">
           <p className="text-sm text-gray-500">Send one SMS to everyone matching the selected groups. Leave a group blank to not filter by it. Placeholders like <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1 rounded">{'{name}'}</code>, <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1 rounded">{'{package}'}</code>, <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1 rounded">{'{expiry}'}</code> are filled per subscriber.</p>
 
+          {/* Stated up-front so the tenant understands how the filters combine BEFORE choosing any. */}
+          <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 px-3 py-2">
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              No selection = all users system-wide for this ISP. Selecting options in a group narrows to those; groups combine with AND.
+            </p>
+          </div>
+
           <div>
             <label className="label">User type</label>
             <div className="flex flex-wrap gap-2">
@@ -389,7 +396,7 @@ export default function MessagesPage() {
 
           <div>
             <label className="label">Routers</label>
-            <div className="flex flex-wrap gap-2 max-h-28 overflow-y-auto">
+            <div className="flex flex-wrap gap-2">
               {(routers as { id: string; name: string }[]).length === 0 ? <span className="text-sm text-gray-400">No routers</span> :
                 (routers as { id: string; name: string }[]).map(r => {
                   const on = bcast.routerIds.includes(r.id);
@@ -397,12 +404,11 @@ export default function MessagesPage() {
                     className={`px-3 py-1.5 rounded-lg text-sm border ${on ? 'border-blue-600 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' : 'border-gray-200 dark:border-gray-700'}`}>{r.name}</button>;
                 })}
             </div>
-            <p className="text-xs text-gray-400 mt-1">No selection = all users system-wide for this ISP.</p>
           </div>
 
           <div>
             <label className="label">Package</label>
-            <div className="flex flex-wrap gap-2 max-h-28 overflow-y-auto">
+            <div className="flex flex-wrap gap-2">
               {(packages as PkgOpt[]).filter(p => p.isActive !== false).length === 0 ? <span className="text-sm text-gray-400">No packages</span> :
                 (packages as PkgOpt[]).filter(p => p.isActive !== false).map(p => {
                   const on = bcast.packageIds.includes(p.id);
