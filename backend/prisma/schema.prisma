@@ -458,6 +458,7 @@ model MpesaTransaction {
   durationMinutes   Int       @default(60)
   expiresAt         DateTime?
   resultDesc        String?
+  notes             String?                    // reason for a non-package ("other service") payment; carried through to the Payment row on success
   // Collection routing + payout (for Dartbit-collected manual methods)
   collectedVia      String?   @default("TENANT") // TENANT | DARTBIT
   platformFee       Float     @default(0)         // 1% fee retained by Dartbit (manual methods)

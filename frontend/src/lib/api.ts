@@ -315,7 +315,7 @@ export const getNetInventory = () => api.get('/network/inventory').then((r) => r
 // ---- Tenant-initiated M-Pesa prompt (STK push to a subscriber) ----
 export interface PromptTarget { subscriberId: string; fullName: string; username: string; phone: string; expired: boolean; expiresAt: string | null; packageId: string | null; packageName: string | null; amount: number | null; hasPackage: boolean }
 export const getPromptTarget = (subscriberId: string) => api.get(`/payments/prompt-target/${subscriberId}`).then((r) => r.data.data as PromptTarget);
-export const promptPayment = (data: { subscriberId: string; phone?: string; amount?: number }) => api.post('/payments/prompt', data).then((r) => r.data.data as { transactionId: string; phone: string; amount: number; message: string });
+export const promptPayment = (data: { subscriberId: string; phone?: string; amount?: number; packageId?: string; notes?: string }) => api.post('/payments/prompt', data).then((r) => r.data.data as { transactionId: string; phone: string; amount: number; message: string });
 export const getPromptStatus = (txId: string) => api.get(`/payments/prompt-status/${txId}`).then((r) => r.data.data as { status: string; message?: string | null; receipt?: string | null; amount?: number });
 
 // ---- Per-router DNS / Firewall blocklist ----

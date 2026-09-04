@@ -213,34 +213,46 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   if (boundSubId) {
     const sub = await prisma.subscriber.findUnique({ where: { id: boundSubId } });
     if (sub) {
+      // A tenant-prompted payment for something OTHER than a package (installation, equipment, a
+      // support call-out) carries a reason and no package. It's recorded as income but must NOT
+      // extend the subscription — otherwise paying for a router would silently buy airtime too.
+      const txNotes = (tx as { notes?: string | null }).notes || null;
+      const isOther = !tx.packageId && !!txNotes;
+
       const mins = tx.durationMinutes || pkg?.validityMinutes || 60;
       const wasLapsed = !sub.expiresAt || sub.expiresAt <= new Date();
       const base = sub.expiresAt && sub.expiresAt > new Date() ? sub.expiresAt : new Date();
       const newExpiry = new Date(base.getTime() + mins * 60_000);
-      await prisma.subscriber.update({
-        where: { id: sub.id },
-        data: { expiresAt: newExpiry, isActive: true, ...(tx.packageId ? { packageId: tx.packageId } : {}) },
-      });
+      if (!isOther) {
+        await prisma.subscriber.update({
+          where: { id: sub.id },
+          data: { expiresAt: newExpiry, isActive: true, ...(tx.packageId ? { packageId: tx.packageId } : {}) },
+        });
+      }
       // Record the payment against the USERNAME (subscriber), listing the payer phone for reference.
       await prisma.payment.create({
         data: {
           amount: tx.amount, method: 'MPESA', source: 'AUTOMATIC',
           reference: receipt || tx.checkoutRequestId || tx.id,
           mpesaCode: receipt || null,
-          notes: tx.phone ? `Paid by ${tx.phone}` : null,
+          // Keep the tenant's stated reason when there is one; otherwise note the payer.
+          notes: txNotes
+            ? (tx.phone ? `${txNotes} — paid by ${tx.phone}` : txNotes)
+            : (tx.phone ? `Paid by ${tx.phone}` : null),
           packageId: tx.packageId || null,
           subscriberId: sub.id, tenantId: tx.tenantId,
         } as never,
       });
-      // Mirror the new expiry into RADIUS (no-ops if RADIUS isn't enabled).
+      // Mirror the new expiry into RADIUS (no-ops if RADIUS isn't enabled). Skipped for non-package
+      // payments — nothing about the subscription changed, so there is nothing to re-sync or unjail.
       try {
         const { radiusConfigured, syncSubscriberToRadius } = await import('../utils/radius');
-        if (radiusConfigured()) await syncSubscriberToRadius(sub.id, { forceReauth: wasLapsed });
+        if (!isOther && radiusConfigured()) await syncSubscriberToRadius(sub.id, { forceReauth: wasLapsed });
       } catch (e) { console.error('renew: radius sync failed:', e instanceof Error ? e.message : e); }
       // Legacy router push only when not on RADIUS.
       try {
         const { radiusConfigured } = await import('../utils/radius');
-        if (sub.routerId && !radiusConfigured()) {
+        if (!isOther && sub.routerId && !radiusConfigured()) {
           const { enqueueCommand } = await import('../utils/commandQueue');
           if (sub.service === 'HOTSPOT') {
             await enqueueCommand(sub.routerId, `:foreach u in=[/ip hotspot user find name="${sub.username}"] do={ /ip hotspot user set $u disabled=no }`);
@@ -253,7 +265,7 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
       // RELEASE the LIVE session instantly — remove its list entry and flush that IP's conntrack —
       // so it gets full internet in ~1s with NO re-auth and NO reboot. (Hotspot has no walled garden.)
       try {
-        if (wasLapsed && sub.service !== 'HOTSPOT' && sub.routerId) {
+        if (!isOther && wasLapsed && sub.service !== 'HOTSPOT' && sub.routerId) {
           const { enqueueUnwall } = await import('../utils/walledGarden');
           await enqueueUnwall(sub.routerId, sub.username, sub.id, sub.ipAddress ?? null);
         }

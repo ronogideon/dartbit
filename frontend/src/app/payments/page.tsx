@@ -48,6 +48,13 @@ export default function PaymentsPage() {
   const [promptTarget, setPromptTarget] = useState<PromptTarget | null>(null);
   const [promptPhone, setPromptPhone] = useState('');
   const [promptAmount, setPromptAmount] = useState('');
+  // Which package the prompt is charging for. Prefilled from the subscriber when they have one; the
+  // tenant can pick a different one (or one for a subscriber who has none) and the price follows.
+  const [promptPackageId, setPromptPackageId] = useState('');
+  // True once the tenant types the amount themselves instead of it coming from a package. That's
+  // what makes this a non-package payment, so the reason field only appears in that case.
+  const [promptAmountManual, setPromptAmountManual] = useState(false);
+  const [promptReason, setPromptReason] = useState('');
   const [promptLoading, setPromptLoading] = useState(false);
   const [promptSending, setPromptSending] = useState(false);
   const [promptStatus, setPromptStatus] = useState<string | null>(null);
@@ -55,6 +62,7 @@ export default function PaymentsPage() {
   const resetPrompt = () => {
     setPromptOpen(false); setPromptSubId(''); setPromptTarget(null);
     setPromptPhone(''); setPromptAmount(''); setPromptStatus(null); setPromptSending(false);
+    setPromptPackageId(''); setPromptAmountManual(false); setPromptReason('');
   };
 
   // Pull the subscriber's saved phone and their package price to prefill the dialog. The tenant can
@@ -62,6 +70,7 @@ export default function PaymentsPage() {
   const loadPromptTarget = async (subId: string) => {
     setPromptSubId(subId);
     setPromptTarget(null); setPromptPhone(''); setPromptAmount(''); setPromptStatus(null);
+    setPromptPackageId(''); setPromptAmountManual(false); setPromptReason('');
     if (!subId) return;
     setPromptLoading(true);
     try {
@@ -69,6 +78,9 @@ export default function PaymentsPage() {
       setPromptTarget(t);
       setPromptPhone(t.phone || '');
       setPromptAmount(t.amount != null ? String(t.amount) : '');
+      // Preselect their current package so the common case (renew what they're on) needs no picking.
+      const sub = (subscribers as Subscriber[]).find(x => x.id === subId);
+      if (sub?.packageId) setPromptPackageId(sub.packageId);
     } catch {
       toast.error('Could not load that subscriber');
     } finally {
@@ -81,10 +93,19 @@ export default function PaymentsPage() {
     if (!promptPhone.trim()) return toast.error('Enter the phone number to prompt');
     const amt = Number(promptAmount);
     if (!amt || amt <= 0) return toast.error('Enter an amount');
+    if (!promptAmountManual && !promptPackageId) return toast.error('Select the package being paid for');
+    if (promptAmountManual && !promptReason.trim()) return toast.error('Enter a reason for this payment');
     setPromptSending(true);
     setPromptStatus('Sending request to the phone…');
     try {
-      const r = await promptPayment({ subscriberId: promptSubId, phone: promptPhone.trim(), amount: amt });
+      const r = await promptPayment({
+        subscriberId: promptSubId,
+        phone: promptPhone.trim(),
+        amount: amt,
+        // A manually-typed amount is not a package renewal, so send the reason instead of a package.
+        packageId: promptAmountManual ? undefined : (promptPackageId || undefined),
+        notes: promptAmountManual ? promptReason.trim() : undefined,
+      });
       setPromptStatus(`Request sent to ${r.phone} — waiting for them to enter their M-Pesa PIN…`);
       // Poll until the customer completes or cancels (STK prompts expire after about a minute).
       const started = Date.now();
@@ -443,7 +464,7 @@ export default function PaymentsPage() {
                       : <span className="text-green-600"> · active</span>}
                   </p>
                 ) : (
-                  <p className="text-amber-600">No package assigned — enter an amount manually.</p>
+                  <p className="text-amber-600">No package assigned — pick one below, or type an amount for another service.</p>
                 )}
               </div>
 
@@ -456,14 +477,64 @@ export default function PaymentsPage() {
                 </p>
               </div>
 
+              {/* Package drives the amount. Works whether or not the subscriber already has one. */}
+              <div>
+                <label className="label">Package</label>
+                <select
+                  className="input"
+                  value={promptAmountManual ? '' : promptPackageId}
+                  disabled={promptSending}
+                  onChange={e => {
+                    const id = e.target.value;
+                    const pkg = (packages as Pkg[]).find(p => p.id === id);
+                    setPromptPackageId(id);
+                    // Selecting a package fills the price and returns this to a package payment.
+                    setPromptAmountManual(false);
+                    setPromptReason('');
+                    if (pkg) setPromptAmount(String(pkg.price));
+                  }}
+                >
+                  <option value="">-- Select Package --</option>
+                  {(packages as Pkg[]).filter(p => p.isActive !== false).map(p => (
+                    <option key={p.id} value={p.id}>{p.name} — KES {p.price.toLocaleString()} / {validityLabel(p.validityMinutes)}</option>
+                  ))}
+                </select>
+                {!promptAmountManual && promptPackageId && (() => {
+                  const pkg = (packages as Pkg[]).find(p => p.id === promptPackageId);
+                  return pkg ? <p className="text-[11px] text-gray-400 mt-1">On payment: extends expiry by {validityLabel(pkg.validityMinutes)}.</p> : null;
+                })()}
+              </div>
+
               <div>
                 <label className="label">Amount (KES)</label>
                 <input className="input" type="number" min={1} value={promptAmount}
-                  onChange={e => setPromptAmount(e.target.value)} disabled={promptSending} />
-                {promptTarget.amount != null && (
-                  <p className="text-[11px] text-gray-400 mt-1">Their package price — edit to charge a different amount.</p>
-                )}
+                  onChange={e => {
+                    setPromptAmount(e.target.value);
+                    // Typing the amount means this isn't a package renewal — reveal the reason field.
+                    setPromptAmountManual(true);
+                    setPromptPackageId('');
+                  }}
+                  disabled={promptSending} />
+                <p className="text-[11px] text-gray-400 mt-1">
+                  {promptAmountManual
+                    ? 'Manual amount — this will not change their expiry.'
+                    : 'From the selected package — type a different amount to charge for another service.'}
+                </p>
               </div>
+
+              {/* Only shown for a manually-entered amount; required before the prompt can be sent. */}
+              {promptAmountManual && (
+                <div>
+                  <label className="label">Reason for payment</label>
+                  <input
+                    className="input"
+                    value={promptReason}
+                    onChange={e => setPromptReason(e.target.value)}
+                    placeholder="e.g. Installation fee, router purchase, relocation…"
+                    disabled={promptSending}
+                  />
+                </div>
+              )}
             </>
           )}
 
@@ -478,7 +549,11 @@ export default function PaymentsPage() {
               {promptSending ? 'Close' : 'Cancel'}
             </button>
             <button type="button" onClick={sendPrompt} className="btn-primary flex items-center gap-2"
-              disabled={promptSending || !promptTarget}>
+              disabled={
+                promptSending || !promptTarget ||
+                (!promptAmountManual && !promptPackageId) ||
+                (promptAmountManual && !promptReason.trim())
+              }>
               <Smartphone size={16} /> {promptSending ? 'Waiting…' : 'Send request'}
             </button>
           </div>

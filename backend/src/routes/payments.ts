@@ -278,10 +278,30 @@ router.post('/prompt', async (req: AuthRequest, res: Response) => {
     const phoneRaw = String(req.body?.phone || sub.phone || '').trim();
     if (!phoneRaw) return sendError(res, 'No phone number for this subscriber — enter one to prompt', 400);
 
-    const pkg = sub.package;
+    // Which package is being paid for. The tenant may pick one explicitly in the dialog (including
+    // for a subscriber who has none assigned yet); otherwise fall back to their current package.
+    // Previously this ALWAYS used sub.package, so prompting for a different plan charged the new
+    // price but renewed by the OLD plan's validity.
+    let pkg = sub.package;
+    const reqPackageId = req.body?.packageId ? String(req.body.packageId) : '';
+    if (reqPackageId) {
+      const chosen = await prisma.package.findFirst({ where: { id: reqPackageId, tenantId } });
+      if (!chosen) return sendError(res, 'Package not found', 404);
+      pkg = chosen;
+    }
+
+    // A manually-entered amount means this is NOT a package renewal (installation, equipment, a
+    // support call-out...). It must carry a reason, and it must not silently renew anything.
+    const notes = String(req.body?.notes || '').trim();
+    const isOther = !reqPackageId && !!notes;
+    if (isOther) pkg = null;
+
     const amount = Number(req.body?.amount ?? pkg?.price ?? 0);
     if (!amount || amount <= 0) {
       return sendError(res, pkg ? 'Package price is zero — enter an amount' : 'This subscriber has no package — enter an amount', 400);
+    }
+    if (!reqPackageId && !pkg && !notes) {
+      return sendError(res, 'Enter a reason for this payment', 400);
     }
 
     const { decryptDarajaCreds, centralDarajaCreds, stkPush, normalizePhone, normalizeBackendUrl } = await import('../utils/daraja');
@@ -303,7 +323,8 @@ router.post('/prompt', async (req: AuthRequest, res: Response) => {
       return sendError(res, 'This payment method does not support prompting', 400);
     }
 
-    const durationMinutes = pkg?.validityMinutes || 60;
+    // 0 for non-package payments so provisioning knows not to extend the subscription.
+    const durationMinutes = isOther ? 0 : (pkg?.validityMinutes || 60);
     const platformFee = collectedVia === 'DARTBIT' ? Math.ceil(amount * 0.01) : 0;
     const netToTenant = collectedVia === 'DARTBIT' ? Math.max(0, amount - platformFee) : amount;
 
@@ -321,6 +342,7 @@ router.post('/prompt', async (req: AuthRequest, res: Response) => {
         phone: normalizePhone(phoneRaw), amount, status: 'PENDING',
         durationMinutes, collectedVia, platformFee, netToTenant,
         subscriberId: sub.id, username: sub.username,
+        notes: notes || null,
       } as never,
     });
 
