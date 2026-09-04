@@ -109,8 +109,8 @@ app.use(express.json());
 // malformed / over-length URL => 400 Bad Request. Scoped to text/plain so JSON routes are untouched.
 app.use(express.text({ type: 'text/plain', limit: '5mb' }));
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.72', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.72', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.73', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.73', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -151,7 +151,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.72 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.11.73 running on port ${PORT}\n`);
   patchDatabase().catch(e => console.error('[patchDatabase] failed:', e instanceof Error ? e.message : e));
   startSessionCleanup();
   // RADIUS routers don't run the router-side session reporter (it's skipped as redundant), so this
