@@ -87,7 +87,7 @@ function normMac(mac?: string | null): string | null {
 // (username=password=MAC, for silent mac-auth auto-login). Each identity carries the same expiry +
 // rate-limit. Idempotent — clears prior rows for every identity first, then inserts current state.
 // Gated on the router being RADIUS-managed, so legacy-script routers are never touched here.
-export async function syncSubscriberToRadius(subscriberId: string, opts?: { kickToApply?: boolean; forceReauth?: boolean; prevUsername?: string | null; prevMac?: string | null }): Promise<void> {
+export async function syncSubscriberToRadius(subscriberId: string, opts?: { kickToApply?: boolean; forceReauth?: boolean; prevUsername?: string | null; prevMac?: string | null; throttleKbps?: { up: number; down: number } | null }): Promise<void> {
   if (!radiusConfigured()) { console.log(`[radius] skip ${subscriberId}: not configured (DARTBIT_RADIUS_ENABLED / SSH)`); return; }
   const sub = await prisma.subscriber.findUnique({
     where: { id: subscriberId },
@@ -95,6 +95,17 @@ export async function syncSubscriberToRadius(subscriberId: string, opts?: { kick
   }) as RadiusSub | null;
   if (!sub) { console.log(`[radius] skip ${subscriberId}: subscriber not found`); return; }
   if (sub.service !== 'PPPOE' && sub.service !== 'HOTSPOT') { console.log(`[radius] skip ${sub.username}: service=${sub.service} not synced`); return; }
+
+  // Resolve the FUP throttle. The FUP worker passes it explicitly; every other caller gets it
+  // looked up, so unrelated resyncs (renewal, profile edit) preserve an active throttle instead of
+  // silently restoring full speed.
+  let throttleKbps: { up: number; down: number } | null = opts?.throttleKbps ?? null;
+  if (!throttleKbps) {
+    try {
+      const { activeThrottleFor } = await import('./fup');
+      throttleKbps = await activeThrottleFor(sub.id);
+    } catch { throttleKbps = null; }
+  }
 
   // NOTE: We intentionally do NOT gate on the per-router `radiusEnabled` flag here. That flag
   // defaults to false and silently suppressed every per-subscriber write while the flag-agnostic
@@ -162,7 +173,11 @@ export async function syncSubscriberToRadius(subscriberId: string, opts?: { kick
         const exp = sqlq(radiusExpiry(sub.expiresAt));
         stmts.push(`INSERT INTO radcheck (username, attribute, op, value) VALUES ('${u}','Expiration',':=','${exp}');`);
       }
-      const rl = sqlq(rateLimit(sub.package?.speedUpKbps, sub.package?.speedDownKbps));
+      // Honour an ACTIVE FUP throttle. Any resync (renewal, edit, bulk sync) rewrites radreply
+      // from scratch, so without this a throttled subscriber would silently regain full speed
+      // the next time anything touched their record.
+      const eff = throttleKbps || { up: sub.package?.speedUpKbps ?? null, down: sub.package?.speedDownKbps ?? null };
+      const rl = sqlq(rateLimit(eff.up, eff.down));
       stmts.push(`INSERT INTO radreply (username, attribute, op, value) VALUES ('${u}','Mikrotik-Rate-Limit',':=','${rl}');`);
     } else if (walledGarden) {
       // Accept (no Expiration) so the CPE stays connected and can reach the portal, but throttle it.
@@ -446,6 +461,22 @@ export async function reapStaleRadacct(maxIdleMinutes = 15): Promise<number> {
   const n = parseInt((out || '').trim(), 10);
   if (n > 0) console.log(`[radius] reaped ${n} stale radacct session(s) (idle > ${mins}m)`);
   return isNaN(n) ? 0 : n;
+}
+
+// Total octets a subscriber has accumulated in radacct since a point in time. Sessions that STARTED
+// inside the window are counted in full (including open ones, whose counters are kept fresh by
+// radius-interim-update). Used by the FUP sweep as the authoritative usage figure on RADIUS routers.
+export async function radiusUsageSince(username: string, since: Date): Promise<{ bytesIn: number; bytesOut: number } | null> {
+  if (!radiusConfigured()) return null;
+  const u = sqlq(username);
+  const ts = sqlq(since.toISOString());
+  const sql = `SELECT COALESCE(SUM(acctinputoctets),0)::bigint, COALESCE(SUM(acctoutputoctets),0)::bigint FROM radacct WHERE username='${u}' AND acctstarttime >= '${ts}'::timestamptz;`;
+  const out = await radiusPsql(sql).catch(() => '');
+  const parts = (out || '').trim().split('|');
+  if (parts.length < 2) return null;
+  const bytesIn = Number(parts[0]) || 0;
+  const bytesOut = Number(parts[1]) || 0;
+  return { bytesIn, bytesOut };
 }
 
 export interface RadiusActiveSession {

@@ -109,8 +109,8 @@ app.use(express.json());
 // malformed / over-length URL => 400 Bad Request. Scoped to text/plain so JSON routes are untouched.
 app.use(express.text({ type: 'text/plain', limit: '5mb' }));
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.75', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.75', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.76', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.76', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -151,8 +151,17 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.75 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.11.76 running on port ${PORT}\n`);
   patchDatabase().catch(e => console.error('[patchDatabase] failed:', e instanceof Error ? e.message : e));
+
+  // Fair Use Policy sweep: accumulate usage and throttle/release. Every 5 minutes matches the
+  // RADIUS interim-update cadence, so radacct totals are fresh without hammering the droplet.
+  setInterval(() => {
+    import('./utils/fup')
+      .then(m => m.runFupSweep())
+      .then(r => { if (r.throttled || r.released) console.log(`[fup] checked=${r.checked} throttled=${r.throttled} released=${r.released}`); })
+      .catch(e => console.error('[fup] sweep failed:', e instanceof Error ? e.message : e));
+  }, 5 * 60 * 1000);
   startSessionCleanup();
   // RADIUS routers don't run the router-side session reporter (it's skipped as redundant), so this
   // mirrors FreeRADIUS radacct (both PPPoE and hotspot) into OnlineSession — otherwise authenticated
@@ -1073,8 +1082,40 @@ async function patchDatabase() {
     await safeExec(prisma, 'MpesaTx payoutStatus', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutStatus" TEXT`);
     await safeExec(prisma, 'MpesaTx payoutRef', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutRef" TEXT`);
     await safeExec(prisma, 'MpesaTx payoutAt', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutAt" TIMESTAMP(3)`);
-    // v1.11.75: reason for a non-package ("other service") prompt payment, carried to the Payment row.
+    // v1.11.76: reason for a non-package ("other service") prompt payment, carried to the Payment row.
     await safeExec(prisma, 'MpesaTx notes', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "notes" TEXT`);
+    // v1.11.76 Fair Use Policy — per-package limits + per-subscriber usage counters.
+    await safeExec(prisma, 'Pkg fupEnabled', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "fupEnabled" BOOLEAN NOT NULL DEFAULT false`);
+    await safeExec(prisma, 'Pkg fupPeriod', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "fupPeriod" TEXT NOT NULL DEFAULT 'MONTHLY'`);
+    await safeExec(prisma, 'Pkg fupLimitMb', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "fupLimitMb" INTEGER`);
+    await safeExec(prisma, 'Pkg fupCountMode', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "fupCountMode" TEXT NOT NULL DEFAULT 'COMBINED'`);
+    await safeExec(prisma, 'Pkg fupThrottleMode', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "fupThrottleMode" TEXT NOT NULL DEFAULT 'PERCENT'`);
+    await safeExec(prisma, 'Pkg fupThrottlePercent', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "fupThrottlePercent" INTEGER`);
+    await safeExec(prisma, 'Pkg fupThrottleUpKbps', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "fupThrottleUpKbps" INTEGER`);
+    await safeExec(prisma, 'Pkg fupThrottleDownKbps', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "fupThrottleDownKbps" INTEGER`);
+    await safeExec(prisma, 'Pkg fupNotify', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "fupNotify" BOOLEAN NOT NULL DEFAULT false`);
+    await safeExec(prisma, 'OnlineSession lastBytesIn', `ALTER TABLE "OnlineSession" ADD COLUMN IF NOT EXISTS "lastBytesIn" DOUBLE PRECISION`);
+    await safeExec(prisma, 'OnlineSession lastBytesOut', `ALTER TABLE "OnlineSession" ADD COLUMN IF NOT EXISTS "lastBytesOut" DOUBLE PRECISION`);
+    await safeExec(prisma, 'SubscriberUsage table', `CREATE TABLE IF NOT EXISTS "SubscriberUsage" (
+      "id" TEXT NOT NULL,
+      "tenantId" TEXT NOT NULL,
+      "subscriberId" TEXT NOT NULL,
+      "routerId" TEXT,
+      "periodType" TEXT NOT NULL,
+      "periodKey" TEXT NOT NULL,
+      "periodStart" TIMESTAMP(3) NOT NULL,
+      "periodEnd" TIMESTAMP(3),
+      "bytesIn" DOUBLE PRECISION NOT NULL DEFAULT 0,
+      "bytesOut" DOUBLE PRECISION NOT NULL DEFAULT 0,
+      "throttled" BOOLEAN NOT NULL DEFAULT false,
+      "throttledAt" TIMESTAMP(3),
+      "notifiedAt" TIMESTAMP(3),
+      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT "SubscriberUsage_pkey" PRIMARY KEY ("id")
+    )`);
+    await safeExec(prisma, 'SubUsage unique', `CREATE UNIQUE INDEX IF NOT EXISTS "SubscriberUsage_sub_period_key" ON "SubscriberUsage"("subscriberId","periodType","periodKey")`);
+    await safeExec(prisma, 'SubUsage tenant idx', `CREATE INDEX IF NOT EXISTS "SubscriberUsage_tenant_period_idx" ON "SubscriberUsage"("tenantId","periodType","periodKey")`);
     // v1.10.76 disbursement: payout cadence + enable flag + last-payout marker on PaymentConfig
     await safeExec(prisma, 'PayCfg payoutCadence', `ALTER TABLE "PaymentConfig" ADD COLUMN IF NOT EXISTS "payoutCadence" TEXT DEFAULT 'INSTANT'`);
     await safeExec(prisma, 'PayCfg payoutEnabled', `ALTER TABLE "PaymentConfig" ADD COLUMN IF NOT EXISTS "payoutEnabled" BOOLEAN DEFAULT false`);

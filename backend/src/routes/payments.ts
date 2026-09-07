@@ -162,6 +162,12 @@ router.post('/', async (req: AuthRequest, res: Response) => {
         },
       });
 
+      // New billing cycle → MONTHLY FUP allowance resets, so lift any active throttle now.
+      try {
+        const { clearFupOnRenewal } = await import('../utils/fup');
+        await clearFupOnRenewal(subscriber.id);
+      } catch { /* best-effort */ }
+
       // Mirror the new expiry into RADIUS so gateway-managed routers enforce the extended window.
       try {
         const { radiusConfigured, syncSubscriberToRadius } = await import('../utils/radius');

@@ -243,6 +243,14 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
           subscriberId: sub.id, tenantId: tx.tenantId,
         } as never,
       });
+      // A renewal starts a new billing cycle, so a MONTHLY FUP allowance resets — lift any throttle
+      // immediately rather than waiting for the next sweep. They just paid; they get full speed now.
+      if (!isOther) {
+        try {
+          const { clearFupOnRenewal } = await import('../utils/fup');
+          await clearFupOnRenewal(sub.id);
+        } catch { /* best-effort */ }
+      }
       // Mirror the new expiry into RADIUS (no-ops if RADIUS isn't enabled). Skipped for non-package
       // payments — nothing about the subscription changed, so there is nothing to re-sync or unjail.
       try {

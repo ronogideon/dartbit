@@ -16,7 +16,35 @@ const packageSchema = z.object({
   price: z.number().min(0),
   isTrial: z.boolean().optional().default(false),
   routerIds: z.array(z.string()).optional().default([]), // empty = offered on all routers
+  // ---- Fair Use Policy. Enforced for PPPOE only today (STATIC has no usage source on the router
+  // yet), so the fields are accepted for any service but only act on PPPoE packages.
+  fupEnabled: z.boolean().optional(),
+  fupPeriod: z.enum(['DAILY', 'MONTHLY']).optional(),
+  fupLimitMb: z.number().int().min(1).nullable().optional(),
+  fupCountMode: z.enum(['DOWNLOAD', 'COMBINED']).optional(),
+  fupThrottleMode: z.enum(['PERCENT', 'MANUAL']).optional(),
+  fupThrottlePercent: z.number().int().min(1).max(100).nullable().optional(),
+  fupThrottleUpKbps: z.number().int().min(1).nullable().optional(),
+  fupThrottleDownKbps: z.number().int().min(1).nullable().optional(),
+  fupNotify: z.boolean().optional(),
 });
+
+// FUP consistency checks, applied to both create and update. Kept OUT of the schema object so
+// packageSchema stays a ZodObject and `.partial()` still works on the update route (.refine would
+// turn it into ZodEffects, which has no .partial()).
+function fupProblem(d: Record<string, unknown>): string | null {
+  if (!d.fupEnabled) return null;
+  const limit = d.fupLimitMb as number | null | undefined;
+  if (limit == null || limit <= 0) return 'Set a data allowance before enabling FUP';
+  if ((d.fupThrottleMode ?? 'PERCENT') === 'MANUAL') {
+    if (d.fupThrottleUpKbps == null || d.fupThrottleDownKbps == null) {
+      return 'Enter both upload and download throttle speeds';
+    }
+  } else if (d.fupThrottlePercent != null && ((d.fupThrottlePercent as number) < 1 || (d.fupThrottlePercent as number) > 100)) {
+    return 'Throttle percentage must be between 1 and 100';
+  }
+  return null;
+}
 
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
@@ -33,6 +61,8 @@ router.post('/', async (req: AuthRequest, res: Response) => {
   try {
     const parsed = packageSchema.safeParse(req.body);
     if (!parsed.success) return sendError(res, parsed.error.message, 400);
+    const bad = fupProblem(parsed.data as Record<string, unknown>);
+    if (bad) return sendError(res, bad, 400);
 
     const tenantId = req.user?.tenantId;
     if (!tenantId) return sendError(res, 'Tenant required', 400);
@@ -48,6 +78,8 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const parsed = packageSchema.partial().safeParse(req.body);
     if (!parsed.success) return sendError(res, parsed.error.message, 400);
+    const bad = fupProblem(parsed.data as Record<string, unknown>);
+    if (bad) return sendError(res, bad, 400);
     const pkg = await prisma.package.update({ where: { id: req.params.id }, data: parsed.data });
     sendSuccess(res, pkg);
   } catch {

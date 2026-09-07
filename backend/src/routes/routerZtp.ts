@@ -1154,6 +1154,15 @@ router.all('/sessions', async (req: Request, res: Response) => {
             const txDelta = Math.max(0, txBytes - prev.tx);
             uploadKbps = Math.round((rxDelta * 8) / 1024 / dt);
             downloadKbps = Math.round((txDelta * 8) / 1024 / dt);
+            // Feed the same delta to FUP on legacy (non-RADIUS) routers. Buffered in memory and
+            // drained by the 5-minute sweep, so this adds no database work to the 5s poll. On
+            // RADIUS routers the sweep re-reads radacct instead, so this is ignored there.
+            if (svcMark === 'P' && username && (rxDelta > 0 || txDelta > 0)) {
+              try {
+                const { bufferLegacyDelta } = await import('../utils/fup');
+                bufferLegacyDelta(r.tenantId, username, r.id, rxDelta, txDelta);
+              } catch { /* best-effort */ }
+            }
           }
         }
 

@@ -268,6 +268,7 @@ model Subscriber {
   payments     Payment[]
   sessions     OnlineSession[]
   sessionRecords SessionRecord[]
+  usage        SubscriberUsage[]
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
 
@@ -285,6 +286,16 @@ model Package {
   isTrial         Boolean      @default(false)  // free hotspot trial — MAC-only login, no payment
   isActive        Boolean      @default(true)
   routerIds       String[]     @default([])     // routers this package is offered on; empty = ALL routers
+  // ---- Fair Use Policy (PPPoE only for now; STATIC needs per-IP router accounting we don't collect yet)
+  fupEnabled         Boolean   @default(false)
+  fupPeriod          String    @default("MONTHLY") // DAILY | MONTHLY
+  fupLimitMb         Int?                          // allowance in MB before throttling kicks in
+  fupCountMode       String    @default("COMBINED")// DOWNLOAD | COMBINED (down only, or up+down)
+  fupThrottleMode    String    @default("PERCENT") // PERCENT of package speed | MANUAL kbps
+  fupThrottlePercent Int?                          // 1-100, applied to BOTH up and down
+  fupThrottleUpKbps  Int?                          // used when fupThrottleMode = MANUAL
+  fupThrottleDownKbps Int?
+  fupNotify          Boolean   @default(false)     // SMS the subscriber when they get throttled
   tenantId        String
   tenant          Tenant       @relation(fields: [tenantId], references: [id])
   subscribers     Subscriber[]
@@ -356,6 +367,11 @@ model OnlineSession {
                                                 // touched again while it stays reported — this is
                                                 // the durable "how long have they really been
                                                 // online" anchor (see /router/sessions upsert).
+  // Last byte counters seen for this session, used to accumulate FUP usage as DELTAS on the legacy
+  // (non-RADIUS) path. Router counters are per-session and reset on reconnect, so a value lower
+  // than the stored one is treated as a fresh counter rather than a negative delta.
+  lastBytesIn   Float?
+  lastBytesOut  Float?
   sessionKey    String         // device identity for the upsert: macAddress when known, else
                                 // username. A resolved username alone is NOT unique — one
                                 // subscriber can have multiple devices (phone + laptop) online at
@@ -675,4 +691,28 @@ model RouterBlockedDomain {
 
   @@unique([routerId, domain])
   @@index([routerId])
+}
+
+// Rolling FUP usage counter. Deliberately keyed on the SUBSCRIBER (never the router) so replacing a
+// MikroTik leaves the customer's history intact; routerId is informational only and may be null.
+model SubscriberUsage {
+  id           String     @id @default(cuid())
+  tenantId     String
+  subscriberId String
+  subscriber   Subscriber @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
+  routerId     String?                        // where the traffic was seen; history survives if it changes
+  periodType   String                         // DAILY | MONTHLY
+  periodKey    String                         // DAILY: 'YYYY-MM-DD' (EAT). MONTHLY: billing-cycle start ISO date.
+  periodStart  DateTime
+  periodEnd    DateTime?
+  bytesIn      Float      @default(0)         // Float not BigInt: exact to 2^53 (~9PB) and JSON-safe
+  bytesOut     Float      @default(0)
+  throttled    Boolean    @default(false)
+  throttledAt  DateTime?
+  notifiedAt   DateTime?                      // so the FUP SMS is sent once per period, not every sweep
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@unique([subscriberId, periodType, periodKey])
+  @@index([tenantId, periodType, periodKey])
 }
