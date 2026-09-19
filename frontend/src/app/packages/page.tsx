@@ -47,7 +47,7 @@ export default function PackagesPage() {
   // Speed changes don't reach existing subscribers on their own — each one's rate is a snapshot
   // taken at activation. Rather than silently switching to instant propagation (some tenants rely
   // on the grandfathering), the tenant is shown how many subscribers are affected and picks.
-  const [speedConfirm, setSpeedConfirm] = useState<{ payload: Record<string, unknown>; id: string; active: number } | null>(null);
+  const [speedConfirm, setSpeedConfirm] = useState<{ payload: Record<string, unknown>; id: string; active: number; total: number } | null>(null);
   const [downSpeed, setDownSpeed] = useState<{ value: number | ''; unit: SpeedUnit }>({ value: '', unit: 'Mbps' });
 
   const { data: packages = [], isPending } = useQuery({ queryKey: ['packages'], queryFn: getPackages });
@@ -140,8 +140,8 @@ export default function PackagesPage() {
       const speedChanged = payload.speedUpKbps !== editing.speedUpKbps || payload.speedDownKbps !== editing.speedDownKbps;
       if (speedChanged) {
         getPackageImpact(editing.id)
-          .then(({ active }) => {
-            if (active > 0) setSpeedConfirm({ payload, id: editing.id, active });
+          .then(({ active, total }) => {
+            if (active > 0) setSpeedConfirm({ payload, id: editing.id, active, total });
             // Nobody on the package — nothing to propagate, just save.
             else updateMut.mutate({ id: editing.id, data: payload });
           })
@@ -474,16 +474,31 @@ export default function PackagesPage() {
         {speedConfirm && (
           <div className="space-y-4">
             <p className="text-sm text-gray-600 dark:text-gray-300">
-              <span className="font-semibold text-gray-900 dark:text-gray-100">{speedConfirm.active}</span>{' '}
-              active subscriber{speedConfirm.active === 1 ? '' : 's'}{' '}
-              {speedConfirm.active === 1 ? 'is' : 'are'} on this package.
+              <span className="font-semibold text-gray-900 dark:text-gray-100">{speedConfirm.active}</span>
+              {speedConfirm.total !== speedConfirm.active && <> of {speedConfirm.total}</>}{' '}
+              subscriber{speedConfirm.active === 1 ? '' : 's'} on this package will be re-synced.
             </p>
-            <div className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2">
+            <div className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 space-y-2">
+              {/* "Active" here means paid-up and not expired — NOT "currently online". Offline
+                  subscribers are included; the change is written to their RADIUS record and takes
+                  effect the moment they reconnect. */}
               <p className="text-xs text-gray-500 dark:text-gray-400">
-                Their current speed was set when they activated, so it won&apos;t change on its own.
-                Applying now re-syncs each of them and briefly reconnects live sessions so the new
-                speed takes effect immediately.
+                This covers everyone on the package who isn&apos;t expired or disabled —
+                <span className="font-medium"> including those currently offline</span>. It is not
+                limited to who&apos;s online right now.
               </p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Their speed was set when they activated, so it won&apos;t change on its own. Applying
+                now rewrites each record and briefly reconnects live sessions so the new speed takes
+                effect immediately.
+              </p>
+              {speedConfirm.total > speedConfirm.active && (
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  The other {speedConfirm.total - speedConfirm.active} {speedConfirm.total - speedConfirm.active === 1 ? 'is' : 'are'} expired or
+                  disabled and hold no speed setting right now — they pick up the new speed
+                  automatically when they renew.
+                </p>
+              )}
             </div>
             <div className="flex flex-col gap-2">
               <button
