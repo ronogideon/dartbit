@@ -1,7 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getSubscribers, createSubscriber, updateSubscriber, deleteSubscriber, getPackages, getRouters, bulkDeleteSubscribers } from '@/lib/api';
+import { getSubscribers, createSubscriber, updateSubscriber, deleteSubscriber, getPackages, getRouters, bulkDeleteSubscribers, type FupStatus } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
@@ -9,6 +9,7 @@ import SubscriberDetail from '@/components/SubscriberDetail';
 import ImportUsersModal from '@/components/ImportUsersModal';
 import { useAuth } from '@/lib/auth';
 import { expiryBadge, timeAgo } from '@/lib/format';
+import StatusDot from '@/components/StatusDot';
 
 // Time-left pill colors: text close to the indicator, on a near-opaque tinted background.
 import toast from 'react-hot-toast';
@@ -16,7 +17,7 @@ import { Plus, Edit2, Trash2, Search, Upload, CheckSquare, Square, Download, X }
 
 interface Subscriber {
   id: string; username: string; fullName: string; phone?: string; email?: string;
-  service: string; isActive: boolean; expiresAt?: string; isOnline?: boolean;
+  service: string; isActive: boolean; expiresAt?: string; isOnline?: boolean; fupStatus?: FupStatus;
   packageId?: string; routerId?: string; ipAddress?: string; macAddress?: string;
   lastOnlineAt?: string;
   package?: { id: string; name: string }; router?: { id: string; name: string };
@@ -315,7 +316,7 @@ export default function SubscribersPage() {
                   <tr key={s.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/30">
                     <td className="table-td">
                       <button onClick={() => setDetailId(s.id)} className="flex items-center gap-2 text-left group">
-                        <span className={`w-2 h-2 rounded-full shrink-0 ${s.isOnline ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-600'}`} title={s.isOnline ? 'Online' : 'Offline'} />
+                        <StatusDot status={s.fupStatus} />
                         <span>
                           <span className="block font-medium text-blue-600 group-hover:underline">{s.fullName}</span>
                           <span className="block text-xs text-gray-500">{s.username}</span>

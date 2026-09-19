@@ -90,6 +90,12 @@ export const extendSubscriber = (id: string, minutes: number) => api.post(`/subs
 export const getPackages = () => api.get('/packages').then((r) => r.data.data);
 export const createPackage = (data: unknown) => api.post('/packages', data).then((r) => r.data.data);
 export const updatePackage = (id: string, data: unknown) => api.put(`/packages/${id}`, data).then((r) => r.data.data);
+// How many subscribers a speed change would affect — shown before saving so the tenant chooses
+// whether to apply now or let it take effect on renewal.
+export const getPackageImpact = (id: string) =>
+  api.get(`/packages/${id}/impact`).then((r) => r.data.data as { total: number; active: number });
+// One computed status per subscriber for the connection dot.
+export type FupStatus = 'online' | 'throttled' | 'offline';
 export const deletePackage = (id: string) => api.delete(`/packages/${id}`).then((r) => r.data.data);
 
 export const getPayments = () => api.get('/payments').then((r) => r.data.data);

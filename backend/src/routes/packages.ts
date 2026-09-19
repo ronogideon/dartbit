@@ -74,14 +74,54 @@ router.post('/', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// How many subscribers a speed change on this package would touch. The UI calls this BEFORE saving
+// so the tenant can choose apply-now vs apply-on-renewal — existing subscribers currently keep their
+// old speed until renewal (a snapshot-at-activation side effect), and some tenants rely on that
+// grandfathering, so propagation must be an explicit choice rather than a silent behaviour change.
+router.get('/:id/impact', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) return sendError(res, 'Tenant required', 400);
+    const { countAffectedSubscribers } = await import('../utils/packageResync');
+    const counts = await countAffectedSubscribers(req.params.id, tenantId);
+    sendSuccess(res, counts);
+  } catch {
+    sendError(res, 'Failed to count affected subscribers', 500);
+  }
+});
+
 router.put('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const parsed = packageSchema.partial().safeParse(req.body);
     if (!parsed.success) return sendError(res, parsed.error.message, 400);
     const bad = fupProblem(parsed.data as Record<string, unknown>);
     if (bad) return sendError(res, bad, 400);
+
+    // Compare against the stored row so we only propagate when the SPEED actually changed — a price
+    // or name edit shouldn't kick every session on the package.
+    const before = await prisma.package.findUnique({
+      where: { id: req.params.id },
+      select: { speedUpKbps: true, speedDownKbps: true },
+    });
+
     const pkg = await prisma.package.update({ where: { id: req.params.id }, data: parsed.data });
-    sendSuccess(res, pkg);
+
+    const speedChanged = !!before && (
+      (parsed.data.speedUpKbps !== undefined && parsed.data.speedUpKbps !== before.speedUpKbps) ||
+      (parsed.data.speedDownKbps !== undefined && parsed.data.speedDownKbps !== before.speedDownKbps)
+    );
+
+    // applySpeedNow is the tenant's explicit choice. Without it the change applies on renewal only,
+    // preserving today's grandfathering behaviour.
+    const applyNow = req.body?.applySpeedNow === true;
+    if (speedChanged && applyNow) {
+      // Detached: each subscriber is an SSH psql write plus a CoA kick, so this must not block the
+      // response. Partial failures are logged per subscriber by the job.
+      const { queuePackageResync } = await import('../utils/packageResync');
+      queuePackageResync(pkg.id, { kick: true });
+    }
+
+    sendSuccess(res, { ...pkg, speedChanged, resyncQueued: speedChanged && applyNow });
   } catch {
     sendError(res, 'Failed to update package', 500);
   }

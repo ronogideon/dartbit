@@ -323,7 +323,14 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       return { ...s, isOnline: entitled && (onlineIds.has(s.id) || onlineNames.has(s.username)) };
     });
 
-    sendSuccess(res, withOnline);
+    // One computed FUP status per row, resolved in a single batched query (never per-row), using
+    // the worker's own period logic so a stale period key can't leave last cycle's throttle showing.
+    const onlineMap = new Map(withOnline.map(s => [s.id, s.isOnline]));
+    const { fupStatusFor } = await import('../utils/fup');
+    const statuses = await fupStatusFor(withOnline as never, id => !!onlineMap.get(id));
+    const withStatus = withOnline.map(s => ({ ...s, fupStatus: statuses.get(s.id) || 'offline' }));
+
+    sendSuccess(res, withStatus);
   } catch {
     sendError(res, 'Failed to fetch subscribers', 500);
   }

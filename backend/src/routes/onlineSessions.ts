@@ -38,7 +38,8 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     const where = tenantId ? { tenantId } : {};
     const sessions = await prisma.onlineSession.findMany({
       where,
-      include: { subscriber: true, router: true },
+      // package is needed for the FUP status dot (fupEnabled / fupPeriod drive the period key).
+      include: { subscriber: { include: { package: true } }, router: true },
     });
     // Hide expired subscribers from the active page. Expired PPPoE/static devices are deliberately
     // kept connected (portal-only) so they can reach tenant.dartbittech.com to renew — but they
@@ -57,7 +58,25 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       .map(s => ({ s, secs: sessionSeconds(s.uptime, (s as { startedAt?: Date }).startedAt, now) }))
       .sort((a, b) => (a.secs - b.secs) || a.s.id.localeCompare(b.s.id))
       .map(x => ({ ...x.s, onlineSeconds: x.secs === Number.MAX_SAFE_INTEGER ? null : x.secs }));
-    sendSuccess(res, sorted);
+
+    // Same computed status as the subscribers list, from the same helper — these two pages render
+    // the identical dot, so they must not derive it independently.
+    const subsForStatus = sorted
+      .filter(r => r.subscriber)
+      .map(r => ({
+        id: r.subscriber!.id,
+        expiresAt: r.subscriber!.expiresAt,
+        service: r.subscriber!.service,
+        package: (r.subscriber as unknown as { package?: unknown }).package ?? null,
+      }));
+    // Rows on this page are by definition live sessions, so everything here is online-or-throttled.
+    const { fupStatusFor } = await import('../utils/fup');
+    const statuses = await fupStatusFor(subsForStatus as never, () => true);
+    const withStatus = sorted.map(r => ({
+      ...r,
+      fupStatus: r.subscriber ? (statuses.get(r.subscriber.id) || 'online') : 'online',
+    }));
+    sendSuccess(res, withStatus);
   } catch {
     sendError(res, 'Failed to fetch sessions', 500);
   }

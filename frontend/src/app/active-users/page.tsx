@@ -2,9 +2,10 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import { getOnlineSessions } from '@/lib/api';
+import { getOnlineSessions, type FupStatus } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import SubscriberDetail from '@/components/SubscriberDetail';
+import StatusDot from '@/components/StatusDot';
 import { Activity, Wifi, Clock } from 'lucide-react';
 import SearchInput from '@/components/ui/SearchInput';
 
@@ -13,6 +14,7 @@ interface Session {
   uploadSpeed?: number; downloadSpeed?: number; uptime?: string; onlineSeconds?: number | null;
   router?: { name: string };
   subscriber?: { id: string; fullName: string; expiresAt?: string; service?: string };
+  fupStatus?: FupStatus;
 }
 
 function formatSpeed(kbps?: number) {
@@ -155,7 +157,7 @@ export default function ActiveUsersPage() {
                       disabled={!s.subscriber?.id}
                       className="flex items-center gap-2 text-left group disabled:cursor-default"
                     >
-                      <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" title="Online" />
+                      <StatusDot status={s.fupStatus} />
                       <span className="min-w-0">
                         <span className={`block truncate ${s.subscriber?.id ? 'text-blue-600 group-hover:underline' : ''}`}>{s.subscriber?.fullName || s.username}</span>
                         <span className="block text-xs text-gray-500 truncate">{s.username}</span>

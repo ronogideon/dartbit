@@ -320,6 +320,54 @@ export async function runFupSweep(): Promise<{ checked: number; throttled: numbe
   return { checked, throttled, released };
 }
 
+// One computed status per subscriber for the UI dot. Deliberately a single enum rather than two
+// booleans: online+throttled is four combinations, and the fourth ("offline but throttled") has no
+// agreed rendering, so the two pages would drift apart. Offline wins visually — the throttle stays
+// in the data and reapplies on reconnect.
+export type FupStatus = 'online' | 'throttled' | 'offline';
+
+// Resolve FUP status for a batch of subscribers in ONE query.
+// The period key is derived per subscriber (MONTHLY is anchored to their own billing cycle), so it
+// cannot be a plain SQL join — instead the keys are computed here with the SAME resolvePeriod() the
+// worker uses, then fetched together. Reimplementing the key logic is how last cycle's throttle
+// ends up showing yellow forever, so this must stay the single source.
+export async function fupStatusFor(
+  subs: Array<{
+    id: string;
+    expiresAt?: Date | null;
+    service?: string | null;
+    package?: { validityMinutes?: number | null; fupEnabled?: boolean | null; fupPeriod?: string | null } | null;
+  }>,
+  isOnline: (id: string) => boolean,
+): Promise<Map<string, FupStatus>> {
+  const out = new Map<string, FupStatus>();
+  const lookups: Array<{ subscriberId: string; periodType: string; periodKey: string }> = [];
+
+  for (const s of subs) {
+    out.set(s.id, isOnline(s.id) ? 'online' : 'offline');
+    const pkg = s.package as Record<string, unknown> | null | undefined;
+    // Only FUP-enabled packages can be throttled, so skip the rest entirely.
+    if (!pkg?.fupEnabled) continue;
+    const period = resolvePeriod(((pkg.fupPeriod as PeriodType) || 'MONTHLY'), s, s.package || {});
+    lookups.push({ subscriberId: s.id, periodType: period.periodType, periodKey: period.periodKey });
+  }
+  if (lookups.length === 0) return out;
+
+  try {
+    const rows = await prisma.subscriberUsage.findMany({
+      where: { OR: lookups } as never,
+      select: { subscriberId: true, throttled: true },
+    });
+    for (const r of rows) {
+      // Offline wins: a throttled subscriber who isn't connected still reads as offline.
+      if (r.throttled && out.get(r.subscriberId) === 'online') out.set(r.subscriberId, 'throttled');
+    }
+  } catch (e) {
+    console.error('[fup] status lookup failed:', e instanceof Error ? e.message : e);
+  }
+  return out;
+}
+
 // Called on renewal: a new billing cycle means a new MONTHLY bucket, so lift any throttle at once
 // rather than waiting for the next sweep (the customer just paid — they should get full speed now).
 export async function clearFupOnRenewal(subscriberId: string): Promise<void> {

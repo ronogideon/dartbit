@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getPackages, createPackage, updatePackage, deletePackage, getRouters } from '@/lib/api';
+import { getPackages, createPackage, updatePackage, deletePackage, getRouters, getPackageImpact } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
 import Modal from '@/components/ui/Modal';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
@@ -44,6 +44,10 @@ export default function PackagesPage() {
   // Speed entered as value + unit (Kbps/Mbps/Gbps), converted to Kbps on submit. Start EMPTY so the
   // tenant must consciously choose — nothing is prefilled, preventing unintended speed/price/validity.
   const [upSpeed, setUpSpeed] = useState<{ value: number | ''; unit: SpeedUnit }>({ value: '', unit: 'Mbps' });
+  // Speed changes don't reach existing subscribers on their own — each one's rate is a snapshot
+  // taken at activation. Rather than silently switching to instant propagation (some tenants rely
+  // on the grandfathering), the tenant is shown how many subscribers are affected and picks.
+  const [speedConfirm, setSpeedConfirm] = useState<{ payload: Record<string, unknown>; id: string; active: number } | null>(null);
   const [downSpeed, setDownSpeed] = useState<{ value: number | ''; unit: SpeedUnit }>({ value: '', unit: 'Mbps' });
 
   const { data: packages = [], isPending } = useQuery({ queryKey: ['packages'], queryFn: getPackages });
@@ -57,8 +61,14 @@ export default function PackagesPage() {
   });
   const updateMut = useMutation({
     mutationFn: ({ id, data }: { id: string; data: unknown }) => updatePackage(id, data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['packages'] }); toast.success('Package updated'); closeModal(); },
-    onError: () => toast.error('Failed to update package'),
+    onSuccess: (res: unknown) => {
+      qc.invalidateQueries({ queryKey: ['packages'] });
+      const queued = (res as { resyncQueued?: boolean } | null)?.resyncQueued;
+      toast.success(queued ? 'Package updated — applying new speed to subscribers' : 'Package updated');
+      setSpeedConfirm(null);
+      closeModal();
+    },
+    onError: () => { setSpeedConfirm(null); toast.error('Failed to update package'); },
   });
   const deleteMut = useMutation({
     mutationFn: deletePackage,
@@ -125,7 +135,21 @@ export default function PackagesPage() {
       fupThrottleDownKbps: form.fupThrottleMode === 'MANUAL' && form.fupThrottleDownKbps !== '' ? Number(form.fupThrottleDownKbps) : null,
       fupNotify: form.fupNotify,
     };
-    if (editing) updateMut.mutate({ id: editing.id, data: payload });
+    if (editing) {
+      // Only ask when the SPEED actually changed — price/name edits propagate nothing.
+      const speedChanged = payload.speedUpKbps !== editing.speedUpKbps || payload.speedDownKbps !== editing.speedDownKbps;
+      if (speedChanged) {
+        getPackageImpact(editing.id)
+          .then(({ active }) => {
+            if (active > 0) setSpeedConfirm({ payload, id: editing.id, active });
+            // Nobody on the package — nothing to propagate, just save.
+            else updateMut.mutate({ id: editing.id, data: payload });
+          })
+          .catch(() => updateMut.mutate({ id: editing.id, data: payload }));
+        return;
+      }
+      updateMut.mutate({ id: editing.id, data: payload });
+    }
     else createMut.mutate(payload);
   };
 
@@ -442,6 +466,46 @@ export default function PackagesPage() {
 
       <ConfirmDialog isOpen={!!deleteId} onClose={() => setDeleteId(null)}
         onConfirm={() => deleteId && deleteMut.mutate(deleteId)} loading={deleteMut.isPending} />
-    </AppLayout>
+    
+      {/* Speed propagation choice. Existing subscribers hold a rate snapshot taken at activation, so
+          a speed edit reaches them only on renewal unless applied explicitly. Shown with the real
+          affected count so the tenant isn't guessing at the blast radius. */}
+      <Modal open={!!speedConfirm} onClose={() => setSpeedConfirm(null)} title="Apply new speed to existing subscribers?">
+        {speedConfirm && (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600 dark:text-gray-300">
+              <span className="font-semibold text-gray-900 dark:text-gray-100">{speedConfirm.active}</span>{' '}
+              active subscriber{speedConfirm.active === 1 ? '' : 's'}{' '}
+              {speedConfirm.active === 1 ? 'is' : 'are'} on this package.
+            </p>
+            <div className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2">
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Their current speed was set when they activated, so it won&apos;t change on its own.
+                Applying now re-syncs each of them and briefly reconnects live sessions so the new
+                speed takes effect immediately.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={updateMut.isPending}
+                onClick={() => updateMut.mutate({ id: speedConfirm.id, data: { ...speedConfirm.payload, applySpeedNow: true } })}
+              >
+                Apply now to all {speedConfirm.active}
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={updateMut.isPending}
+                onClick={() => updateMut.mutate({ id: speedConfirm.id, data: { ...speedConfirm.payload, applySpeedNow: false } })}
+              >
+                Apply on next renewal only
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+</AppLayout>
   );
 }

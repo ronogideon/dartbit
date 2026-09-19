@@ -324,6 +324,17 @@ export async function bulkSyncPppoeToRadius(opts: { tenantId?: string; routerId?
   });
 
   const now = new Date();
+  // Resolve throttles once up front (cheap DB reads) so the batched SQL below can honour them
+  // without an SSH round-trip per subscriber.
+  const throttleMap = new Map<string, { up: number; down: number }>();
+  try {
+    const { activeThrottleFor } = await import('./fup');
+    for (const sub of subs) {
+      const t = await activeThrottleFor(sub.id);
+      if (t) throttleMap.set(sub.id, t);
+    }
+  } catch { /* no FUP module / no throttles — fall through to package speeds */ }
+
   const stmts: string[] = [];
   let synced = 0, skipped = 0;
   for (const sub of subs) {
@@ -340,7 +351,11 @@ export async function bulkSyncPppoeToRadius(opts: { tenantId?: string; routerId?
       const exp = sqlq(radiusExpiry(sub.expiresAt));
       stmts.push(`INSERT INTO radcheck (username, attribute, op, value) VALUES ('${u}','Expiration',':=','${exp}');`);
     }
-    const rl = sqlq(rateLimit(sub.package?.speedUpKbps, sub.package?.speedDownKbps));
+    // Respect an active FUP throttle. Without this, ANY bulk sync (renewal sweep, manual resync)
+    // silently restores full speed to every throttled subscriber — the same trap the per-subscriber
+    // path guards against.
+    const thr = throttleMap.get(sub.id) || null;
+    const rl = sqlq(thr ? rateLimit(thr.up, thr.down) : rateLimit(sub.package?.speedUpKbps, sub.package?.speedDownKbps));
     stmts.push(`INSERT INTO radreply (username, attribute, op, value) VALUES ('${u}','Mikrotik-Rate-Limit',':=','${rl}');`);
     synced++;
   }
