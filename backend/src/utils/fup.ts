@@ -212,8 +212,19 @@ async function setThrottle(sub: { id: string; username: string; routerId: string
   // so throttling on a legacy router is not instantaneous.
   if (!sub.routerId) return;
   const { enqueueCommand } = await import('./commandQueue');
-  const rl = speed ? `${speed.up}k/${speed.down}k` : '';
-  if (!rl) return;
+  // A null speed means RELEASE — restore the package's full rate. Previously this built an empty
+  // string and bailed, so legacy routers were throttled but never un-throttled.
+  let rl: string;
+  if (speed) {
+    rl = `${speed.up}k/${speed.down}k`;
+  } else {
+    const full = await prisma.subscriber.findUnique({
+      where: { id: sub.id },
+      select: { package: { select: { speedUpKbps: true, speedDownKbps: true } } },
+    });
+    if (!full?.package) return;
+    rl = `${full.package.speedUpKbps}k/${full.package.speedDownKbps}k`;
+  }
   await enqueueCommand(sub.routerId,
     `:foreach s in=[/ppp secret find name="${sub.username}"] do={ /ppp secret set $s rate-limit="${rl}" }`);
 }
@@ -262,13 +273,26 @@ export async function runFupSweep(): Promise<{ checked: number; throttled: numbe
       const row = await prisma.subscriberUsage.findFirst({
         where: { subscriberId: sub.id, periodType: period.periodType, periodKey: period.periodKey },
       });
-      if (!row) continue;
+      // Throttles left behind in a PREVIOUS period. When the period rolls over (midnight for DAILY,
+      // renewal for MONTHLY) the sweep starts reading a new periodKey, so the old row's
+      // throttled=true would never be looked at again and the router would stay throttled forever.
+      // These are the rows that must drive a release, independently of the current period's row.
+      const stalethrottled = await prisma.subscriberUsage.findMany({
+        where: { subscriberId: sub.id, throttled: true, NOT: { periodKey: period.periodKey } },
+        select: { id: true },
+      });
 
-      const used = countedBytes(pkg.fupCountMode as string, row.bytesIn, row.bytesOut);
+      const used = row ? countedBytes(pkg.fupCountMode as string, row.bytesIn, row.bytesOut) : 0;
       const limitBytes = limitMb * 1024 * 1024;
-      const shouldThrottle = used >= limitBytes;
+      const shouldThrottle = !!row && used >= limitBytes;
 
-      if (shouldThrottle && !row.throttled) {
+      // Release when the current period is under the limit but something is still marked throttled:
+      // either this period's row (allowance raised mid-period) or a leftover from a past period.
+      const needsRelease = !shouldThrottle && ((row?.throttled ?? false) || stalethrottled.length > 0);
+
+      if (!row && !needsRelease) continue;
+
+      if (shouldThrottle && row && !row.throttled) {
         const speed = throttleSpeedFor(sub.package as never);
         await setThrottle(sub as never, speed);
         await prisma.subscriberUsage.update({
@@ -294,23 +318,21 @@ export async function runFupSweep(): Promise<{ checked: number; throttled: numbe
             await prisma.subscriberUsage.update({ where: { id: row.id }, data: { notifiedAt: new Date() } });
           } catch { /* notification is best-effort; never block the throttle */ }
         }
-      } else if (!shouldThrottle && row.throttled) {
+      } else if (needsRelease) {
         // New period (or the allowance was raised) — restore full package speed.
-        await setThrottle(sub as never, null);
-        const { radiusConfigured } = await import('./radius');
-        if (radiusConfigured()) {
-          const { syncSubscriberToRadius } = await import('./radius');
-          await syncSubscriberToRadius(sub.id, { throttleKbps: null, kickToApply: true });
-        } else if (sub.routerId) {
-          const { enqueueCommand } = await import('./commandQueue');
-          const full = `${sub.package.speedUpKbps}k/${sub.package.speedDownKbps}k`;
-          await enqueueCommand(sub.routerId,
-            `:foreach s in=[/ppp secret find name="${sub.username}"] do={ /ppp secret set $s rate-limit="${full}" }`);
+        // ORDER MATTERS: clear the flags BEFORE re-syncing. syncSubscriberToRadius resolves the
+        // active throttle from these rows, so releasing first and clearing afterwards would read
+        // throttled=true and write the throttle straight back.
+        const ids = [...stalethrottled.map(r => r.id), ...(row?.throttled ? [row.id] : [])];
+        if (ids.length) {
+          await prisma.subscriberUsage.updateMany({
+            where: { id: { in: ids } },
+            data: { throttled: false, throttledAt: null },
+          });
         }
-        await prisma.subscriberUsage.update({
-          where: { id: row.id },
-          data: { throttled: false, throttledAt: null },
-        });
+        // One path for both transports: on RADIUS this re-syncs with an explicit null throttle and
+        // kicks the session; on legacy it pushes the package's full rate to the PPP secret.
+        await setThrottle(sub as never, null);
         released++;
       }
     } catch (e) {
@@ -386,9 +408,10 @@ export async function clearFupOnRenewal(subscriberId: string): Promise<void> {
       where: { id: { in: stale.map(r => r.id) } },
       data: { throttled: false, throttledAt: null },
     });
+    // setThrottle handles both transports: on RADIUS it re-syncs with an explicit null throttle and
+    // kicks the session; on legacy it pushes the package's full rate. Calling sync again here would
+    // just CoA-kick the subscriber a second time.
     await setThrottle(sub as never, null);
-    const { radiusConfigured, syncSubscriberToRadius } = await import('./radius');
-    if (radiusConfigured()) await syncSubscriberToRadius(sub.id, { throttleKbps: null, kickToApply: true });
   } catch (e) {
     console.error('[fup] clearOnRenewal failed:', e instanceof Error ? e.message : e);
   }

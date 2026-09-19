@@ -99,8 +99,13 @@ export async function syncSubscriberToRadius(subscriberId: string, opts?: { kick
   // Resolve the FUP throttle. The FUP worker passes it explicitly; every other caller gets it
   // looked up, so unrelated resyncs (renewal, profile edit) preserve an active throttle instead of
   // silently restoring full speed.
-  let throttleKbps: { up: number; down: number } | null = opts?.throttleKbps ?? null;
-  if (!throttleKbps) {
+  // `throttleKbps: null` must mean "explicitly NO throttle" (the release path), while OMITTING the
+  // key means "look it up". Collapsing both to null with `?? null` made an explicit release fall
+  // through to the lookup, read the not-yet-cleared row, and write the throttle straight back.
+  let throttleKbps: { up: number; down: number } | null = null;
+  if (opts && Object.prototype.hasOwnProperty.call(opts, 'throttleKbps')) {
+    throttleKbps = opts.throttleKbps ?? null;
+  } else {
     try {
       const { activeThrottleFor } = await import('./fup');
       throttleKbps = await activeThrottleFor(sub.id);

@@ -1,6 +1,6 @@
 {
   "name": "dartbit-frontend",
-  "version": "1.11.77",
+  "version": "1.11.79",
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",

@@ -470,7 +470,7 @@ export default function PackagesPage() {
       {/* Speed propagation choice. Existing subscribers hold a rate snapshot taken at activation, so
           a speed edit reaches them only on renewal unless applied explicitly. Shown with the real
           affected count so the tenant isn't guessing at the blast radius. */}
-      <Modal open={!!speedConfirm} onClose={() => setSpeedConfirm(null)} title="Apply new speed to existing subscribers?">
+      <Modal isOpen={!!speedConfirm} onClose={() => setSpeedConfirm(null)} title="Apply new speed to existing subscribers?">
         {speedConfirm && (
           <div className="space-y-4">
             <p className="text-sm text-gray-600 dark:text-gray-300">
