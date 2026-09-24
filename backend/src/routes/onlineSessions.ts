@@ -45,7 +45,20 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     // kept connected (portal-only) so they can reach tenant.dartbittech.com to renew — but they
     // are NOT "active" customers, so they should not clutter the active-users view.
     const now = Date.now();
+    // A router that has stopped reporting takes all of its sessions with it. OnlineSession rows are
+    // only ever refreshed BY the router, so when one goes offline its last-known rows freeze and
+    // every customer behind it keeps showing as online — with a frozen uptime, which is why they all
+    // read the same duration. Clients behind a dead router are offline by definition, so drop them.
+    // Threshold matches startRouterOfflineWatcher's 90s so the two views can't disagree; lastSeenAt
+    // is checked directly as well, since the watcher only runs periodically and would otherwise
+    // leave a window where the router is stale but not yet flagged.
+    const ROUTER_STALE_MS = 90 * 1000;
     const visible = sessions.filter(s => {
+      const r = s.router as { status?: string; lastSeenAt?: Date | null } | null;
+      if (r) {
+        const seen = r.lastSeenAt ? new Date(r.lastSeenAt).getTime() : 0;
+        if (r.status === 'OFFLINE' || now - seen > ROUTER_STALE_MS) return false;
+      }
       const sub = s.subscriber;
       if (!sub) return true; // unidentified sessions still shown
       const expired = sub.expiresAt ? new Date(sub.expiresAt).getTime() <= now : false;

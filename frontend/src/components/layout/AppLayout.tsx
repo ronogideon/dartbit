@@ -32,7 +32,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   });
 
   if (isLoading) return (
-    <div className="flex items-center justify-center h-screen bg-gray-50 dark:bg-gray-950">
+    <div className="flex items-center justify-center h-[100dvh] bg-gray-50 dark:bg-gray-950">
       <div className="animate-spin w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full" />
     </div>
   );
@@ -53,8 +53,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     return (<>{verifier}<Paywall /></>);
   }
 
+  // 100dvh, not 100vh: vh ignores browser chrome (Chrome promo bars, the mobile URL bar), so the
+  // app container ends up taller than the visible viewport and the whole page scrolls, leaving dead
+  // space below the content. dvh tracks the ACTUAL viewport and collapses that gap.
   return (
-    <div className="flex h-screen bg-gray-50 dark:bg-gray-950 overflow-hidden">
+    <div className="flex h-[100dvh] bg-gray-50 dark:bg-gray-950 overflow-hidden">
       {verifier}
       <ForcePasswordChange />
       <Sidebar mobileOpen={mobileOpen} onMobileClose={() => setMobileOpen(false)} />
