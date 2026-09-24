@@ -225,6 +225,10 @@ export default function SubscribersPage() {
 
   return (
     <AppLayout>
+      {/* Title, tabs and search stay pinned while the list scrolls beneath them. The negative
+          margins cancel the padding on AppLayout's content wrapper so the sticky background spans
+          the full width and rows don't show through the gap above it as they scroll past. */}
+      <div className="sticky top-0 z-20 -mx-4 sm:-mx-6 -mt-4 sm:-mt-6 px-4 sm:px-6 pt-4 sm:pt-6 pb-3 bg-gray-50 dark:bg-gray-950">
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold">Subscribers</h1>
@@ -244,7 +248,9 @@ export default function SubscribersPage() {
       </div>
 
       {/* Service tabs with count bubbles */}
-      <div className="flex gap-1 mb-4 border-b border-gray-200 dark:border-gray-800 overflow-x-auto">
+      {/* overflow-y-hidden matters: per CSS, setting one axis to auto makes the other compute to
+          auto as well, which gave this short tabs strip its own stray vertical scrollbar. */}
+      <div className="flex gap-1 mb-4 border-b border-gray-200 dark:border-gray-800 overflow-x-auto overflow-y-hidden">
         {TABS.map(t => (
           <button
             key={t.key}
@@ -262,7 +268,7 @@ export default function SubscribersPage() {
       {/* Toolbar in its own card, table in its own card — mirrors the Payments page. Keeping them
           in ONE card forced the table into an inner overflow-x-auto div, which created a second
           scroll context nested inside the page scroll. */}
-      <div className="card mb-4">
+      <div className="card">
         <div className="p-4 space-y-3">
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
@@ -296,6 +302,7 @@ export default function SubscribersPage() {
             </div>
           )}
         </div>
+      </div>
       </div>
 
       <div className="card overflow-hidden mb-6">

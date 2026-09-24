@@ -90,6 +90,10 @@ export default function ActiveUsersPage() {
 
   return (
     <AppLayout>
+      {/* Title, tabs and search stay pinned while the list scrolls beneath them. Negative margins
+          cancel AppLayout's content padding so the sticky background spans the full width and rows
+          don't show through the gap above it. */}
+      <div className="sticky top-0 z-20 -mx-4 sm:-mx-6 -mt-4 sm:-mt-6 px-4 sm:px-6 pt-4 sm:pt-6 pb-1 bg-gray-50 dark:bg-gray-950">
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2"><Activity size={24} /> Active Users</h1>
@@ -104,7 +108,9 @@ export default function ActiveUsersPage() {
       </div>
 
       {/* Service tabs with count bubbles */}
-      <div className="flex gap-1 mb-4 border-b border-gray-200 dark:border-gray-800 overflow-x-auto">
+      {/* overflow-y-hidden matters: per CSS, setting one axis to auto makes the other compute to
+          auto as well, which gave this short tabs strip its own stray vertical scrollbar. */}
+      <div className="flex gap-1 mb-4 border-b border-gray-200 dark:border-gray-800 overflow-x-auto overflow-y-hidden">
         {TABS.map(t => (
           <button
             key={t.key}
@@ -121,6 +127,7 @@ export default function ActiveUsersPage() {
 
       <div className="mb-4 max-w-md">
         <SearchInput value={search} onChange={setSearch} placeholder="Search by username, IP, MAC, router…" />
+      </div>
       </div>
 
       <div className="card overflow-hidden">

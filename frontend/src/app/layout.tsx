@@ -26,7 +26,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
       </head>
-      <body className="bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 min-h-screen">
+      {/* h-[100dvh] + overflow-hidden, NOT min-h-screen: min-h-screen is 100vh, and whenever browser
+          chrome makes dvh smaller than vh the body grows past the viewport and the DOCUMENT gets its
+          own scrollbar on top of the app's. Pinning the body to the real viewport leaves exactly one
+          scroll container — <main> inside AppLayout. */}
+      <body className="bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 h-[100dvh] overflow-hidden">
         <Providers>{children}</Providers>
       </body>
     </html>
