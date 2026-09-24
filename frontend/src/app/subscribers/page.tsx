@@ -259,8 +259,11 @@ export default function SubscribersPage() {
         ))}
       </div>
 
-      <div className="card mb-6">
-        <div className="p-4 border-b border-gray-200 dark:border-gray-800 space-y-3">
+      {/* Toolbar in its own card, table in its own card — mirrors the Payments page. Keeping them
+          in ONE card forced the table into an inner overflow-x-auto div, which created a second
+          scroll context nested inside the page scroll. */}
+      <div className="card mb-4">
+        <div className="p-4 space-y-3">
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -293,8 +296,10 @@ export default function SubscribersPage() {
             </div>
           )}
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full">
+      </div>
+
+      <div className="card overflow-hidden mb-6">
+        <table className="w-full">
             <thead className="bg-gray-50 dark:bg-gray-800/50">
               <tr>
                 <th className="table-th">Subscriber</th>
@@ -353,8 +358,7 @@ export default function SubscribersPage() {
                 );
               })}
             </tbody>
-          </table>
-        </div>
+        </table>
       </div>
 
       <SubscriberDetail subscriberId={detailId} onClose={() => setDetailId(null)} onEdit={openEditById} />

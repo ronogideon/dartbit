@@ -123,17 +123,9 @@ export default function ActiveUsersPage() {
         <SearchInput value={search} onChange={setSearch} placeholder="Search by username, IP, MAC, router…" />
       </div>
 
-      {/* The table scrolls INSIDE this card, not the page. Capping the card to the space left below
-          the header and tabs means the page itself never grows past the viewport, so there is one
-          scrollbar instead of two (the card's own plus the page's) and no dead space underneath.
-          The table is wrapped in a div on purpose: globals.css has `.card:has(> table)` which would
-          otherwise add a second, competing scroll context to the card itself. Because that rule no
-          longer matches, the table carries its own min-width for mobile horizontal scrolling. */}
-      <div className="card flex flex-col max-h-[calc(100dvh-13rem)]">
-        <div className="overflow-auto">
-          <table className="w-full min-w-[640px] sm:min-w-0">
-            {/* Sticky so column headers stay put while scrolling the list. */}
-            <thead className="bg-gray-50 dark:bg-gray-800/50 sticky top-0 z-10">
+      <div className="card overflow-hidden">
+        <table className="w-full">
+          <thead className="bg-gray-50 dark:bg-gray-800/50">
             <tr>
               <th className="table-th">Username</th>
               <th className="table-th">IP Address</th>
@@ -186,9 +178,8 @@ export default function ActiveUsersPage() {
                 </tr>
               );
             })}
-            </tbody>
-          </table>
-        </div>
+          </tbody>
+        </table>
       </div>
 
       <SubscriberDetail subscriberId={detailId} onClose={() => setDetailId(null)} onEdit={(id) => router.push(`/subscribers?edit=${id}`)} />
