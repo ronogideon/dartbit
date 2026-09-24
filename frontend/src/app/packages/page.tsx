@@ -141,7 +141,7 @@ export default function PackagesPage() {
       if (speedChanged) {
         getPackageImpact(editing.id)
           .then(({ active, total }) => {
-            if (active > 0) setSpeedConfirm({ payload, id: editing.id, active, total });
+            if (total > 0) setSpeedConfirm({ payload, id: editing.id, active, total });
             // Nobody on the package — nothing to propagate, just save.
             else updateMut.mutate({ id: editing.id, data: payload });
           })
@@ -474,9 +474,8 @@ export default function PackagesPage() {
         {speedConfirm && (
           <div className="space-y-4">
             <p className="text-sm text-gray-600 dark:text-gray-300">
-              <span className="font-semibold text-gray-900 dark:text-gray-100">{speedConfirm.active}</span>
-              {speedConfirm.total !== speedConfirm.active && <> of {speedConfirm.total}</>}{' '}
-              subscriber{speedConfirm.active === 1 ? '' : 's'} on this package will be re-synced.
+              All <span className="font-semibold text-gray-900 dark:text-gray-100">{speedConfirm.total}</span>{' '}
+              subscriber{speedConfirm.total === 1 ? '' : 's'} on this package will be re-synced.
             </p>
             <div className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 space-y-2">
               {/* "Active" here means paid-up and not expired — NOT "currently online". Offline
@@ -494,9 +493,9 @@ export default function PackagesPage() {
               </p>
               {speedConfirm.total > speedConfirm.active && (
                 <p className="text-xs text-gray-500 dark:text-gray-400">
-                  The other {speedConfirm.total - speedConfirm.active} {speedConfirm.total - speedConfirm.active === 1 ? 'is' : 'are'} expired or
-                  disabled and hold no speed setting right now — they pick up the new speed
-                  automatically when they renew.
+                  {speedConfirm.total - speedConfirm.active} of them {speedConfirm.total - speedConfirm.active === 1 ? 'is' : 'are'} expired or disabled.
+                  Their record is updated too, so the new speed is already in place when they renew —
+                  their session isn&apos;t reconnected, since they hold no package speed right now.
                 </p>
               )}
             </div>

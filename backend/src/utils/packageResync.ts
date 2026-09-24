@@ -28,9 +28,13 @@ export interface ResyncSummary {
   failed: number;
 }
 
-// How many active subscribers a package speed change would affect. Used by the UI to show the blast
-// radius BEFORE saving, so the tenant chooses apply-now vs apply-on-renewal rather than having
-// propagation silently change behaviour they may be relying on for grandfathering.
+// Blast radius of a package speed change, shown BEFORE saving so the tenant chooses apply-now vs
+// apply-on-renewal rather than having propagation silently change behaviour they may rely on for
+// grandfathering.
+//   total  — every subscriber on the package; ALL of these get their record rewritten.
+//   active — the entitled subset (not expired, not disabled). Only these carry a package speed and
+//            therefore only these get CoA-kicked. Reported separately so the dialog can explain
+//            which users see an immediate change and which see it at renewal.
 export async function countAffectedSubscribers(packageId: string, tenantId: string): Promise<{ total: number; active: number }> {
   const now = new Date();
   const [total, active] = await Promise.all([
@@ -45,7 +49,8 @@ export async function countAffectedSubscribers(packageId: string, tenantId: stri
   return { total, active };
 }
 
-// Resync every entitled subscriber on a package. Sequential and paced on purpose: each iteration is
+// Resync EVERY subscriber on a package (any online or expiry status). Sequential and paced on
+// purpose: each iteration is
 // an SSH psql write plus (with kick) a CoA-Disconnect, and firing hundreds at once would hammer the
 // droplet and drop every PPPoE session on the package simultaneously.
 export async function resyncPackageSubscribers(

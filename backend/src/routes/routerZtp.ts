@@ -107,7 +107,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.28 (Cloudflare DoH with peer-DNS fallback; LB hotspot-popup fix)');
+    add('# Dartbit ZTP Script v1.5.29 (schedulers clock-independent + NTP; fixes dormant scheduler bug)');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -135,7 +135,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     // is a manual visit. Creating it here means a partially-applied provision still reports in and
     // stays remotely recoverable. Section 9 removes and re-adds these idempotently, so no dupes.
     add(`/system script add name=dartbit-heartbeat policy=read,write,test source={/tool fetch url="${backendUrl}/router/heartbeat?apiKey=${apiKey}"${fetchFlags} keep-result=no}`);
-    add(`/system scheduler add name=dartbit-heartbeat interval=30s on-event="/system script run dartbit-heartbeat" comment="Dartbit heartbeat"`);
+    add(`/system scheduler add name=dartbit-heartbeat start-time=startup interval=30s on-event="/system script run dartbit-heartbeat" comment="Dartbit heartbeat"`);
     add(`:do { /system script run dartbit-heartbeat } on-error={}`);
 
     // 0c. DEEP PURGE of stale Dartbit NETWORK artifacts — the real fix for the captive-portal popup
@@ -297,6 +297,15 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     //        every DoH query fails closed. Traffic is still TLS-encrypted from the ISP's view.
     //   Hotspot and PPPoE alike: clients still ask the router (allow-remote-requests), the router
     //   resolves upstream over DoH, so ip-of-dns-name / captive-portal behaviour is unchanged.
+    // NTP. These boards have no battery-backed clock, so after a power cut they boot with a stale
+    // time until MikroTik cloud corrects it — and a cloud correction can move the clock BACKWARDS
+    // by hours. That is what left every interval scheduler stamped with a start-time in the future
+    // and dormant (run-count=0), which in turn meant login.html was never fetched and the hotspot
+    // served Webfig instead of the portal. Schedulers are now start-time=startup so they no longer
+    // depend on the clock at all; NTP fixes the clock itself, which vouchers and expiry also need.
+    // Servers are IP literals on purpose: at boot DNS may not be up yet, so a hostname would fail.
+    add(`/system ntp client set enabled=yes mode=unicast servers=216.239.35.0,162.159.200.1`);
+    add('');
     add(`/ip dns set servers=\"\" allow-remote-requests=yes cache-size=8192KiB use-doh-server=\"https://cloudflare-dns.com/dns-query\" verify-doh-cert=no`);
     // Feed each Dartbit-managed WAN dhcp-client's peer (gateway) DNS into the resolver - this is
     // the DoH fallback path. Covers the single-WAN "Dartbit WAN" client and any LB clients.
@@ -410,7 +419,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
       add(`:foreach x in=[/system script find name=\"dartbit-lb\"] do={ /system script remove \$x }`);
       add(`:foreach x in=[/system scheduler find name=\"dartbit-lb\"] do={ /system scheduler remove \$x }`);
       add(`/system script add name=dartbit-lb policy=read,write,test source={:global dbU1; :global dbU2; :global dbF1; :global dbF2; :global dbSig; :do { :local w1 \"${w1}\"; :local w2 \"${w2}\"; :do { :if ([/ip dhcp-client get [find interface=$w1] default-route-distance] != 250) do={ /ip dhcp-client set [find interface=$w1] add-default-route=yes default-route-distance=250 } } on-error={}; :do { :if ([/ip dhcp-client get [find interface=$w2] default-route-distance] != 250) do={ /ip dhcp-client set [find interface=$w2] add-default-route=yes default-route-distance=250 } } on-error={}; :local g1 \"\"; :local g2 \"\"; :do { :set g1 [/ip dhcp-client get [find interface=$w1] gateway] } on-error={}; :do { :set g2 [/ip dhcp-client get [find interface=$w2] gateway] } on-error={}; :local r1 false; :local r2 false; :do { :if ([/ping 8.8.8.8 interface=$w1 count=2 interval=300ms] > 0) do={ :set r1 true } } on-error={}; :if ($r1 = false) do={ :do { :if ([/ping 1.1.1.1 interface=$w1 count=2 interval=300ms] > 0) do={ :set r1 true } } on-error={} }; :do { :if ([/ping 8.8.8.8 interface=$w2 count=2 interval=300ms] > 0) do={ :set r2 true } } on-error={}; :if ($r2 = false) do={ :do { :if ([/ping 1.1.1.1 interface=$w2 count=2 interval=300ms] > 0) do={ :set r2 true } } on-error={} }; :if ([:typeof $dbF1] = \"nothing\") do={ :set dbF1 0 }; :if ([:typeof $dbF2] = \"nothing\") do={ :set dbF2 0 }; :if ($r1 = true) do={ :set dbF1 0 } else={ :set dbF1 ($dbF1 + 1) }; :if ($r2 = true) do={ :set dbF2 0 } else={ :set dbF2 ($dbF2 + 1) }; :local u1 true; :if ($dbF1 >= 3) do={ :set u1 false }; :local u2 true; :if ($dbF2 >= 3) do={ :set u2 false }; :if ([:typeof $dbU1] = \"nothing\") do={ :set dbU1 true }; :if ([:typeof $dbU2] = \"nothing\") do={ :set dbU2 true }; :local flush false; :if ($dbU1 = true && $u1 = false) do={ :set flush true; :log warning \"Dartbit LB: WAN1 down (3 consecutive fails) -> failover\" }; :if ($dbU2 = true && $u2 = false) do={ :set flush true; :log warning \"Dartbit LB: WAN2 down (3 consecutive fails) -> failover\" }; :if ($flush = true) do={ :do { :foreach cn in=[/ip firewall connection find] do={ :do { /ip firewall connection remove $cn } on-error={} } } on-error={} }; :local sig ($u1 . \"|\" . $u2 . \"|\" . $g1 . \"|\" . $g2); :if ([:typeof $dbSig] = \"nothing\") do={ :set dbSig \"\" }; :local valid false; :if (($u1 = true && [:len $g1] > 0) || ($u2 = true && [:len $g2] > 0)) do={ :set valid true }; :if (($sig != $dbSig) && ($valid = true)) do={ :foreach r in=[/ip route find comment~\"Dartbit LB mk\"] do={ /ip route remove $r }; :if ($u1 = true && $u2 = true && [:len $g1] > 0 && [:len $g2] > 0) do={ :do { /ip route add dst-address=0.0.0.0/0 gateway=$g1 routing-table=to_wan1 distance=1 comment=\"Dartbit LB mk r1a\" } on-error={}; :do { /ip route add dst-address=0.0.0.0/0 gateway=$g2 routing-table=to_wan1 distance=2 comment=\"Dartbit LB mk r1b\" } on-error={}; :do { /ip route add dst-address=0.0.0.0/0 gateway=$g2 routing-table=to_wan2 distance=1 comment=\"Dartbit LB mk r2a\" } on-error={}; :do { /ip route add dst-address=0.0.0.0/0 gateway=$g1 routing-table=to_wan2 distance=2 comment=\"Dartbit LB mk r2b\" } on-error={}; :do { /ip route add dst-address=0.0.0.0/0 gateway=$g1 distance=1 comment=\"Dartbit LB mk m1\" } on-error={}; :do { /ip route add dst-address=0.0.0.0/0 gateway=$g2 distance=2 comment=\"Dartbit LB mk m2\" } on-error={}; :log info \"Dartbit LB: both WANs up -> balancing\" } else={ :local gs $g1; :if ($u2 = true && [:len $g2] > 0) do={ :set gs $g2 }; :do { /ip route add dst-address=0.0.0.0/0 gateway=$gs routing-table=to_wan1 distance=1 comment=\"Dartbit LB mk r1a\" } on-error={}; :do { /ip route add dst-address=0.0.0.0/0 gateway=$gs routing-table=to_wan2 distance=1 comment=\"Dartbit LB mk r2a\" } on-error={}; :do { /ip route add dst-address=0.0.0.0/0 gateway=$gs distance=1 comment=\"Dartbit LB mk m1\" } on-error={}; :log warning \"Dartbit LB: one WAN up -> all traffic via survivor\" }; :set dbSig $sig }; :set dbU1 $u1; :set dbU2 $u2 } on-error={ :log error \"Dartbit LB: script run error\" }}`);
-      add(`/system scheduler add name=dartbit-lb interval=30s on-event=\"/system script run dartbit-lb\" comment=\"Dartbit load-balancing route sync\"`);
+      add(`/system scheduler add name=dartbit-lb start-time=startup interval=30s on-event=\"/system script run dartbit-lb\" comment=\"Dartbit load-balancing route sync\"`);
       // NOTE: dartbit-lb is intentionally NOT run inline here. It fires on its 30s schedule AFTER the
       // import finishes, so provisioning keeps its clean single default out w1 for every fetch.
     }
@@ -703,7 +712,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add('# 8c-2. Boot-time re-assert (fixes popup dying after a power cut)');
     add(`:foreach s in=[/system scheduler find name="dartbit-boot"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-boot"] do={ /system script remove $s }`);
-    add(`/system script add name=dartbit-boot policy=read,write,test source={:delay 60s; :do { /ip dns set allow-remote-requests=yes use-doh-server=\"https://cloudflare-dns.com/dns-query\" verify-doh-cert=no } on-error={}; :foreach c in=[/ip dhcp-client find where comment~\"Dartbit\"] do={ :do { /ip dhcp-client set \$c use-peer-dns=yes } on-error={} }; :do { /ip hotspot profile set [find name=\"hsprof-dartbit\"] hotspot-address=${lanGw} dns-name=${hotspotDnsName} } on-error={}; :local hdir \"hotspot\"; :if ([:len [/file find where name=\"flash\"]] > 0) do={ :set hdir \"flash/hotspot\" }; :do { /ip hotspot profile set [find name=\"hsprof-dartbit\"] html-directory=\$hdir; :local got [/ip hotspot profile get [find name=\"hsprof-dartbit\"] html-directory]; :if (\$got != \$hdir) do={ /ip hotspot profile set [find name=\"hsprof-dartbit\"] html-directory=\"hotspot\" } } on-error={}; :do { :foreach h in=[/ip hotspot find name=\"dartbit-hotspot\"] do={ /ip hotspot set \$h address-pool=dhcp-pool profile=hsprof-dartbit; /ip hotspot disable \$h; :delay 2s; /ip hotspot enable \$h } } on-error={}; :log info \"Dartbit: boot re-assert complete\"}`);
+    add(`/system script add name=dartbit-boot policy=read,write,test source={:delay 60s; :do { /ip dns set allow-remote-requests=yes use-doh-server=\"https://cloudflare-dns.com/dns-query\" verify-doh-cert=no } on-error={}; :foreach c in=[/ip dhcp-client find where comment~\"Dartbit\"] do={ :do { /ip dhcp-client set \$c use-peer-dns=yes } on-error={} }; :do { /ip hotspot profile set [find name=\"hsprof-dartbit\"] hotspot-address=${lanGw} dns-name=${hotspotDnsName} } on-error={}; :local hdir \"hotspot\"; :if ([:len [/file find where name=\"flash\"]] > 0) do={ :set hdir \"flash/hotspot\" }; :do { /ip hotspot profile set [find name=\"hsprof-dartbit\"] html-directory=\$hdir; :local got [/ip hotspot profile get [find name=\"hsprof-dartbit\"] html-directory]; :if (\$got != \$hdir) do={ /ip hotspot profile set [find name=\"hsprof-dartbit\"] html-directory=\"hotspot\" } } on-error={}; :do { :foreach h in=[/ip hotspot find name=\"dartbit-hotspot\"] do={ /ip hotspot set \$h address-pool=dhcp-pool profile=hsprof-dartbit; /ip hotspot disable \$h; :delay 2s; /ip hotspot enable \$h } } on-error={}; :do { :foreach sc in=[/system scheduler find where name~\"dartbit\"] do={ :do { /system scheduler set $sc start-time=startup } on-error={} } } on-error={}; :log info \"Dartbit: boot re-assert complete\"}`);
     add(`/system scheduler add name=dartbit-boot start-time=startup interval=0 on-event="/system script run dartbit-boot" comment="Dartbit boot re-assert"`);
     add('');
 
@@ -801,7 +810,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach s in=[/system scheduler find comment="Dartbit heartbeat"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-heartbeat"] do={ /system script remove $s }`);
     add(`/system script add name=dartbit-heartbeat policy=read,write,test source={/tool fetch url="${backendUrl}/router/heartbeat?apiKey=${apiKey}"${fetchFlags} keep-result=no}`);
-    add(`/system scheduler add name=dartbit-heartbeat interval=30s on-event="/system script run dartbit-heartbeat" comment="Dartbit heartbeat"`);
+    add(`/system scheduler add name=dartbit-heartbeat start-time=startup interval=30s on-event="/system script run dartbit-heartbeat" comment="Dartbit heartbeat"`);
     add('');
 
     // === Stats reporter ===
@@ -809,7 +818,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach s in=[/system scheduler find comment="Dartbit stats"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-stats"] do={ /system script remove $s }`);
     add(`/system script add name=dartbit-stats policy=read,write,test source={:local cpu [/system resource get cpu-load]; :local upt [/system resource get uptime]; :local mem [/system resource get free-memory]; :local id [/system identity get name]; :local url ("${backendUrl}/router/stats?apiKey=${apiKey}&cpu=" . \$cpu . "&uptime=" . \$upt . "&memFree=" . \$mem . "&identity=" . \$id); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
-    add(`/system scheduler add name=dartbit-stats interval=30s on-event="/system script run dartbit-stats" comment="Dartbit stats"`);
+    add(`/system scheduler add name=dartbit-stats start-time=startup interval=30s on-event="/system script run dartbit-stats" comment="Dartbit stats"`);
     add('');
 
     // === Interfaces reporter — reports interface list to backend so UI can list ports ===
@@ -817,7 +826,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach s in=[/system scheduler find comment="Dartbit interfaces"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-interfaces"] do={ /system script remove $s }`);
     add(`/system script add name=dartbit-interfaces policy=read,write,test source={:local data ""; :foreach i in=[/interface find where !disabled && (type=ether || type=wlan || type=vlan || type=bridge)] do={ :local n [/interface get \$i name]; :local t [/interface get \$i type]; :set data (\$data . \$n . ":" . \$t . ","); }; :local wan ""; :do { :local rt [/ip route find where dst-address="0.0.0.0/0" and active]; :if ([:len \$rt] > 0) do={ :local gw [/ip route get [:pick \$rt 0] immediate-gw]; :if ([:typeof \$gw] = "str") do={ :local p [:find \$gw "%"]; :if ([:typeof \$p] = "num") do={ :set wan [:pick \$gw (\$p+1) [:len \$gw]] } else={ :set wan \$gw } } } } on-error={}; :do { :if ([:len [/interface pppoe-client find name=\$wan]] > 0) do={ :set wan [/interface pppoe-client get [find name=\$wan] interface] } } on-error={}; :local url ("${backendUrl}/router/interfaces?apiKey=${apiKey}&wan=" . \$wan . "&data=" . \$data); /tool fetch url=\$url${fetchFlags} keep-result=no}`);
-    add(`/system scheduler add name=dartbit-interfaces interval=60s on-event="/system script run dartbit-interfaces" comment="Dartbit interfaces"`);
+    add(`/system scheduler add name=dartbit-interfaces start-time=startup interval=60s on-event="/system script run dartbit-interfaces" comment="Dartbit interfaces"`);
     add('');
 
     // === Subscriber sync (legacy only) ===
@@ -828,7 +837,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
       add(`:foreach s in=[/system scheduler find comment="Dartbit sub sync"] do={ /system scheduler remove $s }`);
       add(`:foreach s in=[/system script find name="dartbit-sync"] do={ /system script remove $s }`);
       add(`/system script add name=dartbit-sync policy=read,write,test source={/tool fetch url="${backendUrl}/router/sync-script?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-sync.rsc; :delay 1s; /import file-name=dartbit-sync.rsc}`);
-      add(`/system scheduler add name=dartbit-sync interval=60s on-event="/system script run dartbit-sync" comment="Dartbit sub sync"`);
+      add(`/system scheduler add name=dartbit-sync start-time=startup interval=60s on-event="/system script run dartbit-sync" comment="Dartbit sub sync"`);
       add('');
     }
 
@@ -838,7 +847,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach s in=[/system scheduler find comment="Dartbit portal"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-portal"] do={ /system script remove $s }`);
     add(`/system script add name=dartbit-portal policy=read,write,test source={:local hdir "hotspot"; :if ([:len [/file find where name="flash"]] > 0) do={ :set hdir "flash/hotspot" }; :do { /ip hotspot profile set [find name="hsprof-dartbit"] html-directory=\$hdir; :local got [/ip hotspot profile get [find name="hsprof-dartbit"] html-directory]; :if (\$got != \$hdir) do={ /ip hotspot profile set [find name="hsprof-dartbit"] html-directory="hotspot" } } on-error={}; /tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=(\$hdir . "/login.html")${fetchFlags}; /tool fetch url="${backendUrl}/hotspot-html/login?apiKey=${apiKey}" dst-path=(\$hdir . "/alogin.html")${fetchFlags}}`);
-    add(`/system scheduler add name=dartbit-portal interval=3m on-event="/system script run dartbit-portal" comment="Dartbit portal"`);
+    add(`/system scheduler add name=dartbit-portal start-time=startup interval=3m on-event="/system script run dartbit-portal" comment="Dartbit portal"`);
     add('');
 
     // === Remote commands ===
@@ -854,7 +863,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
       add(`:foreach s in=[/system scheduler find comment="Dartbit cmd"] do={ /system scheduler remove $s }`);
       add(`:foreach s in=[/system script find name="dartbit-cmd"] do={ /system script remove $s }`);
       add(`/system script add name=dartbit-cmd policy=read,write,test,reboot source={:do {/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ /import file-name=dartbit-cmd.rsc; :delay 1s; :foreach f in=[/file find name="dartbit-cmd.rsc"] do={ /file remove $f } }} on-error={}}`);
-      add(`/system scheduler add name=dartbit-cmd interval=5s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`);
+      add(`/system scheduler add name=dartbit-cmd start-time=startup interval=5s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`);
     } else {
       // Reprovision path: we can't recreate dartbit-cmd inline (it's the script running this
       // import — that interrupts it). But the poller must be updated when the backend URL
@@ -865,7 +874,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
       add(`:foreach s in=[/system scheduler find name="dartbit-cmd-upd"] do={ /system scheduler remove $s }`);
       add(`:foreach s in=[/system script find name="dartbit-cmd-upd"] do={ /system script remove $s }`);
       add(`/system script add name=dartbit-cmd-upd policy=read,write,test,reboot source={/tool fetch url="${backendUrl}/router/cmd-script?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd-upd.rsc; :delay 2s; :if ([:len [/file find name="dartbit-cmd-upd.rsc"]] > 0) do={ /import file-name=dartbit-cmd-upd.rsc; :delay 1s; /file remove [find name="dartbit-cmd-upd.rsc"] }; /system scheduler remove [find name="dartbit-cmd-upd"]}`);
-      add(`/system scheduler add name=dartbit-cmd-upd interval=8s on-event="/system script run dartbit-cmd-upd" comment="Dartbit cmd updater"`);
+      add(`/system scheduler add name=dartbit-cmd-upd start-time=startup interval=8s on-event="/system script run dartbit-cmd-upd" comment="Dartbit cmd updater"`);
     }
     add('');
 
@@ -878,7 +887,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach s in=[/system scheduler find comment="Dartbit session sync"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-sessions"] do={ /system script remove $s }`);
     add(`/system script add name=dartbit-sessions policy=read,write,test source={:local data ""; :foreach a in=[/ppp active find] do={ :local u [/ppp active get \$a name]; :local ip [/ppp active get \$a address]; :local up [/ppp active get \$a uptime]; :local iface ("<pppoe-" . \$u . ">"); :local rxr 0; :local txr 0; :do { :set rxr [/interface get \$iface rx-byte]; :set txr [/interface get \$iface tx-byte]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$rxr . "|" . \$txr . "|P,"); }; :foreach a in=[/ip hotspot active find] do={ :local u [/ip hotspot active get \$a user]; :local ip [/ip hotspot active get \$a address]; :local up [/ip hotspot active get \$a uptime]; :local mac [/ip hotspot active get \$a mac-address]; :local bi 0; :local bo 0; :do { :set bi [/ip hotspot active get \$a bytes-in]; :set bo [/ip hotspot active get \$a bytes-out]; } on-error={}; :set data (\$data . \$u . "|" . \$ip . "|" . \$up . "|" . \$bi . "|" . \$bo . "|H|" . \$mac . ","); }; :do { /tool fetch url="${backendUrl}/router/sessions?apiKey=${apiKey}" http-method=post http-header-field="content-type: text/plain" http-data=\$data${fetchFlags} output=none as-value } on-error={}}`);
-    add(`/system scheduler add name=dartbit-sessions interval=3s on-event="/system script run dartbit-sessions" comment="Dartbit session sync"`);
+    add(`/system scheduler add name=dartbit-sessions start-time=startup interval=3s on-event="/system script run dartbit-sessions" comment="Dartbit session sync"`);
     add('');
 
     // 12b. Tunnel guard — the backstop against HTTP-Injector / SNI-fronting bypass. A legitimate,
@@ -896,7 +905,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach s in=[/system scheduler find name="dartbit-guard"] do={ /system scheduler remove $s }`);
     add(`:foreach s in=[/system script find name="dartbit-guard"] do={ /system script remove $s }`);
     add(`/system script add name=dartbit-guard policy=read,write,test source={:local thresh 20971520; :foreach h in=[/ip hotspot host find where !authorized] do={ :do { :local byp false; :do { :set byp [/ip hotspot host get \$h bypassed] } on-error={}; :if (!\$byp) do={ :local mac [/ip hotspot host get \$h mac-address]; :local bi [/ip hotspot host get \$h bytes-in]; :local bo [/ip hotspot host get \$h bytes-out]; :if ((\$bi + \$bo) > \$thresh) do={ :if ([:len [/ip hotspot ip-binding find where mac-address=\$mac]] = 0) do={ /ip hotspot ip-binding add mac-address=\$mac type=blocked comment="Dartbit tunnel-block" }; :do { /ip hotspot host remove \$h } on-error={}; :log warning ("Dartbit tunnel-block " . \$mac) } } } on-error={} } }`);
-    add(`/system scheduler add name=dartbit-guard interval=1m on-event="/system script run dartbit-guard" comment="Dartbit guard"`);
+    add(`/system scheduler add name=dartbit-guard start-time=startup interval=1m on-event="/system script run dartbit-guard" comment="Dartbit guard"`);
     add('');
 
     // 13. Provisioning-complete signal — a clear log line on the router AND a callback so the
@@ -936,7 +945,7 @@ router.get('/cmd-script', async (req: Request, res: Response) => {
       `:foreach s in=[/system scheduler find comment="Dartbit cmd"] do={ /system scheduler remove $s }`,
       `:foreach s in=[/system script find name="dartbit-cmd"] do={ /system script remove $s }`,
       `/system script add name=dartbit-cmd policy=read,write,test,reboot source={:do {/tool fetch url="${backendUrl}/router/commands?apiKey=${apiKey}"${fetchFlags} dst-path=dartbit-cmd.rsc; :delay 1s; :if ([:len [/file find name="dartbit-cmd.rsc"]] > 0) do={ /import file-name=dartbit-cmd.rsc; :delay 1s; :foreach f in=[/file find name="dartbit-cmd.rsc"] do={ /file remove $f } }} on-error={}}`,
-      `/system scheduler add name=dartbit-cmd interval=5s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`,
+      `/system scheduler add name=dartbit-cmd start-time=startup interval=5s on-event="/system script run dartbit-cmd" comment="Dartbit cmd"`,
     ];
     res.type('text/plain').send(lines.join('\n'));
   } catch (err) {
