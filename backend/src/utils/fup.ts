@@ -21,6 +21,7 @@
 // customer's history. routerId is recorded for reference only and may be null.
 
 import prisma from './prisma';
+import { rateLimitString } from './radius';
 
 // Kenya is UTC+3 year-round (no DST), so a fixed offset is correct for "midnight EAT".
 const EAT_OFFSET_MIN = 3 * 60;
@@ -223,7 +224,8 @@ async function setThrottle(sub: { id: string; username: string; routerId: string
       select: { package: { select: { speedUpKbps: true, speedDownKbps: true } } },
     });
     if (!full?.package) return;
-    rl = `${full.package.speedUpKbps}k/${full.package.speedDownKbps}k`;
+    // Releasing a throttle restores the full package rate INCLUDING its burst allowance.
+    rl = rateLimitString(full.package.speedUpKbps, full.package.speedDownKbps);
   }
   await enqueueCommand(sub.routerId,
     `:foreach s in=[/ppp secret find name="${sub.username}"] do={ /ppp secret set $s rate-limit="${rl}" }`);

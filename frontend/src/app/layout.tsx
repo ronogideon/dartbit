@@ -26,11 +26,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
       </head>
-      {/* h-[100dvh] + overflow-hidden, NOT min-h-screen: min-h-screen is 100vh, and whenever browser
-          chrome makes dvh smaller than vh the body grows past the viewport and the DOCUMENT gets its
-          own scrollbar on top of the app's. Pinning the body to the real viewport leaves exactly one
-          scroll container — <main> inside AppLayout. */}
-      <body className="bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 h-[100dvh] overflow-hidden">
+      {/* min-h-[100dvh], NOT min-h-screen and NOT overflow-hidden.
+            - min-h-screen is 100vh: when browser chrome makes dvh smaller than vh, the body grows
+              past the viewport and the DOCUMENT gets a scrollbar on top of <main>'s, which is the
+              double-scrollbar on the admin pages. Matching dvh to AppLayout's own h-[100dvh] means
+              the body is exactly viewport height, so it never scrolls.
+            - overflow-hidden here would be wrong: the customer portal and /t pages do NOT use
+              AppLayout, so they have no inner scroll container and clipping the body left them
+              unscrollable. Scrolling containment belongs to AppLayout, not to every page. */}
+      <body className="bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 min-h-[100dvh]">
         <Providers>{children}</Providers>
       </body>
     </html>

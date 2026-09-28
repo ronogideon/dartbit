@@ -183,7 +183,7 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
   // ===== Login screen =====
   if (!token || !account) {
     return (
-      <div className="min-h-screen flex items-center justify-center p-4" style={{ ...fontStyle, background: `radial-gradient(circle at 50% -10%, ${accent}33, transparent 55%), linear-gradient(to bottom right, #0f1117, #090b10)` }}>
+      <div className="min-h-[100dvh] flex items-center justify-center p-4" style={{ ...fontStyle, background: `radial-gradient(circle at 50% -10%, ${accent}33, transparent 55%), linear-gradient(to bottom right, #0f1117, #090b10)` }}>
         <div className="w-full max-w-sm">
           <div className="text-center mb-6">
             <div className="inline-flex w-14 h-14 rounded-2xl items-center justify-center mb-3 overflow-hidden" style={{ background: accent }}>
@@ -254,7 +254,7 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
 
   // ===== Account dashboard =====
   return (
-    <div className="min-h-screen bg-gray-950 text-white p-4" style={fontStyle}>
+    <div className="min-h-[100dvh] bg-gray-950 text-white p-4" style={fontStyle}>
       <div className="max-w-2xl mx-auto space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -297,28 +297,34 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
         {/* Renew / buy */}
         <div className="bg-gray-800 rounded-2xl p-5 border border-gray-700">
           <h2 className="text-sm font-semibold mb-3 text-gray-300 flex items-center gap-1.5"><Zap size={15} /> Renew / Buy a Package</h2>
+          {/* Phone + pay appear directly under the package the customer just tapped, rather than
+              below the whole list. With a long list the field sat off-screen, so selecting a
+              package looked like nothing happened. Inline keeps the next step where they tapped. */}
           <div className="space-y-2 mb-3">
             {packages.map(p => (
-              <button key={p.id} onClick={() => setRenewPkg(p)}
-                style={renewPkg?.id === p.id ? { borderColor: accent, backgroundColor: `${accent}1a` } : undefined}
-                className={`w-full text-left p-3 rounded-xl border transition-colors ${renewPkg?.id === p.id ? '' : 'border-gray-700 hover:border-gray-600'}`}>
-                <div className="flex items-center justify-between">
-                  <span className="font-medium">{p.name}</span>
-                  <span className="font-bold" style={{ color: accent }}>KES {p.price.toFixed(0)}</span>
-                </div>
-                <div className="text-xs text-gray-500">{fmtDur(p.validityMinutes)} • {Math.round(p.speedDownKbps/1024)}Mbps</div>
-              </button>
+              <div key={p.id}>
+                <button onClick={() => setRenewPkg(p)}
+                  style={renewPkg?.id === p.id ? { borderColor: accent, backgroundColor: `${accent}1a` } : undefined}
+                  className={`w-full text-left p-3 rounded-xl border transition-colors ${renewPkg?.id === p.id ? '' : 'border-gray-700 hover:border-gray-600'}`}>
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium">{p.name}</span>
+                    <span className="font-bold" style={{ color: accent }}>KES {p.price.toFixed(0)}</span>
+                  </div>
+                  <div className="text-xs text-gray-500">{fmtDur(p.validityMinutes)} • {Math.round(p.speedDownKbps/1024)}Mbps</div>
+                </button>
+
+                {renewPkg?.id === p.id && (
+                  <div className="space-y-2 mt-2 pl-3 border-l-2" style={{ borderColor: accent }}>
+                    <input className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-white" value={renewPhone} onChange={e => setRenewPhone(e.target.value)} placeholder="M-Pesa phone (e.g. 0712345678)" inputMode="tel" autoFocus />
+                    <button onClick={startRenew} disabled={renewing} className="w-full bg-green-600 hover:bg-green-700 text-white rounded-lg py-2.5 font-medium disabled:opacity-50">
+                      {renewing ? 'Waiting for payment…' : `Pay KES ${p.price.toFixed(0)} with M-Pesa`}
+                    </button>
+                  </div>
+                )}
+              </div>
             ))}
             {packages.length === 0 && <p className="text-sm text-gray-500 text-center py-2">No packages available</p>}
           </div>
-          {renewPkg && (
-            <div className="space-y-2">
-              <input className="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 text-white" value={renewPhone} onChange={e => setRenewPhone(e.target.value)} placeholder="M-Pesa phone (e.g. 0712345678)" inputMode="tel" />
-              <button onClick={startRenew} disabled={renewing} className="w-full bg-green-600 hover:bg-green-700 text-white rounded-lg py-2.5 font-medium disabled:opacity-50">
-                {renewing ? 'Waiting for payment…' : `Pay KES ${renewPkg.price.toFixed(0)} with M-Pesa`}
-              </button>
-            </div>
-          )}
         </div>
 
         {/* Sessions */}

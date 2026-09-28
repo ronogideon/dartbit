@@ -4,6 +4,7 @@
 // changes reflect on the router almost instantly. The 60s sync remains the safety-net reconciler.
 import prisma from './prisma';
 import { enqueueCommand } from './commandQueue';
+import { rateLimitString } from './radius';
 
 interface HsSubLike {
   id: string;
@@ -29,7 +30,8 @@ export function buildHotspotSubCommands(sub: HsSubLike): string[] {
   const entitled = sub.isActive && !!sub.packageId && !expired;
   const macU = sub.macAddress ? sub.macAddress.toUpperCase() : '';
   const profileName = sub.package ? `db-h-${sub.package.id.substring(0, 8)}` : 'dartbit-default';
-  const speed = sub.package ? `${sub.package.speedUpKbps}k/${sub.package.speedDownKbps}k` : '5M/5M';
+  // Same burst policy as the RADIUS path.
+  const speed = sub.package ? rateLimitString(sub.package.speedUpKbps, sub.package.speedDownKbps) : '5M/5M';
   const macBind = macU ? ` mac-address=${macU}` : '';
 
   if (!entitled) {

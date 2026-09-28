@@ -14,7 +14,7 @@ function PortalInner() {
 
 export default function PortalPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen bg-gray-950" />}>
+    <Suspense fallback={<div className="min-h-[100dvh] bg-gray-950" />}>
       <PortalInner />
     </Suspense>
   );

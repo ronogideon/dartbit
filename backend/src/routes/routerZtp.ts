@@ -4,6 +4,7 @@ import { promises as dns } from 'dns';
 import prisma from '../utils/prisma';
 import { sendError } from '../utils/response';
 import { enqueueCommand, dequeueAll, clearQueue } from '../utils/commandQueue';
+import { rateLimitString } from '../utils/radius';
 
 const router = Router();
 
@@ -107,7 +108,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.29 (schedulers clock-independent + NTP; fixes dormant scheduler bug)');
+    add('# Dartbit ZTP Script v1.5.30 (burst: 130% ceiling under 20% avg, ~1s; schedulers clock-independent)');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -1528,7 +1529,8 @@ router.get('/sync-script', async (req: Request, res: Response) => {
 
     const pppoeUsers = subscribers.filter(s => s.service === 'PPPOE');
     for (const sub of pppoeUsers) {
-      const speed = sub.package ? `${sub.package.speedUpKbps}k/${sub.package.speedDownKbps}k` : '10M/10M';
+      // Burst comes from the shared builder so RADIUS and legacy routers apply the same policy.
+      const speed = sub.package ? rateLimitString(sub.package.speedUpKbps, sub.package.speedDownKbps) : '10M/10M';
       const profileName = sub.package ? `db-p-${sub.package.id.substring(0, 8)}` : 'dartbit-pppoe';
       const expired = sub.expiresAt && sub.expiresAt <= now;
       // Admin-disabled (not active) → fully blocked. Expired (subscription lapsed) → kept
@@ -1575,7 +1577,7 @@ router.get('/sync-script', async (req: Request, res: Response) => {
       const pn = `db-h-${sub.package.id.substring(0, 8)}`;
       if (hsProfilesSeen.has(pn)) continue;
       hsProfilesSeen.add(pn);
-      const sp = `${sub.package.speedUpKbps}k/${sub.package.speedDownKbps}k`;
+      const sp = rateLimitString(sub.package.speedUpKbps, sub.package.speedDownKbps);
       // MAC cookie written on login so the device reconnects instantly; it expires 60s AFTER the
       // package validity (mac-cookie-timeout is relative to login ≈ purchase), so it never outlives
       // the paid window. Expiry enforcement also wipes it, as a backstop.
@@ -1696,7 +1698,7 @@ router.get('/sync-script', async (req: Request, res: Response) => {
         if (!profilesByPkg[pname]) {
           profilesByPkg[pname] = {
             name: pname,
-            speed: `${v.package.speedUpKbps}k/${v.package.speedDownKbps}k`,
+            speed: rateLimitString(v.package.speedUpKbps, v.package.speedDownKbps),
             validityMin: v.durationMinutes,
           };
         }

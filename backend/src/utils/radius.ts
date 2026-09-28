@@ -25,10 +25,52 @@ async function radiusPsql(sql: string): Promise<string> {
 }
 
 // Map a package speed to a MikroTik rate-limit string (e.g. "5M/20M" up/down).
-function rateLimit(upKbps?: number | null, downKbps?: number | null): string {
-  const up = upKbps && upKbps > 0 ? `${Math.round(upKbps)}k` : '1M';
-  const down = downKbps && downKbps > 0 ? `${Math.round(downKbps)}k` : '1M';
-  return `${up}/${down}`;
+// ---- Burst policy ---------------------------------------------------------------------------
+// A subscriber who has been mostly idle may briefly exceed their package speed; one who is already
+// pulling hard may not. That is exactly what MikroTik's burst fields express.
+//
+// BURST_PCT        burst ceiling, as a multiple of package speed (130% = +30%).
+// BURST_THRESH_PCT burst is permitted only while the AVERAGE rate sits below this share of package
+//                  speed (20%). Above it, the subscriber is held to their plan.
+// BURST_TIME_S     the averaging WINDOW, not the length of the burst. This is the field that is
+//                  almost always set wrong. Actual burst duration is:
+//                      burst-threshold / burst-rate * burst-time
+//                  so for ~1s of real burst at 130% with a 20% threshold:
+//                      1s = (0.2R / 1.3R) * burst-time  ->  burst-time = 6.5s, rounded to 7.
+//                  Setting burst-time=1 would yield roughly 0.15s of burst instead.
+const BURST_PCT = 1.3;
+const BURST_THRESH_PCT = 0.2;
+const BURST_TIME_S = 7;
+
+// MikroTik rate-limit string. With burst:
+//   rx/tx  rx-burst/tx-burst  rx-threshold/tx-threshold  rx-burst-time/tx-burst-time
+// rx is the subscriber's UPLOAD, tx their DOWNLOAD — matching the up/down argument order.
+//
+// burst is deliberately OPT-IN. It must never be applied to a FUP throttle or the walled-garden
+// rate: letting a throttled subscriber burst to 130% of the THROTTLED speed would partly undo the
+// restriction that was just imposed.
+function rateLimit(
+  upKbps?: number | null,
+  downKbps?: number | null,
+  opts?: { burst?: boolean },
+): string {
+  const upN = upKbps && upKbps > 0 ? Math.round(upKbps) : null;
+  const downN = downKbps && downKbps > 0 ? Math.round(downKbps) : null;
+  const up = upN ? `${upN}k` : '1M';
+  const down = downN ? `${downN}k` : '1M';
+  if (!opts?.burst || !upN || !downN) return `${up}/${down}`;
+
+  const bUp = Math.round(upN * BURST_PCT);
+  const bDown = Math.round(downN * BURST_PCT);
+  const tUp = Math.max(1, Math.round(upN * BURST_THRESH_PCT));
+  const tDown = Math.max(1, Math.round(downN * BURST_THRESH_PCT));
+  return `${up}/${down} ${bUp}k/${bDown}k ${tUp}k/${tDown}k ${BURST_TIME_S}/${BURST_TIME_S}`;
+}
+
+// Same policy, exported for the legacy (non-RADIUS) path so PPP and hotspot user profiles pushed
+// through the ZTP burst identically. One definition, so the two transports can't drift.
+export function rateLimitString(upKbps?: number | null, downKbps?: number | null, burst = true): string {
+  return rateLimit(upKbps, downKbps, { burst });
 }
 
 // FreeRADIUS Expiration attribute format: "DD Mon YYYY HH:MM:SS" (e.g. "31 Dec 2026 23:59:59").
@@ -182,7 +224,9 @@ export async function syncSubscriberToRadius(subscriberId: string, opts?: { kick
       // from scratch, so without this a throttled subscriber would silently regain full speed
       // the next time anything touched their record.
       const eff = throttleKbps || { up: sub.package?.speedUpKbps ?? null, down: sub.package?.speedDownKbps ?? null };
-      const rl = sqlq(rateLimit(eff.up, eff.down));
+      // No burst while a FUP throttle is in force — bursting a throttled subscriber to 130% of the
+      // throttled rate would partially defeat the throttle.
+      const rl = sqlq(rateLimit(eff.up, eff.down, { burst: !throttleKbps }));
       stmts.push(`INSERT INTO radreply (username, attribute, op, value) VALUES ('${u}','Mikrotik-Rate-Limit',':=','${rl}');`);
     } else if (walledGarden) {
       // Accept (no Expiration) so the CPE stays connected and can reach the portal, but throttle it.
@@ -360,7 +404,9 @@ export async function bulkSyncPppoeToRadius(opts: { tenantId?: string; routerId?
     // silently restores full speed to every throttled subscriber — the same trap the per-subscriber
     // path guards against.
     const thr = throttleMap.get(sub.id) || null;
-    const rl = sqlq(thr ? rateLimit(thr.up, thr.down) : rateLimit(sub.package?.speedUpKbps, sub.package?.speedDownKbps));
+    const rl = sqlq(thr
+      ? rateLimit(thr.up, thr.down)
+      : rateLimit(sub.package?.speedUpKbps, sub.package?.speedDownKbps, { burst: true }));
     stmts.push(`INSERT INTO radreply (username, attribute, op, value) VALUES ('${u}','Mikrotik-Rate-Limit',':=','${rl}');`);
     synced++;
   }
@@ -390,7 +436,7 @@ export async function bulkSyncPppoeToRadius(opts: { tenantId?: string; routerId?
 function voucherRows(name: string, password: string, seconds: number, upKbps?: number | null, downKbps?: number | null, expiresAt?: Date | null): string[] {
   const u = sqlq(name);
   const pw = sqlq(password);
-  const rl = sqlq(rateLimit(upKbps, downKbps));
+  const rl = sqlq(rateLimit(upKbps, downKbps, { burst: true }));
   // IMPORTANT: only use attributes that work with a stock FreeRADIUS install. The earlier
   // `Max-All-Session` (needs the dartbit_uptime sqlcounter) and `Simultaneous-Use` (needs the
   // session module) check items caused Access-Reject ("invalid username or password") when those
@@ -613,7 +659,7 @@ export async function bulkSyncHotspotToRadius(opts: { tenantId?: string; routerI
         const exp = sqlq(radiusExpiry(sub.expiresAt));
         stmts.push(`INSERT INTO radcheck (username, attribute, op, value) VALUES ('${u}','Expiration',':=','${exp}');`);
       }
-      const rl = sqlq(rateLimit(sub.package?.speedUpKbps, sub.package?.speedDownKbps));
+      const rl = sqlq(rateLimit(sub.package?.speedUpKbps, sub.package?.speedDownKbps, { burst: true }));
       stmts.push(`INSERT INTO radreply (username, attribute, op, value) VALUES ('${u}','Mikrotik-Rate-Limit',':=','${rl}');`);
     }
     if (entitled) synced++; else skipped++;
