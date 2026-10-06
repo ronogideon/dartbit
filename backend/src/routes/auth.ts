@@ -221,7 +221,7 @@ const forgotSchema = z.object({
 });
 
 router.post('/forgot-password', async (req: Request, res: Response) => {
-  const generic = () => sendSuccess(res, { ok: true, message: 'If the account exists, your password has been sent by SMS.' });
+  const generic = () => sendSuccess(res, { ok: true, message: 'If the account exists, your password has been sent by SMS or email.' });
   try {
     const parsed = forgotSchema.safeParse(req.body);
     if (!parsed.success) return generic();
@@ -233,15 +233,32 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
       // Staff passwords are hashed (can't be resent) — issue a TEMPORARY password and force a change.
       const user = await prisma.user.findUnique({ where: { email: identifier.toLowerCase().trim() } });
       if (!user) { console.log('[forgot-password] STAFF: no account for', identifier); return generic(); }
-      if (!user.tenantId || !user.phone) { console.log(`[forgot-password] STAFF ${user.email}: cannot SMS — tenantId=${!!user.tenantId} phone=${user.phone ? 'set' : 'MISSING'}`); return generic(); }
+      // Email is the lookup key, so a staff account always has one. Phone is optional —
+      // previously a missing phone meant no reset at all; now email carries it.
+      if (!user.tenantId) { console.log(`[forgot-password] STAFF ${user.email}: no tenantId`); return generic(); }
       const temp = crypto.randomBytes(4).toString('hex'); // 8-char temporary password
       await prisma.user.update({ where: { id: user.id }, data: { password: await bcrypt.hash(temp, 10) } });
       await prisma.$executeRawUnsafe(`UPDATE "User" SET "mustChangePassword"=true WHERE id=$1`, user.id);
-      const r = await sendNotification({
-        tenantId: user.tenantId, phone: user.phone, category: 'OTHER', force: true,
-        body: `Your temporary Dartbit password is: ${temp}\nLog in with it, then set a new password.`,
+
+      let smsSent = false;
+      if (user.phone) {
+        const r = await sendNotification({
+          tenantId: user.tenantId, phone: user.phone, category: 'OTHER', force: true,
+          body: `Your temporary Dartbit password is: ${temp}\nLog in with it, then set a new password.`,
+        }).catch(e => ({ ok: false, reason: e instanceof Error ? e.message : String(e) }));
+        smsSent = !!r.ok;
+        console.log(`[forgot-password] STAFF ${user.email} → SMS ...${user.phone.slice(-4)}:`, JSON.stringify(r));
+      }
+
+      // No dedupKey: the password has already been rotated by this point, so a deduped
+      // send would leave them locked out with a password they never received.
+      const { sendEmail } = await import('../utils/email');
+      const { platformBrand, staffTempPasswordEmail } = await import('../utils/emailTemplates');
+      const er = await sendEmail({
+        tenantId: user.tenantId, to: user.email, category: 'OTHER', tag: 'password_reset',
+        ...staffTempPasswordEmail({ brand: platformBrand(), name: user.name, tempPassword: temp, smsSent }),
       }).catch(e => ({ ok: false, reason: e instanceof Error ? e.message : String(e) }));
-      console.log(`[forgot-password] STAFF ${user.email} → SMS ...${user.phone.slice(-4)}:`, JSON.stringify(r));
+      console.log(`[forgot-password] STAFF ${user.email} → EMAIL:`, JSON.stringify(er));
       return generic();
     }
 
@@ -254,17 +271,34 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
     if (!tenantId) return generic();
     const subscriber = await prisma.subscriber.findFirst({ where: { username: identifier.trim(), tenantId } });
     if (!subscriber) { console.log('[forgot-password] CUSTOMER: no subscriber for', identifier); return generic(); }
-    if (!subscriber.phone) { console.log(`[forgot-password] CUSTOMER ${subscriber.username}: no phone on account`); return generic(); }
+    if (!subscriber.phone && !subscriber.email) { console.log(`[forgot-password] CUSTOMER ${subscriber.username}: no phone or email on account`); return generic(); }
     const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { name: true } });
-    const r = await sendNotification({
-      tenantId, phone: subscriber.phone, subscriberId: subscriber.id, username: subscriber.username,
-      category: 'OTHER', force: true,
-      body: `${tenant?.name || 'Internet'} login\nUsername: ${subscriber.username}\nPassword: ${subscriber.secret}`,
-    }).catch(e => ({ ok: false, reason: e instanceof Error ? e.message : String(e) }));
-    console.log(`[forgot-password] CUSTOMER ${subscriber.username} → SMS ...${subscriber.phone.slice(-4)}:`, JSON.stringify(r));
+
+    let smsSent = false;
+    if (subscriber.phone) {
+      const r = await sendNotification({
+        tenantId, phone: subscriber.phone, subscriberId: subscriber.id, username: subscriber.username,
+        category: 'OTHER', force: true,
+        body: `${tenant?.name || 'Internet'} login\nUsername: ${subscriber.username}\nPassword: ${subscriber.secret}`,
+      }).catch(e => ({ ok: false, reason: e instanceof Error ? e.message : String(e) }));
+      smsSent = !!r.ok;
+      console.log(`[forgot-password] CUSTOMER ${subscriber.username} → SMS ...${subscriber.phone.slice(-4)}:`, JSON.stringify(r));
+    }
+
+    if (subscriber.email) {
+      const { sendEmail } = await import('../utils/email');
+      const { tenantBrand, subscriberLoginEmail } = await import('../utils/emailTemplates');
+      const brand = await tenantBrand(tenantId);
+      const er = await sendEmail({
+        tenantId, to: subscriber.email, subscriberId: subscriber.id, username: subscriber.username,
+        category: 'OTHER', tag: 'login_details',
+        ...subscriberLoginEmail({ brand, username: subscriber.username, secret: subscriber.secret, smsSent }),
+      }).catch(e => ({ ok: false, reason: e instanceof Error ? e.message : String(e) }));
+      console.log(`[forgot-password] CUSTOMER ${subscriber.username} → EMAIL:`, JSON.stringify(er));
+    }
     return generic();
   } catch {
-    return sendSuccess(res, { ok: true, message: 'If the account exists, your password has been sent by SMS.' });
+    return sendSuccess(res, { ok: true, message: 'If the account exists, your password has been sent by SMS or email.' });
   }
 });
 
