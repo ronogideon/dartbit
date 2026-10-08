@@ -5,6 +5,7 @@ import { Toaster } from 'react-hot-toast';
 import { AuthProvider } from '@/lib/auth';
 import SubdomainGuard from '@/components/SubdomainGuard';
 import BrandProvider from '@/components/BrandProvider';
+import InstallAppBanner from '@/components/InstallAppBanner';
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(() => new QueryClient({
@@ -15,6 +16,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
         <SubdomainGuard><BrandProvider>{children}</BrandProvider></SubdomainGuard>
+        <InstallAppBanner />
         <Toaster position="top-right" toastOptions={{
           style: { background: '#1f2937', color: '#f9fafb', borderRadius: '8px' },
         }} />

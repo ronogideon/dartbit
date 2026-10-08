@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Router, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import prisma from '../utils/prisma';
@@ -21,23 +22,59 @@ async function resolveTenant(req: Request) {
   return resolveTenantBySubdomain(req);
 }
 
-function signSubscriberToken(payload: { sid: string; tid: string; kind: 'PPPOE' | 'HOTSPOT' }): string {
-  return jwt.sign({ ...payload, scope: 'subscriber' }, JWT_SECRET, { expiresIn: '2d' });
+// Fingerprint of the credential the token was issued for. authSubscriber re-checks it against the
+// database on every request, so changing a customer's password signs out every device at once.
+function credentialFingerprint(secret: string | null | undefined): string {
+  return crypto.createHash('sha256').update(`${JWT_SECRET}:${secret ?? ''}`).digest('base64url').slice(0, 16);
+}
+
+// 30 days: the portal is installable as an app, and customers expect it to open straight into their
+// account. Safe because authSubscriber re-validates on every request: a deleted account or a
+// changed password is rejected immediately regardless of the token's age.
+function signSubscriberToken(payload: { sid: string; tid: string; kind: 'PPPOE' | 'HOTSPOT'; secret: string | null }): string {
+  const { secret, ...rest } = payload;
+  return jwt.sign({ ...rest, fp: credentialFingerprint(secret), scope: 'subscriber' }, JWT_SECRET, { expiresIn: '30d' });
 }
 
 interface SubReq extends Request { sub?: { sid: string; tid: string; kind: string } }
 
-function authSubscriber(req: SubReq, res: Response, next: () => void) {
+async function authSubscriber(req: SubReq, res: Response, next: () => void) {
   const h = req.headers.authorization;
   if (!h?.startsWith('Bearer ')) return res.status(401).json({ success: false, error: 'Unauthorized' });
+  let p: { sid: string; tid: string; kind: string; scope: string; fp?: string };
   try {
-    const p = jwt.verify(h.split(' ')[1], JWT_SECRET) as { sid: string; tid: string; kind: string; scope: string };
-    if (p.scope !== 'subscriber') return res.status(401).json({ success: false, error: 'Invalid token' });
-    req.sub = { sid: p.sid, tid: p.tid, kind: p.kind };
-    next();
+    p = jwt.verify(h.split(' ')[1], JWT_SECRET) as typeof p;
   } catch {
     return res.status(401).json({ success: false, error: 'Invalid or expired token' });
   }
+  if (p.scope !== 'subscriber') return res.status(401).json({ success: false, error: 'Invalid token' });
+
+  // Re-validate against the database. Tokens now live 30 days, so a deleted account or a changed
+  // password must end the session now, not when the token expires. (isActive is deliberately not
+  // checked: portal login admits disabled customers so they can see their status, and rejecting
+  // them here would bounce them straight back out.)
+  try {
+    let secret: string | null | undefined;
+    if (p.kind === 'PPPOE') {
+      const s = await prisma.subscriber.findUnique({ where: { id: p.sid }, select: { tenantId: true, secret: true } });
+      if (!s || s.tenantId !== p.tid) return res.status(401).json({ success: false, error: 'Session ended. Please log in again.' });
+      secret = s.secret;
+    } else {
+      const tx = await prisma.mpesaTransaction.findUnique({ where: { id: p.sid }, select: { tenantId: true, password: true } });
+      if (!tx || tx.tenantId !== p.tid) return res.status(401).json({ success: false, error: 'Session ended. Please log in again.' });
+      secret = tx.password;
+    }
+    // Tokens issued before v1.11.89 carry no fingerprint; they expire within 2 days on their own.
+    if (p.fp && p.fp !== credentialFingerprint(secret)) {
+      return res.status(401).json({ success: false, error: 'Your password was changed. Please log in again.' });
+    }
+  } catch (err) {
+    console.error('[portal] session check failed:', err instanceof Error ? err.message : err);
+    return res.status(500).json({ success: false, error: 'Could not verify session' });
+  }
+
+  req.sub = { sid: p.sid, tid: p.tid, kind: p.kind };
+  next();
 }
 
 // GET /portal/tenant — public: returns tenant branding for the login page + portal
@@ -73,7 +110,7 @@ router.post('/login', async (req: Request, res: Response) => {
       where: { tenantId: t.id, username: String(username) },
     });
     if (subscriber && subscriber.secret === String(password)) {
-      const token = signSubscriberToken({ sid: subscriber.id, tid: t.id, kind: 'PPPOE' });
+      const token = signSubscriberToken({ sid: subscriber.id, tid: t.id, kind: 'PPPOE', secret: subscriber.secret });
       return res.json({ success: true, token, kind: 'PPPOE' });
     }
 
@@ -83,7 +120,7 @@ router.post('/login', async (req: Request, res: Response) => {
       orderBy: { createdAt: 'desc' },
     });
     if (tx && tx.password === String(password)) {
-      const token = signSubscriberToken({ sid: tx.id, tid: t.id, kind: 'HOTSPOT' });
+      const token = signSubscriberToken({ sid: tx.id, tid: t.id, kind: 'HOTSPOT', secret: tx.password });
       return res.json({ success: true, token, kind: 'HOTSPOT' });
     }
 

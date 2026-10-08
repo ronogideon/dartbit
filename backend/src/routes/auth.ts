@@ -235,6 +235,25 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
       if (!user) { console.log('[forgot-password] STAFF: no account for', identifier); return generic(); }
       // Email is the lookup key, so a staff account always has one. Phone is optional —
       // previously a missing phone meant no reset at all; now email carries it.
+      if (!user.isActive) { console.log(`[forgot-password] STAFF ${user.email}: account inactive`); return generic(); }
+
+      // Superadmins have no tenant, so there's no SMS wallet and no Message row to write under.
+      // Email only, recorded in logs.
+      if (user.role === 'SUPERADMIN' || user.role === 'SUPERADMIN_VIEWER') {
+        const temp = crypto.randomBytes(6).toString('hex'); // 12 chars — a higher-value account
+        await prisma.user.update({ where: { id: user.id }, data: { password: await bcrypt.hash(temp, 10) } });
+        await prisma.$executeRawUnsafe(`UPDATE "User" SET "mustChangePassword"=true WHERE id=$1`, user.id);
+        const { sendEmail } = await import('../utils/email');
+        const { superadminTempPasswordEmail, appUrl } = await import('../utils/emailTemplates');
+        const loginUrl = (process.env.SUPERADMIN_URL || appUrl()).replace(/\/+$/, '');
+        const er = await sendEmail({
+          tenantId: null, to: user.email, category: 'SYSTEM', tag: 'superadmin_password_reset',
+          ...superadminTempPasswordEmail({ name: user.name, tempPassword: temp, loginUrl }),
+        }).catch(e => ({ ok: false, reason: e instanceof Error ? e.message : String(e) }));
+        console.log(`[forgot-password] SUPERADMIN ${user.email} → EMAIL:`, JSON.stringify(er));
+        return generic();
+      }
+
       if (!user.tenantId) { console.log(`[forgot-password] STAFF ${user.email}: no tenantId`); return generic(); }
       const temp = crypto.randomBytes(4).toString('hex'); // 8-char temporary password
       await prisma.user.update({ where: { id: user.id }, data: { password: await bcrypt.hash(temp, 10) } });

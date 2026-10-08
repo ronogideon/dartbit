@@ -63,6 +63,10 @@ router.post('/', async (req: Request, res: Response) => {
           phone,
           status: 'TRIAL' as const,
           trialEndsAt,
+          // The trial's end IS the first due date. Without this the billing updater skips the
+          // tenant entirely, so they never get the invoice in the 5-day window or hit the paywall.
+          billingDueDate: trialEndsAt,
+          billingStatus: 'CURRENT',
           isActive: true,
         },
       });
@@ -124,6 +128,13 @@ router.post('/', async (req: Request, res: Response) => {
     });
 
     console.log(`✓ New ISP signed up: ${companyName} (${subdomain})`);
+
+    // Welcome email to the new admin + alert to superadmins. Background: a slow or failing mail
+    // provider must never fail the signup itself.
+    const signupIds = { tenantId: result.tenant.id, userId: result.user.id };
+    import('../utils/platformNotify')
+      .then(({ notifySignup }) => notifySignup(signupIds))
+      .catch((e: unknown) => console.error('[signup] notification failed:', e instanceof Error ? e.message : e));
 
     sendSuccess(res, {
       token,

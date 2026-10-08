@@ -5,6 +5,11 @@ import { Providers } from './providers';
 export const metadata: Metadata = {
   title: 'Dartbit - ISP Management',
   description: 'ISP Billing & MikroTik Management Platform',
+  // Per-tenant manifest and icons: both are resolved from the request's host, so each ISP's
+  // subdomain installs as that ISP's own app (see app/manifest.webmanifest and app/app-icon).
+  manifest: '/manifest.webmanifest',
+  icons: { apple: '/app-icon/180' },
+  appleWebApp: { capable: true, statusBarStyle: 'black-translucent' },
 };
 
 export const viewport: Viewport = {
@@ -14,6 +19,10 @@ export const viewport: Viewport = {
 };
 
 // Applies the saved theme before paint to avoid a light/dark flash on load.
+// Chrome fires beforeinstallprompt once, possibly before React hydrates. Stash it on window so the
+// install banner (lib/installApp) can still use it.
+const installInit = `window.addEventListener('beforeinstallprompt',function(e){e.preventDefault();window.__dartbitBip=e;});`;
+
 const themeInit = `(function(){try{var t=localStorage.getItem('dartbit_theme');var d=t?t==='dark':window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches;if(d)document.documentElement.classList.add('dark');}catch(e){}})();`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -21,6 +30,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInit }} />
+        <script dangerouslySetInnerHTML={{ __html: installInit }} />
         {/* Preconnect only. The tenant's single chosen font (if any) is loaded at runtime by
             BrandProvider — default/system-font tenants download no webfonts at all. */}
         <link rel="preconnect" href="https://fonts.googleapis.com" />

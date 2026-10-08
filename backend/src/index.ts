@@ -109,8 +109,8 @@ app.use(express.json());
 // malformed / over-length URL => 400 Bad Request. Scoped to text/plain so JSON routes are untouched.
 app.use(express.text({ type: 'text/plain', limit: '5mb' }));
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.88', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.88', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.89', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.89', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -151,7 +151,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.88 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.11.89 running on port ${PORT}\n`);
   patchDatabase().catch(e => console.error('[patchDatabase] failed:', e instanceof Error ? e.message : e));
 
   // Fair Use Policy sweep: accumulate usage and throttle/release. Every 5 minutes matches the
@@ -247,40 +247,77 @@ function startRouterOfflineWatcher() {
 }
 
 // Update each tenant's billingStatus based on their due date:
-//   no due date         -> unchanged (trial / not yet billed)
+//   no due date         -> unchanged (not yet billed)
 //   due in >5 days       -> CURRENT
-//   due within 5 days    -> DUE_SOON
-//   past due             -> OVERDUE
-// PAID is set explicitly on payment confirmation (and cleared when a new cycle's
-// due date is set). This runs alongside session cleanup.
+//   due within 5 days    -> DUE_SOON   (payment window open — invoice email + SMS)
+//   past due             -> OVERDUE    (paywall — trial-ended or features-disabled email + SMS)
+// PAID is set explicitly on payment confirmation (and cleared when a new cycle's due date is set).
+// Notifications fire only on a status TRANSITION, keyed per cycle, so re-runs never resend.
 function startBillingStatusUpdater() {
   const prisma = sharedPrisma;
+  const FIVE_DAYS = 5 * 24 * 60 * 60 * 1000;
+  const statusFor = (due: number, now: number) => (now > due ? 'OVERDUE' : due - now <= FIVE_DAYS ? 'DUE_SOON' : 'CURRENT');
+
+  // One-time, idempotent: trial tenants created before v1.11.89 have trialEndsAt but no
+  // billingDueDate, so the updater skipped them and they never reached DUE_SOON/OVERDUE.
+  // Set the due date to the trial end AND write the status it implies in the same statement —
+  // so the updater sees no transition and sends nothing. Backfilled tenants are silent; only
+  // their FUTURE transitions notify. Touches only rows where billingDueDate is still null.
+  const backfill = async () => {
+    try {
+      const n = await prisma.$executeRawUnsafe(`
+        UPDATE "Tenant" SET
+          "billingDueDate" = "trialEndsAt",
+          "billingStatus" = CASE
+            WHEN "trialEndsAt" < NOW() THEN 'OVERDUE'
+            WHEN "trialEndsAt" - NOW() <= INTERVAL '5 days' THEN 'DUE_SOON'
+            ELSE 'CURRENT' END
+        WHERE "status" = 'TRIAL' AND "billingDueDate" IS NULL AND "trialEndsAt" IS NOT NULL`);
+      if (n > 0) console.log(`💳 Backfilled billingDueDate for ${n} trial tenant(s) (silent — no notifications)`);
+    } catch (err) {
+      console.error('Trial due-date backfill error:', err instanceof Error ? err.message : err);
+    }
+  };
+
   const run = async () => {
     try {
       const now = Date.now();
-      const FIVE_DAYS = 5 * 24 * 60 * 60 * 1000;
       const tenants = await prisma.tenant.findMany({
         where: { billingDueDate: { not: null } },
-        select: { id: true, billingDueDate: true, billingStatus: true },
+        select: { id: true, billingDueDate: true, billingStatus: true, status: true },
       });
       for (const t of tenants) {
         if (!t.billingDueDate) continue;
         const due = t.billingDueDate.getTime();
-        let status: string;
-        if (now > due) status = 'OVERDUE';
-        else if (due - now <= FIVE_DAYS) status = 'DUE_SOON';
-        else status = 'CURRENT';
+        const status = statusFor(due, now);
         // Don't override a PAID status that's still within the current cycle.
         if (t.billingStatus === 'PAID' && now <= due) continue;
-        if (status !== t.billingStatus) {
-          await prisma.tenant.update({ where: { id: t.id }, data: { billingStatus: status } });
+        if (status === t.billingStatus) continue;
+
+        await prisma.tenant.update({ where: { id: t.id }, data: { billingStatus: status } });
+
+        // Notify on entering the payment window or the paywall. Never on CURRENT.
+        if (status === 'DUE_SOON' || status === 'OVERDUE') {
+          const event = status === 'DUE_SOON' ? 'invoice' : t.status === 'TRIAL' ? 'trial_ended' : 'overdue';
+          const dueDate = t.billingDueDate;
+          const tenantId = t.id;
+          // Fire-and-forget: a slow mail/SMS provider must not stall the status pass for other tenants.
+          (async () => {
+            const { computeTenantBill } = await import('./routes/billing');
+            const { notifyTenantBilling } = await import('./utils/platformNotify');
+            const bill = await computeTenantBill(tenantId);
+            await notifyTenantBilling({
+              tenantId, event, cycleKey: dueDate.toISOString(), amount: bill.appliedCharge, dueDate,
+            });
+          })().catch((err: unknown) => console.error(`Billing notify (${event}) error:`, err instanceof Error ? err.message : err));
         }
       }
     } catch (err) {
       console.error('Billing status update error:', err instanceof Error ? err.message : err);
     }
   };
-  run();
+
+  backfill().then(run);
   setInterval(run, 30 * 60 * 1000); // every 30 min
 }
 
@@ -1082,9 +1119,9 @@ async function patchDatabase() {
     await safeExec(prisma, 'MpesaTx payoutStatus', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutStatus" TEXT`);
     await safeExec(prisma, 'MpesaTx payoutRef', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutRef" TEXT`);
     await safeExec(prisma, 'MpesaTx payoutAt', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutAt" TIMESTAMP(3)`);
-    // v1.11.88: reason for a non-package ("other service") prompt payment, carried to the Payment row.
+    // v1.11.89: reason for a non-package ("other service") prompt payment, carried to the Payment row.
     await safeExec(prisma, 'MpesaTx notes', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "notes" TEXT`);
-    // v1.11.88 Fair Use Policy — per-package limits + per-subscriber usage counters.
+    // v1.11.89 Fair Use Policy — per-package limits + per-subscriber usage counters.
     await safeExec(prisma, 'Pkg fupEnabled', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "fupEnabled" BOOLEAN NOT NULL DEFAULT false`);
     await safeExec(prisma, 'Pkg fupPeriod', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "fupPeriod" TEXT NOT NULL DEFAULT 'MONTHLY'`);
     await safeExec(prisma, 'Pkg fupLimitMb', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "fupLimitMb" INTEGER`);
@@ -1327,6 +1364,8 @@ async function patchDatabase() {
     console.log('✅ Database patch complete');
     // Load superadmin platform-default message templates into the notification baseline.
     await loadPlatformDefaults();
+    // And the superadmin email template overrides.
+    await (await import('./utils/emailTemplates')).loadEmailOverrides();
   } catch (err) {
     console.error('⚠️  Fatal patch error:', err instanceof Error ? err.message : err);
   } finally {

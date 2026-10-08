@@ -327,6 +327,17 @@ async function markInvoicePaid(invoiceId: string, tenantId: string, _currentDue:
   } catch (e) {
     console.error('[expense] tenancy record failed:', e instanceof Error ? e.message : e);
   }
+
+  // Payment confirmation to every admin — email + SMS. Verify and the Paystack webhook can both
+  // reach here for one payment; the invoice-id cycle key dedups so they get exactly one each.
+  (async () => {
+    const inv = await prisma.tenantPayment.findUnique({ where: { id: invoiceId }, select: { amount: true, paystackRef: true } });
+    const { notifyTenantBilling } = await import('../utils/platformNotify');
+    await notifyTenantBilling({
+      tenantId, event: 'paid', cycleKey: invoiceId,
+      amount: inv?.amount ?? 0, nextDue, reference: inv?.paystackRef || invoiceId,
+    });
+  })().catch((e: unknown) => console.error('[billing] payment confirmation failed:', e instanceof Error ? e.message : e));
 }
 
 export { markInvoicePaid };

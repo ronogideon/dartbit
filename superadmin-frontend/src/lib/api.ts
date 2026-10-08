@@ -79,3 +79,34 @@ export const listAnnouncements = () => api.get('/announcements/all').then((r) =>
 export const createAnnouncement = (data: { title: string; body: string; level: string; expiresAt?: string|null }) => api.post('/announcements', data).then((r) => r.data.data);
 export const toggleAnnouncement = (id: string, active: boolean) => api.patch(`/announcements/${id}`, { active }).then((r) => r.data.data);
 export const deleteAnnouncement = (id: string) => api.delete(`/announcements/${id}`).then((r) => r.data.data);
+
+// ---- Account recovery ----
+// Sends a temporary password by email. The backend always answers generically, so this never
+// reveals whether an email belongs to an account.
+export const forgotPassword = (email: string) =>
+  api.post('/auth/forgot-password', { scope: 'STAFF', identifier: email }).then((r) => r.data);
+
+// Used right after signing in with a temporary password. The token is passed explicitly rather
+// than read from storage: it's only persisted once the change succeeds, so refreshing the page
+// can't skip the forced change.
+export const changeOwnPassword = (token: string, userId: string, currentPassword: string, newPassword: string) =>
+  api
+    .post(`/users/${userId}/change-password`, { currentPassword, newPassword }, { headers: { Authorization: `Bearer ${token}` } })
+    .then((r) => r.data);
+
+// ---- Email templates ----
+export interface EmailTemplate {
+  key: string;
+  audience: 'tenant' | 'subscriber' | 'platform';
+  label: string;
+  description: string;
+  placeholders: string[];
+  subject: string;
+  heading: string;
+  body: string;
+  isDefault: boolean;
+}
+export const getEmailTemplates = () =>
+  api.get('/superadmin/messaging/email-templates').then((r) => r.data.data as { templates: EmailTemplate[] });
+export const saveEmailTemplate = (key: string, t: { subject: string; heading: string; body: string }) =>
+  api.put(`/superadmin/messaging/email-templates/${key}`, t).then((r) => r.data.data);

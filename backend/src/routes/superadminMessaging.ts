@@ -132,6 +132,52 @@ router.put('/templates/:key', requireSuperAdmin, async (req: AuthRequest, res: R
   }
 });
 
+// GET /superadmin/messaging/email-templates — every email template with its effective content.
+router.get('/email-templates', requireSuperRead, async (_req: AuthRequest, res: Response) => {
+  try {
+    const { allEmailTemplates } = await import('../utils/emailTemplates');
+    sendSuccess(res, { templates: allEmailTemplates() });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
+// PUT /superadmin/messaging/email-templates/:key — override subject/heading/body.
+// All three empty = reset to the built-in default. Credential blocks and buttons are code-rendered
+// and not part of this payload, so an edit can never remove a password from a reset email.
+const emailTplSchema = z.object({
+  subject: z.string().max(200),
+  heading: z.string().max(200),
+  body: z.string().max(4000),
+});
+router.put('/email-templates/:key', requireSuperAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const { isEmailTemplateKey, loadEmailOverrides, EMAIL_TEMPLATE_PREFIX } = await import('../utils/emailTemplates');
+    const key = req.params.key;
+    if (!isEmailTemplateKey(key)) return sendError(res, 'Unknown email template key', 400);
+    const parsed = emailTplSchema.safeParse(req.body);
+    if (!parsed.success) return sendError(res, 'Invalid template', 400);
+    const subject = parsed.data.subject.trim();
+    const heading = parsed.data.heading.trim();
+    const body = parsed.data.body.trim();
+    const settingKey = EMAIL_TEMPLATE_PREFIX + key;
+    if (!subject && !heading && !body) {
+      await prisma.platformSetting.deleteMany({ where: { key: settingKey } });
+    } else {
+      const value = JSON.stringify({ subject, heading, body });
+      await prisma.platformSetting.upsert({
+        where: { key: settingKey },
+        create: { key: settingKey, value },
+        update: { value },
+      });
+    }
+    await loadEmailOverrides();
+    sendSuccess(res, { key });
+  } catch (err) {
+    sendError(res, err instanceof Error ? err.message : 'Failed', 500);
+  }
+});
+
 // GET /superadmin/messaging/provider — current Dartbit default SMS provider.
 router.get('/provider', requireSuperRead, async (_req: AuthRequest, res: Response) => {
   try {

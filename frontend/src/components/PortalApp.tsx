@@ -26,6 +26,42 @@ function fmtDur(mins: number): string {
   return `${Math.round(mins / 1440)} day(s)`;
 }
 
+// ---- Session persistence -------------------------------------------------------------------
+// The portal is the installed app's start page, so it must open straight into whatever the person
+// last signed in as, not a login form every time.
+const PORTAL_SESSION_KEY = 'dartbit_portal_session';
+const STAFF_ROLES = ['TENANT_ADMIN', 'TENANT_VIEWER'];
+
+/** Seconds-since-epoch expiry from a JWT, or 0 if unreadable. Client-side check only. */
+function jwtExp(token: string | null): number {
+  if (!token) return 0;
+  try {
+    const part = token.split('.')[1];
+    const json = atob(part.replace(/-/g, '+').replace(/_/g, '/'));
+    const exp = Number(JSON.parse(json).exp);
+    return Number.isFinite(exp) ? exp : 0;
+  } catch {
+    return 0;
+  }
+}
+const stillValid = (token: string | null) => jwtExp(token) * 1000 > Date.now() + 60_000;
+
+function savePortalSession(tok: string) { try { localStorage.setItem(PORTAL_SESSION_KEY, tok); } catch {} }
+function clearPortalSession() { try { localStorage.removeItem(PORTAL_SESSION_KEY); } catch {} }
+
+/** A staff member already signed in on this subdomain — send them on to the dashboard. */
+function signedInStaff(subdomain: string): boolean {
+  try {
+    const tok = localStorage.getItem('dartbit_token');
+    const user = JSON.parse(localStorage.getItem('dartbit_user') || 'null') as { role?: string } | null;
+    if (!stillValid(tok) || !user?.role || !STAFF_ROLES.includes(user.role)) return false;
+    const storedSub = localStorage.getItem('dartbit_subdomain');
+    return !storedSub || !subdomain || storedSub === subdomain;
+  } catch {
+    return false;
+  }
+}
+
 export default function PortalApp({ subdomain }: { subdomain?: string }) {
   const qs = subdomain ? `?t=${encodeURIComponent(subdomain)}` : '';
   const [tenantName, setTenantName] = useState('');
@@ -65,13 +101,20 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
         }
       }
     }).catch(() => {});
-    // If the unified login already authenticated a customer, pick up the handoff token.
+    // Already signed in as staff on this subdomain → straight to the dashboard.
+    if (signedInStaff(subdomain || '')) { window.location.replace('/dashboard'); return; }
+    // If the unified login already authenticated a customer, pick up the handoff token;
+    // otherwise restore the customer's saved session.
     try {
       const handoff = sessionStorage.getItem('dartbit_portal_token');
-      if (handoff) {
-        sessionStorage.removeItem('dartbit_portal_token');
-        setToken(handoff);
-        loadAccount(handoff);
+      if (handoff) sessionStorage.removeItem('dartbit_portal_token');
+      const saved = handoff || localStorage.getItem(PORTAL_SESSION_KEY);
+      if (saved && stillValid(saved)) {
+        savePortalSession(saved);
+        setToken(saved);
+        loadAccount(saved);
+      } else if (saved) {
+        clearPortalSession();
       }
     } catch { /* ignore */ }
   }, []);
@@ -86,7 +129,7 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
       ]);
       setAccount(acc.data.account);
       setPackages(pkgs.data.packages || []);
-    } catch { toast.error('Session expired, please log in again'); setToken(''); }
+    } catch { clearPortalSession(); toast.error('Session expired, please log in again'); setToken(''); }
   }, [qs]);
 
   // Manual refresh from the button — shows a spinner + confirms when done.
@@ -135,6 +178,7 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
       // Not an admin — subscriber portal login (username/secret or hotspot creds).
       const res = await api.post(`/portal/login${qs}`, { username, password });
       const tok = res.data.token;
+      savePortalSession(tok);
       setToken(tok);
       await loadAccount(tok);
       toast.success('Welcome back!');
@@ -169,7 +213,7 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
     }
   };
 
-  const logout = () => { setToken(''); setAccount(null); setUsername(''); setPassword(''); };
+  const logout = () => { clearPortalSession(); setToken(''); setAccount(null); setUsername(''); setPassword(''); };
 
   const accent = brand.themeColor && /^#[0-9a-f]{6}$/i.test(brand.themeColor) ? brand.themeColor : '#2563eb';
   const fontStyle = brand.fontFamily ? { fontFamily: fontStack(brand.fontFamily) } : undefined;

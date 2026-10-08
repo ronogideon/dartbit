@@ -4,7 +4,7 @@
 
 export interface TemplateDef {
   key: string;
-  group: 'hotspot' | 'pppoe' | 'system';
+  group: 'hotspot' | 'pppoe' | 'system' | 'billing';
   label: string;
   description: string;
   default: string;
@@ -90,6 +90,36 @@ export const TEMPLATES: TemplateDef[] = [
     description: 'Sent to your alert numbers when your SMS wallet runs low.',
     default: '{tenant} ALERT: Your Dartbit SMS balance is low (KES {balance}). Top up to keep notifications running.',
     placeholders: ['{tenant}', '{balance}'],
+    editable: false,
+  },
+  // ---- Billing (Dartbit -> ISP admins; superadmin-editable only, sent from Dartbit's own SMS
+  //      account so it never debits the tenant's wallet) ----
+  {
+    key: 'billing_invoice_sms', group: 'billing', label: 'Billing — Invoice',
+    description: 'Sent to ISP admins when the 5-day payment window opens.',
+    default: 'Dartbit: Your invoice for {tenant} of KES {amount} is due on {dueDate}. Pay from your dashboard to avoid interruption.',
+    placeholders: ['{tenant}', '{amount}', '{dueDate}'],
+    editable: false,
+  },
+  {
+    key: 'billing_paid_sms', group: 'billing', label: 'Billing — Payment confirmation',
+    description: 'Sent to ISP admins when a tenancy payment is confirmed.',
+    default: 'Dartbit: Payment of KES {amount} received for {tenant}. Thank you. Next due {nextDue}.',
+    placeholders: ['{tenant}', '{amount}', '{nextDue}'],
+    editable: false,
+  },
+  {
+    key: 'trial_ended_sms', group: 'billing', label: 'Billing — Trial ended',
+    description: 'Sent to ISP admins when the free trial ends unpaid.',
+    default: 'Dartbit: The free trial for {tenant} has ended. Pay KES {amount} from your dashboard to restore features. Subscribers stay online.',
+    placeholders: ['{tenant}', '{amount}'],
+    editable: false,
+  },
+  {
+    key: 'billing_overdue_sms', group: 'billing', label: 'Billing — Features disabled',
+    description: 'Sent to ISP admins when an invoice passes its due date unpaid.',
+    default: 'Dartbit: Invoice for {tenant} (KES {amount}) is overdue and features are disabled. Pay from your dashboard to restore. Subscribers stay online.',
+    placeholders: ['{tenant}', '{amount}'],
     editable: false,
   },
 ];

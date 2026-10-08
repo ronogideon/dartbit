@@ -33,9 +33,22 @@ export default function SuperadminPortal() {
 }
 
 function Login({ onAuthed }: { onAuthed: (role: string) => void }) {
+  const [mode, setMode] = useState<'login' | 'forgot' | 'change'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+  const [newPw, setNewPw] = useState('');
+  const [confirmPw, setConfirmPw] = useState('');
+  // Held in memory only until the forced change succeeds — never persisted before then.
+  const [pending, setPending] = useState<{ token: string; role: string; userId: string } | null>(null);
+
+  const finish = (token: string, role: string) => {
+    localStorage.setItem('dartbit_sa_token', token);
+    localStorage.setItem('dartbit_sa_role', role);
+    onAuthed(role);
+  };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -44,23 +57,62 @@ function Login({ onAuthed }: { onAuthed: (role: string) => void }) {
       if (data.user.role !== 'SUPERADMIN' && data.user.role !== 'SUPERADMIN_VIEWER') {
         toast.error('This account is not a superadmin'); setLoading(false); return;
       }
-      localStorage.setItem('dartbit_sa_token', data.token);
-      localStorage.setItem('dartbit_sa_role', data.user.role);
-      onAuthed(data.user.role);
+      if (data.user.mustChangePassword) {
+        // Signed in with a temporary password: set a real one before entering the dashboard.
+        setPending({ token: data.token, role: data.user.role, userId: data.user.id });
+        setMode('change');
+        setLoading(false);
+        return;
+      }
+      finish(data.token, data.user.role);
     } catch (err) {
       // Distinguish the real cause instead of blaming the password for everything.
       const e = err as { response?: { status?: number; data?: { error?: string } }; message?: string };
       if (e.response) {
-        // The request reached the backend and it responded with an error status.
         if (e.response.status === 401) toast.error('Invalid email or password');
         else toast.error(e.response.data?.error || `Server error (${e.response.status})`);
       } else {
-        // No response = network/CORS failure (request blocked before/without a reply).
         toast.error(`Cannot reach the server (${e.message || 'network/CORS error'}). Check API URL and CORS.`);
       }
       setLoading(false);
     }
   };
+
+  const submitForgot = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email.trim()) { toast.error('Enter your email'); return; }
+    setLoading(true);
+    try {
+      await API.forgotPassword(email.trim());
+    } catch {
+      /* the response is deliberately generic either way */
+    }
+    setResetSent(true);
+    setLoading(false);
+  };
+
+  const submitChange = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pending) return;
+    if (newPw.length < 8) { toast.error('Use at least 8 characters'); return; }
+    if (newPw !== confirmPw) { toast.error('Passwords do not match'); return; }
+    if (newPw === password) { toast.error('Choose a different password from the temporary one'); return; }
+    setLoading(true);
+    try {
+      await API.changeOwnPassword(pending.token, pending.userId, password, newPw);
+      toast.success('Password updated');
+      finish(pending.token, pending.role);
+    } catch (err) {
+      const e = err as { response?: { data?: { error?: string } } };
+      toast.error(e.response?.data?.error || 'Could not update password');
+      setLoading(false);
+    }
+  };
+
+  const input = 'w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white';
+  const primary = 'w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2.5 font-medium disabled:opacity-50';
+  const link = 'text-sm text-gray-400 hover:text-gray-200';
+
   return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
@@ -74,15 +126,51 @@ function Login({ onAuthed }: { onAuthed: (role: string) => void }) {
           <p className="text-sm text-gray-400 mt-1">Superadmin</p>
         </div>
 
-        {/* Form card */}
-        <form onSubmit={submit} className="bg-gray-900 rounded-2xl p-6 border border-gray-800 shadow-xl">
-          <h2 className="text-base font-semibold text-white mb-5">Sign in to your account</h2>
-          <label className="block text-sm font-medium text-gray-300 mb-1.5">Email</label>
-          <input className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white mb-3" placeholder="you@dartbit.local" value={email} onChange={e => setEmail(e.target.value)} />
-          <label className="block text-sm font-medium text-gray-300 mb-1.5">Password</label>
-          <input type="password" className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-white mb-4" placeholder="••••••••" value={password} onChange={e => setPassword(e.target.value)} />
-          <button disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2.5 font-medium disabled:opacity-50">{loading ? 'Signing in…' : 'Sign In'}</button>
-        </form>
+        {mode === 'login' && (
+          <form onSubmit={submit} className="bg-gray-900 rounded-2xl p-6 border border-gray-800 shadow-xl">
+            <h2 className="text-base font-semibold text-white mb-5">Sign in to your account</h2>
+            <label className="block text-sm font-medium text-gray-300 mb-1.5">Email</label>
+            <input className={`${input} mb-3`} placeholder="you@dartbit.local" value={email} onChange={e => setEmail(e.target.value)} />
+            <label className="block text-sm font-medium text-gray-300 mb-1.5">Password</label>
+            <input type="password" className={`${input} mb-4`} placeholder="••••••••" value={password} onChange={e => setPassword(e.target.value)} />
+            <button disabled={loading} className={primary}>{loading ? 'Signing in…' : 'Sign In'}</button>
+            <div className="text-center mt-4">
+              <button type="button" onClick={() => { setMode('forgot'); setResetSent(false); }} className={link}>Forgot password?</button>
+            </div>
+          </form>
+        )}
+
+        {mode === 'forgot' && (
+          <form onSubmit={submitForgot} className="bg-gray-900 rounded-2xl p-6 border border-gray-800 shadow-xl">
+            <h2 className="text-base font-semibold text-white mb-2">Reset your password</h2>
+            {resetSent ? (
+              <p className="text-sm text-gray-300 mb-5">If that email belongs to a superadmin account, a temporary password is on its way. Check your inbox, then sign in with it.</p>
+            ) : (
+              <>
+                <p className="text-sm text-gray-400 mb-5">We&apos;ll email you a temporary password. You&apos;ll set a new one after signing in.</p>
+                <label className="block text-sm font-medium text-gray-300 mb-1.5">Email</label>
+                <input className={`${input} mb-4`} placeholder="you@dartbit.local" value={email} onChange={e => setEmail(e.target.value)} />
+                <button disabled={loading} className={primary}>{loading ? 'Sending…' : 'Email me a temporary password'}</button>
+              </>
+            )}
+            <div className="text-center mt-4">
+              <button type="button" onClick={() => setMode('login')} className={link}>Back to sign in</button>
+            </div>
+          </form>
+        )}
+
+        {mode === 'change' && (
+          <form onSubmit={submitChange} className="bg-gray-900 rounded-2xl p-6 border border-gray-800 shadow-xl">
+            <h2 className="text-base font-semibold text-white mb-2">Set a new password</h2>
+            <p className="text-sm text-gray-400 mb-5">You signed in with a temporary password. Choose a new one to continue.</p>
+            <label className="block text-sm font-medium text-gray-300 mb-1.5">New password</label>
+            <input type="password" className={`${input} mb-3`} value={newPw} onChange={e => setNewPw(e.target.value)} />
+            <label className="block text-sm font-medium text-gray-300 mb-1.5">Confirm new password</label>
+            <input type="password" className={`${input} mb-4`} value={confirmPw} onChange={e => setConfirmPw(e.target.value)} />
+            <button disabled={loading} className={primary}>{loading ? 'Saving…' : 'Save and continue'}</button>
+          </form>
+        )}
+
         <p className="text-[10px] text-gray-600 mt-4 text-center break-all">API: {process.env.NEXT_PUBLIC_API_URL || 'https://api.dartbittech.com'}</p>
       </div>
     </div>
@@ -690,6 +778,7 @@ function Messaging({ canEdit }: { canEdit: boolean }) {
                   <div>
                     <span className="text-sm font-medium text-gray-200">{tp.label}</span>
                     {tp.group === 'system' && <span className="ml-2 text-[10px] uppercase tracking-wide bg-amber-900/40 text-amber-300 px-1.5 py-0.5 rounded">system</span>}
+                    {tp.group === 'billing' && <span className="ml-2 text-[10px] uppercase tracking-wide bg-emerald-900/40 text-emerald-300 px-1.5 py-0.5 rounded">billing</span>}
                     {tp.isDefault && <span className="ml-2 text-[10px] uppercase tracking-wide text-gray-500">default</span>}
                   </div>
                   <span className="text-xs text-gray-600">{tp.placeholders.join(' ')}</span>
@@ -714,6 +803,81 @@ function Messaging({ canEdit }: { canEdit: boolean }) {
           })}
         </div>
       </div>
+
+      <EmailTemplatesEditor canEdit={canEdit} />
+    </div>
+  );
+}
+
+const AUDIENCE_BADGE: Record<string, string> = {
+  tenant: 'bg-blue-900/40 text-blue-300',
+  subscriber: 'bg-violet-900/40 text-violet-300',
+  platform: 'bg-amber-900/40 text-amber-300',
+};
+
+// Superadmin editor for every email Dartbit sends. Only the words are editable — password and
+// login-detail blocks and the action buttons are added by the server, so an edit here can never
+// remove a temporary password from a reset email.
+function EmailTemplatesEditor({ canEdit }: { canEdit: boolean }) {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({ queryKey: ['sa-email-templates'], queryFn: API.getEmailTemplates });
+  const [drafts, setDrafts] = useState<Record<string, { subject: string; heading: string; body: string }>>({});
+  const save = useMutation({
+    mutationFn: ({ key, t }: { key: string; t: { subject: string; heading: string; body: string } }) => API.saveEmailTemplate(key, t),
+    onSuccess: (_r, v) => {
+      qc.invalidateQueries({ queryKey: ['sa-email-templates'] });
+      setDrafts((d) => { const n = { ...d }; delete n[v.key]; return n; });
+      toast.success(v.t.subject || v.t.heading || v.t.body ? 'Email template saved' : 'Reset to built-in');
+    },
+    onError: (e: { response?: { data?: { error?: string } } }) => toast.error(e?.response?.data?.error || 'Failed to save'),
+  });
+
+  const templates = data?.templates || [];
+  const field = 'w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 disabled:opacity-60';
+
+  return (
+    <div className="bg-gray-900 rounded-xl border border-gray-800 p-5 mt-6">
+      <h3 className="text-sm font-semibold text-gray-300 mb-1">Email Templates</h3>
+      <p className="text-xs text-gray-500 mb-4">
+        Every email Dartbit sends. Leave a blank line between paragraphs. Placeholders in {'{braces}'} are filled in when the email is sent.
+        Passwords, login details and buttons are added automatically and can&apos;t be removed here.
+      </p>
+      {isLoading ? <div className="text-sm text-gray-500">Loading…</div> : (
+        <div className="space-y-4">
+          {templates.map((tp) => {
+            const draft = drafts[tp.key] ?? { subject: tp.subject, heading: tp.heading, body: tp.body };
+            const dirty = draft.subject !== tp.subject || draft.heading !== tp.heading || draft.body !== tp.body;
+            const set = (k: 'subject' | 'heading' | 'body', v: string) => setDrafts((d) => ({ ...d, [tp.key]: { ...draft, [k]: v } }));
+            return (
+              <div key={tp.key} className="border border-gray-800 rounded-lg p-3">
+                <div className="flex items-center justify-between mb-1 gap-2 flex-wrap">
+                  <div>
+                    <span className="text-sm font-medium text-gray-200">{tp.label}</span>
+                    <span className={`ml-2 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded ${AUDIENCE_BADGE[tp.audience] || ''}`}>{tp.audience}</span>
+                    {tp.isDefault && <span className="ml-2 text-[10px] uppercase tracking-wide text-gray-500">default</span>}
+                  </div>
+                  <span className="text-xs text-gray-600">{tp.placeholders.join(' ')}</span>
+                </div>
+                <p className="text-xs text-gray-500 mb-3">{tp.description}</p>
+                <label className="block text-[11px] uppercase tracking-wide text-gray-500 mb-1">Subject</label>
+                <input value={draft.subject} onChange={(e) => set('subject', e.target.value)} disabled={!canEdit} className={`${field} mb-2`} />
+                <label className="block text-[11px] uppercase tracking-wide text-gray-500 mb-1">Heading</label>
+                <input value={draft.heading} onChange={(e) => set('heading', e.target.value)} disabled={!canEdit} className={`${field} mb-2`} />
+                <label className="block text-[11px] uppercase tracking-wide text-gray-500 mb-1">Message</label>
+                <textarea value={draft.body} onChange={(e) => set('body', e.target.value)} disabled={!canEdit} className={`${field} min-h-[120px]`} />
+                {canEdit && (
+                  <div className="flex justify-end gap-2 mt-2">
+                    {!tp.isDefault && (
+                      <button onClick={() => save.mutate({ key: tp.key, t: { subject: '', heading: '', body: '' } })} className="text-xs text-gray-400 hover:text-gray-200 flex items-center gap-1"><RotateCcw size={12} /> Reset to built-in</button>
+                    )}
+                    <button onClick={() => save.mutate({ key: tp.key, t: draft })} disabled={!dirty || save.isPending} className="text-xs bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg flex items-center gap-1"><Save size={12} /> Save</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

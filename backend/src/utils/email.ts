@@ -22,7 +22,12 @@ function platformFrom(): string {
 }
 
 export interface SendEmailArgs {
-  tenantId: string;
+  /**
+   * Owning tenant — the attempt is recorded in their Messages tab. null for platform mail
+   * (superadmin alerts and resets): those are logged only, never written under a tenant,
+   * or a superadmin alert would show up in that ISP's own message history.
+   */
+  tenantId: string | null;
   to: string;
   subject: string;
   html: string;
@@ -59,8 +64,9 @@ export async function sendEmail(args: SendEmailArgs): Promise<EmailResult> {
     return { ok: false, skipped: true, reason: 'no valid email address' };
   }
 
-  // Dedup before spending an API call. Same rail as sendNotification().
-  if (dedupKey) {
+  // Dedup before spending an API call. Same rail as sendNotification(). Platform mail has no
+  // Message row to dedup against, so it relies on Resend's idempotency key alone.
+  if (dedupKey && tenantId) {
     const existing = await prisma.message.findUnique({ where: { dedupKey } }).catch(() => null);
     if (existing) return { ok: false, skipped: true, reason: 'duplicate', messageId: existing.id };
   }
@@ -103,6 +109,10 @@ export async function sendEmail(args: SendEmailArgs): Promise<EmailResult> {
   // Record the attempt either way, exactly as the SMS path does, so failures are
   // visible in the Messages tab instead of only in logs.
   let messageId: string | undefined;
+  if (!tenantId) {
+    console.log(`[email] platform "${subject}" to ${to}: ${providerId ? 'sent ' + providerId : 'FAILED ' + (errorMessage || '')}`);
+    return providerId ? { ok: true } : { ok: false, reason: errorMessage || 'send failed' };
+  }
   try {
     const row = await prisma.message.create({
       data: {
