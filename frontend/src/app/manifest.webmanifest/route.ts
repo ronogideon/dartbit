@@ -5,7 +5,9 @@ import { getPwaBrand, brandVersion, APP_BACKGROUND } from '@/lib/pwaBrand';
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
-  const brand = await getPwaBrand(req.headers.get('x-forwarded-host') || req.headers.get('host'));
+  const host = req.headers.get('x-forwarded-host') || req.headers.get('host');
+  const proto = (req.headers.get('x-forwarded-proto') || 'https').split(',')[0].trim();
+  const brand = await getPwaBrand(host);
   const v = brandVersion(brand);
 
   const manifest = {
@@ -27,6 +29,11 @@ export async function GET(req: Request) {
       { src: `/app-icon/512?v=${v}`, sizes: '512x512', type: 'image/png', purpose: 'any' },
       { src: `/app-icon/512?v=${v}&maskable=1`, sizes: '512x512', type: 'image/png', purpose: 'maskable' },
     ],
+    // Lists this app itself, so a normal browser tab can ask Chrome (getInstalledRelatedApps)
+    // whether it's already installed and skip the install card. Must be this manifest's own URL.
+    related_applications: host ? [{ platform: 'webapp', url: `${proto}://${host}/manifest.webmanifest` }] : [],
+    // false: keep offering this web app, never redirect people to an app store instead.
+    prefer_related_applications: false,
   };
 
   return new Response(JSON.stringify(manifest), {

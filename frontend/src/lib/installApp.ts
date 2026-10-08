@@ -23,8 +23,17 @@ declare global {
 
 export type InstallPlatform = 'ios' | 'android' | 'desktop';
 
+const INSTALLED_KEY = 'dartbit_app_installed';
+
 const listeners = new Set<() => void>();
 const notify = () => listeners.forEach((l) => l());
+
+function flagInstalled() {
+  try { localStorage.setItem(INSTALLED_KEY, '1'); } catch { /* storage blocked */ }
+}
+function hasInstalledFlag(): boolean {
+  try { return localStorage.getItem(INSTALLED_KEY) === '1'; } catch { return false; }
+}
 
 if (typeof window !== 'undefined') {
   window.addEventListener('beforeinstallprompt', (e) => {
@@ -35,6 +44,8 @@ if (typeof window !== 'undefined') {
   window.addEventListener('appinstalled', () => {
     window.__dartbitBip = null;
     window.__dartbitInstalled = true;
+    flagInstalled();
+    detection = Promise.resolve(true);
     notify();
   });
 }
@@ -57,19 +68,58 @@ export function detectPlatform(): InstallPlatform {
   return 'desktop';
 }
 
+/**
+ * Has this person already installed the app? A page in an ordinary browser tab can't see the home
+ * screen directly, so three signals are combined:
+ *   1. Running as the installed app right now.
+ *   2. A flag saved when it was installed or opened as the app. On Android the installed app shares
+ *      storage with Chrome, so the flag set inside the app is visible in the browser tab too.
+ *   3. getInstalledRelatedApps() — Chrome can confirm an installed copy of this exact app (the
+ *      manifest lists itself under related_applications for this purpose).
+ * iPhone home-screen apps keep separate storage from Safari and iOS has no detection API, so an
+ * iPhone user who installed and later opens Safari may still see the card once per 14 days.
+ */
+let detection: Promise<boolean> | null = null;
+export function detectInstalled(): Promise<boolean> {
+  if (typeof window === 'undefined') return Promise.resolve(false);
+  if (detection) return detection;
+  detection = (async () => {
+    if (isStandalone()) { flagInstalled(); return true; }
+    if (hasInstalledFlag() || window.__dartbitInstalled) return true;
+    const nav = navigator as Navigator & { getInstalledRelatedApps?: () => Promise<unknown[]> };
+    if (typeof nav.getInstalledRelatedApps === 'function') {
+      try {
+        const apps = await Promise.race([
+          nav.getInstalledRelatedApps(),
+          new Promise<unknown[]>((resolve) => setTimeout(() => resolve([]), 1500)),
+        ]);
+        if (apps.length > 0) { flagInstalled(); return true; }
+      } catch { /* unsupported in this context */ }
+    }
+    return false;
+  })();
+  return detection;
+}
+
 export function useInstallApp() {
   const [, force] = useState(0);
   const [mounted, setMounted] = useState(false);
+  // null while still checking, so callers never flash the card at someone who has the app.
+  const [installed, setInstalled] = useState<boolean | null>(null);
 
   useEffect(() => {
     setMounted(true);
-    const l = () => force((n) => n + 1);
+    let alive = true;
+    detectInstalled().then((v) => { if (alive) setInstalled(v); });
+    const l = () => {
+      force((n) => n + 1);
+      if (window.__dartbitInstalled) setInstalled(true);
+    };
     listeners.add(l);
-    return () => { listeners.delete(l); };
+    return () => { alive = false; listeners.delete(l); };
   }, []);
 
   const canPrompt = mounted && !!window.__dartbitBip;
-  const installed = mounted && (isStandalone() || !!window.__dartbitInstalled);
   const platform: InstallPlatform = mounted ? detectPlatform() : 'desktop';
 
   const promptInstall = async (): Promise<'accepted' | 'dismissed' | 'unavailable'> => {
@@ -81,13 +131,27 @@ export function useInstallApp() {
     try {
       await e.prompt();
       const { outcome } = await e.userChoice;
+      if (outcome === 'accepted') {
+        flagInstalled();
+        window.__dartbitInstalled = true;
+        notify();
+      }
       return outcome;
     } catch {
       return 'unavailable';
     }
   };
 
-  return { mounted, canPrompt, installed, platform, promptInstall };
+  return {
+    mounted,
+    canPrompt,
+    /** true once confirmed installed; false while unknown or not installed. */
+    installed: installed === true,
+    /** still working out whether the app is installed. */
+    checking: installed === null,
+    platform,
+    promptInstall,
+  };
 }
 
 /** Lets the account menu re-open the banner after it was dismissed. */
