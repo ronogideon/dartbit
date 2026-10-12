@@ -19,6 +19,8 @@ import messageRoutes from './routes/messages';
 import notificationsRoutes from './routes/notifications';
 import { startReminderScheduler } from './utils/reminderScheduler';
 import { startSystemAlerts } from './utils/systemAlerts';
+import mpesaRecoveryRoutes from './routes/mpesaRecovery';
+import { startPaymentStatusChecker } from './utils/mpesaSettle';
 import routerRoutes from './routes/routers';
 import onlineSessionRoutes from './routes/onlineSessions';
 import analyticsRoutes from './routes/analytics';
@@ -109,8 +111,8 @@ app.use(express.json());
 // malformed / over-length URL => 400 Bad Request. Scoped to text/plain so JSON routes are untouched.
 app.use(express.text({ type: 'text/plain', limit: '5mb' }));
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.89', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.89', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.90', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.90', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -136,6 +138,8 @@ app.use('/tenants', tenantRoutes);
 app.use('/settings', settingsRoutes);
 app.use('/vouchers', ...paywall, voucherRoutes);
 app.use('/billing', billingRoutes);
+// Not behind the paywall: these are customers' payments, which must stay checkable regardless.
+app.use('/mpesa-recovery', mpesaRecoveryRoutes);
 app.use('/network', ...paywall, networkRoutes);
 app.use('/router-firewall', ...paywall, routerFirewallRoutes);
 app.use('/users', usersRoutes);
@@ -151,7 +155,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.89 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.11.90 running on port ${PORT}\n`);
   patchDatabase().catch(e => console.error('[patchDatabase] failed:', e instanceof Error ? e.message : e));
 
   // Fair Use Policy sweep: accumulate usage and throttle/release. Every 5 minutes matches the
@@ -184,6 +188,8 @@ const server = app.listen(PORT, () => {
   // to avoid two writers racing on the same rows.
   startReminderScheduler();
   startSystemAlerts();
+  // Asks Safaricom about payments whose callback never arrived, and finishes interrupted ones.
+  startPaymentStatusChecker();
   // One-time on boot: strip any stray RADIUS data caps (Mikrotik-*-Limit) so no PPPoE user can be
   // byte-limited ("maximum send/recv limit exceeded" loop). Self-heals again on every PPPoE sync.
   import('./utils/radius').then(m => m.purgeRadiusByteLimits()).catch(() => {});
@@ -258,7 +264,7 @@ function startBillingStatusUpdater() {
   const FIVE_DAYS = 5 * 24 * 60 * 60 * 1000;
   const statusFor = (due: number, now: number) => (now > due ? 'OVERDUE' : due - now <= FIVE_DAYS ? 'DUE_SOON' : 'CURRENT');
 
-  // One-time, idempotent: trial tenants created before v1.11.89 have trialEndsAt but no
+  // One-time, idempotent: trial tenants created before v1.11.90 have trialEndsAt but no
   // billingDueDate, so the updater skipped them and they never reached DUE_SOON/OVERDUE.
   // Set the due date to the trial end AND write the status it implies in the same statement —
   // so the updater sees no transition and sends nothing. Backfilled tenants are silent; only
@@ -1119,9 +1125,9 @@ async function patchDatabase() {
     await safeExec(prisma, 'MpesaTx payoutStatus', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutStatus" TEXT`);
     await safeExec(prisma, 'MpesaTx payoutRef', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutRef" TEXT`);
     await safeExec(prisma, 'MpesaTx payoutAt', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutAt" TIMESTAMP(3)`);
-    // v1.11.89: reason for a non-package ("other service") prompt payment, carried to the Payment row.
+    // v1.11.90: reason for a non-package ("other service") prompt payment, carried to the Payment row.
     await safeExec(prisma, 'MpesaTx notes', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "notes" TEXT`);
-    // v1.11.89 Fair Use Policy — per-package limits + per-subscriber usage counters.
+    // v1.11.90 Fair Use Policy — per-package limits + per-subscriber usage counters.
     await safeExec(prisma, 'Pkg fupEnabled', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "fupEnabled" BOOLEAN NOT NULL DEFAULT false`);
     await safeExec(prisma, 'Pkg fupPeriod', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "fupPeriod" TEXT NOT NULL DEFAULT 'MONTHLY'`);
     await safeExec(prisma, 'Pkg fupLimitMb', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "fupLimitMb" INTEGER`);

@@ -108,7 +108,7 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     const lines: string[] = [];
     const add = (s: string) => lines.push(s);
 
-    add('# Dartbit ZTP Script v1.5.30 (burst: 130% ceiling under 20% avg, ~1s; schedulers clock-independent)');
+    add('# Dartbit ZTP Script v1.5.31 (DNS watchdog: DoH failover; tunnel blocks expire daily)');
     add(`# Router  : ${r.name}`);
     add(`# Tenant  : ${r.tenant.name}`);
     add('');
@@ -286,11 +286,15 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     //   History that shapes this block: DoH to Cloudflare was previously enabled ALONE with
     //   servers="" and it reset/timed out on these uplinks ("DoH server connection error"), taking
     //   down ALL resolution - captive portal, heartbeat, reporter fetches. The lesson was not "DoH
-    //   is wrong" but "a single upstream resolver is a single point of failure". Three things make
-    //   it survivable now:
-    //     1. use-peer-dns stays ON (below), so dynamic-servers keeps the ISP gateway resolver
-    //        populated. If DoH stalls, resolution degrades to plaintext instead of blacking out.
-    //        That is also the privacy caveat: on DoH failure, queries fall back to the ISP.
+    //   is wrong" but "a single upstream resolver is a single point of failure". What makes it
+    //   survivable:
+    //     1. CORRECTED in v1.5.31: RouterOS does NOT fall back to dynamic-servers when DoH fails.
+    //        With use-doh-server set, regular/peer servers are only used to look up the DoH host
+    //        itself, so a DoH stall meant NO DNS for hotspot clients ("connected, no internet", no
+    //        sign-in popup). The dartbit-dns watchdog (section 12c) now does the failover: it
+    //        watches the DoH error log and steps Cloudflare DoH -> Google DoH -> ISP resolver, and
+    //        returns to Cloudflare once it has been healthy for a sustained period. use-peer-dns
+    //        stays on so the ISP resolver is ready for that last step.
     //     2. Bootstrap statics for the DoH hostname are ADDED (v1.5.25-27 removed them). DoH must
     //        resolve cloudflare-dns.com before it can resolve anything; without these the resolver
     //        deadlocks on itself. The 0c cleanup already exempts this exact comment string.
@@ -316,6 +320,9 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:do { :foreach s in=[/ip dns static find where comment=\"Dartbit DoH bootstrap\"] do={ /ip dns static remove $s } } on-error={}`);
     add(`:do { /ip dns static add name=cloudflare-dns.com address=104.16.248.249 ttl=1d comment=\"Dartbit DoH bootstrap\" } on-error={}`);
     add(`:do { /ip dns static add name=cloudflare-dns.com address=104.16.249.249 ttl=1d comment=\"Dartbit DoH bootstrap\" } on-error={}`);
+    // Bootstrap for the watchdog's second DoH provider (same comment, so 0c cleanup keeps them).
+    add(`:do { /ip dns static add name=dns.google address=8.8.8.8 ttl=1d comment=\"Dartbit DoH bootstrap\" } on-error={}`);
+    add(`:do { /ip dns static add name=dns.google address=8.8.4.4 ttl=1d comment=\"Dartbit DoH bootstrap\" } on-error={}`);
     add('');
 
     // 4. NAT
@@ -907,6 +914,30 @@ async function generateZtpScript(apiKey: string, opts?: { skipCmdScript?: boolea
     add(`:foreach s in=[/system script find name="dartbit-guard"] do={ /system script remove $s }`);
     add(`/system script add name=dartbit-guard policy=read,write,test source={:local thresh 20971520; :foreach h in=[/ip hotspot host find where !authorized] do={ :do { :local byp false; :do { :set byp [/ip hotspot host get \$h bypassed] } on-error={}; :if (!\$byp) do={ :local mac [/ip hotspot host get \$h mac-address]; :local bi [/ip hotspot host get \$h bytes-in]; :local bo [/ip hotspot host get \$h bytes-out]; :if ((\$bi + \$bo) > \$thresh) do={ :if ([:len [/ip hotspot ip-binding find where mac-address=\$mac]] = 0) do={ /ip hotspot ip-binding add mac-address=\$mac type=blocked comment="Dartbit tunnel-block" }; :do { /ip hotspot host remove \$h } on-error={}; :log warning ("Dartbit tunnel-block " . \$mac) } } } on-error={} } }`);
     add(`/system scheduler add name=dartbit-guard start-time=startup interval=1m on-event="/system script run dartbit-guard" comment="Dartbit guard"`);
+    // Tunnel blocks used to be permanent: nothing ever removed them, so a phone that once crossed
+    // the byte cap (or whose randomised MAC collided with one that did) stayed "connected, no
+    // internet" with no sign-in popup indefinitely. Blocks now expire: cleared daily and at boot.
+    // A genuine abuser is re-detected within minutes of reconnecting; an innocent phone recovers.
+    add(`:foreach s in=[/system scheduler find name="dartbit-guard-reset"] do={ /system scheduler remove $s }`);
+    add(`:foreach s in=[/system script find name="dartbit-guard-reset"] do={ /system script remove $s }`);
+    add(`/system script add name=dartbit-guard-reset policy=read,write,test source={:local n 0; :foreach b in=[/ip hotspot ip-binding find where comment="Dartbit tunnel-block"] do={ :do { /ip hotspot ip-binding remove \$b; :set n (\$n + 1) } on-error={} }; :if (\$n > 0) do={ :log info ("Dartbit guard: cleared " . \$n . " tunnel blocks") } }`);
+    add(`/system scheduler add name=dartbit-guard-reset start-time=startup interval=1d on-event="/system script run dartbit-guard-reset" comment="Dartbit guard reset"`);
+    add('');
+
+    // 12c. DNS watchdog. RouterOS has no DoH fallback, so this provides one. Every 30s it counts new
+    // DoH errors in the log; 3+ in a window steps down one level: Cloudflare DoH -> Google DoH (still
+    // private) -> the ISP resolver (last resort, plaintext). While stepped down it probes Cloudflare
+    // directly and returns once it has answered continuously for 10 minutes — doubling that wait
+    // (up to an hour) each time Cloudflare fails again after a recovery, so a flaky link can't flap.
+    // State lives in globals, which reset at boot along with dartbit-boot's re-assert of Cloudflare.
+    add('# 12c. DNS watchdog — DoH failover');
+    add(`:foreach s in=[/system scheduler find name="dartbit-dns"] do={ /system scheduler remove $s }`);
+    add(`:foreach s in=[/system script find name="dartbit-dns"] do={ /system script remove $s }`);
+    add(`/system script add name=dartbit-dns policy=read,write,test source={:global dbDnsMode; :global dbDnsErr; :global dbDnsOk; :global dbDnsNeed; :global dbDnsHold; :global dbDnsBack; :if ([:typeof \$dbDnsMode] = "nothing") do={ :set dbDnsMode 0 }; :if ([:typeof \$dbDnsErr] = "nothing") do={ :set dbDnsErr 0 }; :if ([:typeof \$dbDnsOk] = "nothing") do={ :set dbDnsOk 0 }; :if ([:typeof \$dbDnsNeed] = "nothing") do={ :set dbDnsNeed 20 }; :if ([:typeof \$dbDnsHold] = "nothing") do={ :set dbDnsHold 0 }; :if ([:typeof \$dbDnsBack] = "nothing") do={ :set dbDnsBack false }; :do { :local n [:len [/log find where topics~"dns" and message~"DoH"]]; :local d (\$n - \$dbDnsErr); :if (\$d < 0) do={ :set d \$n }; :set dbDnsErr \$n; :if (\$dbDnsHold > 0) do={ :set dbDnsHold (\$dbDnsHold - 1); :set d 0 }; :if (\$d >= 3 && \$dbDnsMode < 2) do={ :if (\$dbDnsMode = 0 && \$dbDnsBack) do={ :if (\$dbDnsNeed < 120) do={ :set dbDnsNeed (\$dbDnsNeed * 2) } }; :set dbDnsMode (\$dbDnsMode + 1); :if (\$dbDnsMode = 1) do={ /ip dns set use-doh-server="https://dns.google/dns-query" verify-doh-cert=no; :log warning "Dartbit DNS: Cloudflare DoH failing, switched to Google DoH" }; :if (\$dbDnsMode = 2) do={ /ip dns set use-doh-server=""; :log warning "Dartbit DNS: DoH failing, using the ISP resolver until it recovers" }; /ip dns cache flush; :set dbDnsOk 0; :set dbDnsHold 2 }; :if (\$dbDnsMode > 0 && \$dbDnsHold = 0) do={ :local ok false; :do { :local r [/tool fetch url="https://cloudflare-dns.com/dns-query?name=example.com&type=A" http-header-field="accept: application/dns-json" output=user as-value]; :if ((\$r->"status") = "finished") do={ :set ok true } } on-error={}; :if (\$ok) do={ :set dbDnsOk (\$dbDnsOk + 1) } else={ :set dbDnsOk 0 }; :if (\$dbDnsOk >= \$dbDnsNeed) do={ /ip dns set use-doh-server="https://cloudflare-dns.com/dns-query" verify-doh-cert=no; /ip dns cache flush; :set dbDnsMode 0; :set dbDnsOk 0; :set dbDnsHold 2; :set dbDnsBack true; :log info "Dartbit DNS: Cloudflare DoH healthy again, restored" } } } on-error={ :log error "Dartbit DNS: watchdog error" } }`);
+    // Provisioning has just reset DNS to Cloudflare, so reset the watchdog's state to match (it would
+    // otherwise survive a reprovision until the next reboot). One line: :global works within a line.
+    add(`:do { :global dbDnsMode; :set dbDnsMode 0; :global dbDnsHold; :set dbDnsHold 0; :global dbDnsOk; :set dbDnsOk 0 } on-error={}`);
+    add(`/system scheduler add name=dartbit-dns start-time=startup interval=30s on-event="/system script run dartbit-dns" comment="Dartbit DNS watchdog"`);
     add('');
 
     // 13. Provisioning-complete signal — a clear log line on the router AND a callback so the

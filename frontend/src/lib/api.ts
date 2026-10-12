@@ -332,3 +332,17 @@ export const setRouterFirewall = (routerId: string, enabled: boolean) => api.pat
 export const blockDomain = (routerId: string, domain: string) => api.post(`/router-firewall/${routerId}/domains`, { domain }).then((r) => r.data.data as { domain: string; message: string });
 export const unblockDomain = (routerId: string, id: string) => api.delete(`/router-firewall/${routerId}/domains/${id}`).then((r) => r.data.data);
 export const resyncFirewall = (routerId: string) => api.post(`/router-firewall/${routerId}/resync`).then((r) => r.data.data);
+
+// ---- M-Pesa recovery ----
+export interface UnconfirmedMpesa {
+  id: string; phone: string; amount: number; status: 'PENDING' | 'PROCESSING' | 'FAILED';
+  resultDesc: string | null; purpose: string | null; username: string | null; mpesaReceipt: string | null;
+  createdAt: string; canQuery: boolean;
+}
+export const getUnconfirmedMpesa = () => api.get('/mpesa-recovery/unconfirmed').then((r) => r.data.data as UnconfirmedMpesa[]);
+export const recheckMpesa = (txId: string) =>
+  api.post(`/mpesa-recovery/recheck/${txId}`).then((r) => r.data.data as { outcome: string; status?: string; message?: string | null; receipt?: string | null });
+export const getMpesaHistoryStatus = () =>
+  api.get('/mpesa-recovery/history-status').then((r) => r.data.data as { applicable: boolean; available: boolean; label?: string; message?: string });
+export const registerMpesaHistory = (nominatedNumber: string) =>
+  api.post('/mpesa-recovery/history-register', { nominatedNumber }).then((r) => r.data.data as { registered: boolean; alreadyRegistered: boolean; message: string });

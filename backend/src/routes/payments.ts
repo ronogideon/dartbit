@@ -365,7 +365,11 @@ router.post('/prompt', async (req: AuthRequest, res: Response) => {
       sendSuccess(res, { transactionId: tx.id, phone: phoneRaw, amount, message: `Payment request sent to ${phoneRaw}` });
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'STK failed';
-      await prisma.mpesaTransaction.update({ where: { id: tx.id }, data: { status: 'FAILED', resultDesc: msg } });
+      const { recordPushFailure } = await import('../utils/mpesaSettle');
+      if ((await recordPushFailure(tx.id, e)) === 'pending') {
+        // No answer from Safaricom, but the prompt may still have reached the customer.
+        return sendSuccess(res, { transactionId: tx.id, phone: phoneRaw, amount, message: `Payment request sent to ${phoneRaw} — waiting for M-Pesa to confirm` });
+      }
       sendError(res, msg, 502);
     }
   } catch (err) {
@@ -378,11 +382,13 @@ router.post('/prompt', async (req: AuthRequest, res: Response) => {
 router.get('/prompt-status/:txId', async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user?.tenantId;
-    const tx = await prisma.mpesaTransaction.findUnique({
-      where: { id: req.params.txId },
-      select: { status: true, tenantId: true, resultDesc: true, mpesaReceipt: true, amount: true },
-    });
+    const sel = { status: true, tenantId: true, resultDesc: true, mpesaReceipt: true, amount: true, createdAt: true } as const;
+    let tx = await prisma.mpesaTransaction.findUnique({ where: { id: req.params.txId }, select: sel });
     if (!tx || (tenantId && tx.tenantId !== tenantId)) return sendError(res, 'Not found', 404);
+    // Still pending after 30s? Ask Safaricom now rather than waiting on a callback that may be lost.
+    const { probeIfStale } = await import('../utils/mpesaSettle');
+    await probeIfStale(req.params.txId, tx.status, tx.createdAt);
+    tx = (await prisma.mpesaTransaction.findUnique({ where: { id: req.params.txId }, select: sel })) || tx;
     sendSuccess(res, { status: tx.status, message: tx.resultDesc, receipt: tx.mpesaReceipt, amount: tx.amount });
   } catch {
     sendError(res, 'Failed', 500);

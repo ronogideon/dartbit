@@ -10,6 +10,7 @@ import toast from 'react-hot-toast';
 import { Plus, Trash2, Edit2, Lock, Smartphone } from 'lucide-react';
 import SearchInput from '@/components/ui/SearchInput';
 import SearchableSelect from '@/components/ui/SearchableSelect';
+import UnconfirmedMpesa from '@/components/ui/UnconfirmedMpesa';
 
 interface Payment {
   id: string; amount: number; method: string; source?: string; reference?: string; mpesaCode?: string;
@@ -110,7 +111,7 @@ export default function PaymentsPage() {
       // Poll until the customer completes or cancels (STK prompts expire after about a minute).
       const started = Date.now();
       const poll = async (): Promise<void> => {
-        if (Date.now() - started > 90_000) { setPromptStatus('No response yet — you can check the Payments list shortly.'); setPromptSending(false); return; }
+        if (Date.now() - started > 180_000) { setPromptStatus('No confirmation from M-Pesa yet. Dartbit keeps checking automatically — if the customer paid, it will appear in Payments on its own.'); setPromptSending(false); return; }
         await new Promise(res => setTimeout(res, 3000));
         try {
           const st = await getPromptStatus(r.transactionId);
@@ -258,6 +259,8 @@ export default function PaymentsPage() {
           <button onClick={() => setModalOpen(true)} className="btn-primary flex items-center gap-2"><Plus size={16} /> Record Payment</button>
         </div>
       </div>
+
+      <UnconfirmedMpesa />
 
       {/* Earnings summary tiles — week starts Monday, month from the 1st; all services except the hotspot tile */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">

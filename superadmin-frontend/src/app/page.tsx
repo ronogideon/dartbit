@@ -549,6 +549,40 @@ function Tenants() {
   );
 }
 
+// Transaction-history recovery for Dartbit's central shortcode, which collects for every tenant on
+// Till/Phone (manual) payment methods. One-time registration with Safaricom's nominated number.
+function CentralHistorySetup({ canEdit }: { canEdit: boolean }) {
+  const qc = useQueryClient();
+  const [num, setNum] = useState('');
+  const { data, isLoading, refetch, isFetching } = useQuery({ queryKey: ['sa-mpesa-history'], queryFn: API.getMpesaHistoryStatus });
+  const reg = useMutation({
+    mutationFn: API.registerMpesaHistory,
+    onSuccess: (r: { alreadyRegistered: boolean }) => { toast.success(r.alreadyRegistered ? 'Already registered' : 'Registered with M-Pesa'); qc.invalidateQueries({ queryKey: ['sa-mpesa-history'] }); },
+    onError: (e: { response?: { data?: { error?: string } } }) => toast.error(e?.response?.data?.error || 'Registration failed'),
+  });
+  if (isLoading || !data?.applicable) return null;
+  return (
+    <div className="bg-gray-900 rounded-xl border border-gray-800 p-5 mt-6">
+      <h3 className="text-sm font-semibold text-gray-300 mb-1">Missed-payment recovery (central shortcode)</h3>
+      <p className="text-xs text-gray-500 mb-3">Lets Dartbit find payments in the central shortcode&apos;s M-Pesa history when Safaricom&apos;s confirmation never arrives. The status query works without this; history adds the cases it can&apos;t reach, plus receipt codes.</p>
+      {data.available ? (
+        <p className="text-sm text-emerald-400">Transaction history is on{data.label ? ` (${data.label})` : ''}.</p>
+      ) : (
+        <>
+          <p className="text-xs text-amber-300 mb-3">{data.message}</p>
+          {canEdit && (
+            <div className="flex gap-2">
+              <input value={num} onChange={(e) => setNum(e.target.value)} placeholder="Nominated Safaricom number" className="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200" />
+              <button onClick={() => reg.mutate(num)} disabled={reg.isPending || num.replace(/\D/g, '').length < 9} className="text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white px-3 py-2 rounded-lg">{reg.isPending ? 'Registering…' : 'Register'}</button>
+            </div>
+          )}
+          <button onClick={() => refetch()} disabled={isFetching} className="text-xs text-blue-400 mt-2">{isFetching ? 'Checking…' : 'Check again'}</button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function Payments({ canEdit }: { canEdit: boolean }) {
   const qc = useQueryClient();
   const { data: central } = useQuery({ queryKey: ['central-payments'], queryFn: API.getCentralPayments });
@@ -620,6 +654,7 @@ function Payments({ canEdit }: { canEdit: boolean }) {
           </div>
         </>
       )}
+      <CentralHistorySetup canEdit={canEdit} />
     </div>
   );
 }

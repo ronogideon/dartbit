@@ -196,10 +196,16 @@ export default function PortalApp({ subdomain }: { subdomain?: string }) {
       const txId = res.data.transactionId;
       toast.success('Check your phone for the M-Pesa prompt');
       // poll
+      // M-Pesa confirmations can arrive minutes late; the server also asks Safaricom directly when
+      // they do. Keep checking for ~4 minutes, and never tell someone who paid that it failed.
       let tries = 0;
       const iv = setInterval(async () => {
         tries++;
-        if (tries > 30) { clearInterval(iv); setRenewing(false); toast.error('Payment timed out'); return; }
+        if (tries > 80) {
+          clearInterval(iv); setRenewing(false);
+          toast('Still waiting for M-Pesa to confirm. If you paid, don\'t pay again — your account will update automatically.', { duration: 10000 });
+          return;
+        }
         try {
           const s = await api.get(`/portal/renew-status/${txId}${qs}`, { headers: { Authorization: `Bearer ${token}` } });
           if (s.data.status === 'PAID') { clearInterval(iv); setRenewing(false); setRenewPkg(null); toast.success('Payment received!'); loadAccount(token); }

@@ -278,7 +278,11 @@ router.post('/renew', authSubscriber, async (req: SubReq, res: Response) => {
       await prisma.mpesaTransaction.update({ where: { id: tx.id }, data: { checkoutRequestId: result.checkoutRequestId, merchantRequestId: result.merchantRequestId } });
       res.json({ success: true, transactionId: tx.id });
     } catch (e) {
-      await prisma.mpesaTransaction.update({ where: { id: tx.id }, data: { status: 'FAILED', resultDesc: e instanceof Error ? e.message : 'STK failed' } });
+      const { recordPushFailure } = await import('../utils/mpesaSettle');
+      if ((await recordPushFailure(tx.id, e)) === 'pending') {
+        // No answer from Safaricom, but the prompt may still have reached the phone — keep polling.
+        return res.json({ success: true, transactionId: tx.id });
+      }
       res.status(502).json({ success: false, error: e instanceof Error ? e.message : 'Payment failed to start' });
     }
   } catch (err) {
@@ -290,11 +294,12 @@ router.post('/renew', authSubscriber, async (req: SubReq, res: Response) => {
 // GET /portal/renew-status/:txId — poll renewal payment status
 router.get('/renew-status/:txId', authSubscriber, async (req: SubReq, res: Response) => {
   try {
-    const tx = await prisma.mpesaTransaction.findUnique({
-      where: { id: req.params.txId },
-      select: { status: true, tenantId: true, resultDesc: true },
-    });
+    const sel = { status: true, tenantId: true, resultDesc: true, createdAt: true } as const;
+    let tx = await prisma.mpesaTransaction.findUnique({ where: { id: req.params.txId }, select: sel });
     if (!tx || tx.tenantId !== req.sub!.tid) return res.status(404).json({ success: false, error: 'Not found' });
+    const { probeIfStale } = await import('../utils/mpesaSettle');
+    await probeIfStale(req.params.txId, tx.status, tx.createdAt);
+    tx = (await prisma.mpesaTransaction.findUnique({ where: { id: req.params.txId }, select: sel })) || tx;
     res.json({ success: true, status: tx.status, message: tx.resultDesc });
   } catch {
     res.status(500).json({ success: false, error: 'Failed' });

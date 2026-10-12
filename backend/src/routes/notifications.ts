@@ -231,14 +231,23 @@ router.post('/topup', requireTenantAdmin, async (req: AuthRequest, res: Response
     });
 
     const backendUrl = normalizeBackendUrl();
-    const result = await stkPush({
-      creds,
-      phone,
-      amount,
-      accountRef: 'SMS Wallet',
-      description: 'Dartbit SMS top-up',
-      callbackUrl: `${backendUrl}/hotspot/stk-callback/${tx.id}`,
-    });
+    let result: Awaited<ReturnType<typeof stkPush>>;
+    try {
+      result = await stkPush({
+        creds,
+        phone,
+        amount,
+        accountRef: 'SMS Wallet',
+        description: 'Dartbit SMS top-up',
+        callbackUrl: `${backendUrl}/hotspot/stk-callback/${tx.id}`,
+      });
+    } catch (e) {
+      const { recordPushFailure } = await import('../utils/mpesaSettle');
+      if ((await recordPushFailure(tx.id, e)) === 'pending') {
+        return sendSuccess(res, { transactionId: tx.id, message: 'Check your phone for the M-Pesa prompt' });
+      }
+      throw e;
+    }
     await prisma.mpesaTransaction.update({
       where: { id: tx.id },
       data: { checkoutRequestId: result.checkoutRequestId, merchantRequestId: result.merchantRequestId },
@@ -253,8 +262,12 @@ router.post('/topup', requireTenantAdmin, async (req: AuthRequest, res: Response
 router.get('/topup-status/:txId', async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user?.tenantId;
-    const tx = await prisma.mpesaTransaction.findUnique({ where: { id: req.params.txId }, select: { status: true, tenantId: true, amount: true } });
+    const sel = { status: true, tenantId: true, amount: true, createdAt: true } as const;
+    let tx = await prisma.mpesaTransaction.findUnique({ where: { id: req.params.txId }, select: sel });
     if (!tx || tx.tenantId !== tenantId) return sendError(res, 'Not found', 404);
+    const { probeIfStale } = await import('../utils/mpesaSettle');
+    await probeIfStale(req.params.txId, tx.status, tx.createdAt);
+    tx = (await prisma.mpesaTransaction.findUnique({ where: { id: req.params.txId }, select: sel })) || tx;
     sendSuccess(res, { status: tx.status, amount: tx.amount });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Failed', 500);

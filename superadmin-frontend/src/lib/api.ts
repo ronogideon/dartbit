@@ -110,3 +110,9 @@ export const getEmailTemplates = () =>
   api.get('/superadmin/messaging/email-templates').then((r) => r.data.data as { templates: EmailTemplate[] });
 export const saveEmailTemplate = (key: string, t: { subject: string; heading: string; body: string }) =>
   api.put(`/superadmin/messaging/email-templates/${key}`, t).then((r) => r.data.data);
+
+// ---- M-Pesa recovery (central shortcode) ----
+export const getMpesaHistoryStatus = () =>
+  api.get('/mpesa-recovery/history-status').then((r) => r.data.data as { applicable: boolean; available: boolean; label?: string; message?: string });
+export const registerMpesaHistory = (nominatedNumber: string) =>
+  api.post('/mpesa-recovery/history-register', { nominatedNumber }).then((r) => r.data.data as { registered: boolean; alreadyRegistered: boolean; message: string });

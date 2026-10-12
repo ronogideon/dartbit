@@ -123,10 +123,8 @@ router.post('/stk', async (req: Request, res: Response) => {
       })
       .catch(async (e) => {
         console.error('[stk] background push failed:', e instanceof Error ? e.message : e);
-        await prisma.mpesaTransaction.update({
-          where: { id: tx.id },
-          data: { status: 'FAILED', resultDesc: e instanceof Error ? e.message : 'STK failed' },
-        }).catch(() => {});
+        const { recordPushFailure } = await import('../utils/mpesaSettle');
+        await recordPushFailure(tx.id, e);
       });
     return;
   } catch (err) {
@@ -136,61 +134,84 @@ router.post('/stk', async (req: Request, res: Response) => {
 });
 
 // POST /hotspot/stk-callback/:txId — Daraja calls this with the payment result.
+//
+// Trust rule: the callback must carry the CheckoutRequestID Safaricom gave us for THIS push. That
+// ID is never sent to browsers, so a forged "success" for a known transaction id is rejected.
+// If we never received the ID (the push's own response timed out), the callback's ID is adopted
+// only after Safaricom confirms it through the status query. All settling goes through
+// settleTransaction(), which is safe against duplicate callbacks and the background checker.
 router.post('/stk-callback/:txId', async (req: Request, res: Response) => {
   // Always 200 so Daraja doesn't retry forever
   res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
+  const txId = req.params.txId;
   try {
-    const txId = req.params.txId;
-    const tx = await prisma.mpesaTransaction.findUnique({ where: { id: txId } });
-    if (!tx || tx.status !== 'PENDING') return;
-
+    const { settleTransaction, credsForTransaction } = await import('../utils/mpesaSettle');
     const cb = req.body?.Body?.stkCallback;
     if (!cb) return;
-    const resultCode = cb.ResultCode;
+    const tx = await prisma.mpesaTransaction.findUnique({ where: { id: txId } });
+    if (!tx) { console.warn(`[stk-callback] unknown transaction ${txId}`); return; }
 
-    if (resultCode !== 0) {
-      await prisma.mpesaTransaction.update({
-        where: { id: txId },
-        data: { status: 'FAILED', resultDesc: cb.ResultDesc || 'Payment failed' },
-      });
+    const code = String(cb.ResultCode ?? '').trim(); // number 0 or string "0" depending on Safaricom
+    const cbCheckout = String(cb.CheckoutRequestID || '').trim();
+    if (!cbCheckout) { console.warn(`[stk-callback] ${txId}: no CheckoutRequestID — ignored`); return; }
+
+    if (tx.checkoutRequestId && tx.checkoutRequestId !== cbCheckout) {
+      console.warn(`[stk-callback] ${txId}: CheckoutRequestID mismatch (expected ${tx.checkoutRequestId}, got ${cbCheckout}) — rejected`);
       return;
     }
 
-    // Extract M-Pesa receipt from callback metadata
-    let receipt = '';
-    const items = cb.CallbackMetadata?.Item || [];
-    for (const it of items) {
-      if (it.Name === 'MpesaReceiptNumber') receipt = String(it.Value);
-    }
-
-    // Branch by purpose: an SMS wallet top-up credits the tenant's SMS wallet instead of
-    // provisioning a hotspot user.
-    if (tx.purpose === 'SMS_TOPUP') {
-      await prisma.mpesaTransaction.update({
-        where: { id: txId },
-        data: { status: 'PAID', mpesaReceipt: receipt || null, resultDesc: 'Success' },
-      });
+    let verified = !!tx.checkoutRequestId;
+    if (!tx.checkoutRequestId) {
+      // Adopt the ID. The unique constraint stops one Safaricom checkout being claimed by two payments.
       try {
-        await creditWallet(tx.tenantId, tx.amount, receipt || txId, `SMS top-up • ${tx.phone || ''}`);
-      } catch (e) {
-        console.error('[wallet] credit on callback failed:', e instanceof Error ? e.message : e);
+        await prisma.mpesaTransaction.update({
+          where: { id: txId },
+          data: { checkoutRequestId: cbCheckout, merchantRequestId: cb.MerchantRequestID ? String(cb.MerchantRequestID) : undefined },
+        });
+      } catch {
+        console.warn(`[stk-callback] ${txId}: CheckoutRequestID ${cbCheckout} already belongs to another payment — rejected`);
+        return;
       }
-      // Record the top-up as a tenant expense (SMS category).
-      await recordExpense({
-        tenantId: tx.tenantId,
-        amount: tx.amount,
-        category: 'SMS',
-        description: 'SMS wallet top-up',
-        paymentMode: 'M-Pesa',
-        reference: receipt || txId,
-        source: 'AUTO',
-      });
+      if (code === '0') {
+        const creds = await credsForTransaction(tx);
+        if (creds) {
+          const { stkQuery } = await import('../utils/daraja');
+          const q = await stkQuery(creds, cbCheckout).catch(() => null);
+          verified = q?.state === 'paid';
+          if (q?.state === 'failed') {
+            console.warn(`[stk-callback] ${txId}: callback said paid, Safaricom says ${q.code} ${q.desc} — not settled`);
+            await settleTransaction(txId, { kind: 'failed', code: q.code, desc: q.desc, source: 'stk-query' });
+            return;
+          }
+        }
+        // Not confirmed yet: the ID is now stored, so the status checker will confirm and settle it.
+        if (!verified) { console.log(`[stk-callback] ${txId}: success callback pending confirmation`); return; }
+      }
+    }
+
+    if (code !== '0') {
+      await settleTransaction(txId, { kind: 'failed', code, desc: String(cb.ResultDesc || 'Payment failed'), source: 'callback' });
       return;
     }
 
-    await provisionFromTransaction(txId, receipt);
+    let receipt = '';
+    let paidAmount: number | null = null;
+    for (const it of cb.CallbackMetadata?.Item || []) {
+      if (it.Name === 'MpesaReceiptNumber') receipt = String(it.Value);
+      if (it.Name === 'Amount') paidAmount = Number(it.Value);
+    }
+    if (paidAmount !== null && Number.isFinite(paidAmount) && paidAmount + 0.5 < tx.amount) {
+      console.error(`[stk-callback] ${txId}: paid ${paidAmount} but ${tx.amount} was due — not settled, needs review`);
+      await prisma.mpesaTransaction.updateMany({
+        where: { id: txId, status: 'PENDING' },
+        data: { status: 'FAILED', mpesaReceipt: receipt || null, resultDesc: `Amount mismatch: paid ${paidAmount}, due ${tx.amount}` },
+      });
+      return;
+    }
+    await settleTransaction(txId, { kind: 'paid', receipt, source: 'callback' });
   } catch (err) {
-    console.error('stk-callback error:', err instanceof Error ? err.message : err);
+    // Nothing is lost: the transaction is still PENDING or PROCESSING, and the checker will finish it.
+    console.error(`stk-callback ${txId} error:`, err instanceof Error ? err.message : err);
   }
 });
 
@@ -218,19 +239,26 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
       // extend the subscription — otherwise paying for a router would silently buy airtime too.
       const txNotes = (tx as { notes?: string | null }).notes || null;
       const isOther = !tx.packageId && !!txNotes;
+      // Retry safety: if an earlier attempt already recorded this payment (then crashed before
+      // marking the transaction PAID), don't extend the subscription or record it a second time.
+      const refs = [receipt, tx.checkoutRequestId, tx.id].filter((r): r is string => !!r);
+      const alreadyRecorded = await prisma.payment.findFirst({
+        where: { tenantId: tx.tenantId, subscriberId: sub.id, OR: [{ reference: { in: refs } }, ...(receipt ? [{ mpesaCode: receipt }] : [])] },
+        select: { id: true },
+      });
 
       const mins = tx.durationMinutes || pkg?.validityMinutes || 60;
       const wasLapsed = !sub.expiresAt || sub.expiresAt <= new Date();
       const base = sub.expiresAt && sub.expiresAt > new Date() ? sub.expiresAt : new Date();
       const newExpiry = new Date(base.getTime() + mins * 60_000);
-      if (!isOther) {
+      if (!isOther && !alreadyRecorded) {
         await prisma.subscriber.update({
           where: { id: sub.id },
           data: { expiresAt: newExpiry, isActive: true, ...(tx.packageId ? { packageId: tx.packageId } : {}) },
         });
       }
       // Record the payment against the USERNAME (subscriber), listing the payer phone for reference.
-      await prisma.payment.create({
+      if (!alreadyRecorded) await prisma.payment.create({
         data: {
           amount: tx.amount, method: 'MPESA', source: 'AUTOMATIC',
           reference: receipt || tx.checkoutRequestId || tx.id,
@@ -278,9 +306,9 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
           await enqueueUnwall(sub.routerId, sub.username, sub.id, sub.ipAddress ?? null);
         }
       } catch { /* best-effort */ }
-      await prisma.mpesaTransaction.update({ where: { id: tx.id }, data: { status: 'PAID', mpesaReceipt: receipt } });
+      await prisma.mpesaTransaction.update({ where: { id: tx.id }, data: { status: 'PAID', mpesaReceipt: receipt || null, resultDesc: 'Success' } });
       // Notify the subscriber's registered phone (not the payer) that the account was renewed.
-      try {
+      if (!alreadyRecorded) try {
         await sendNotification({
           tenantId: tx.tenantId, phone: sub.phone || tx.phone, category: 'RECEIPT',
           subscriberId: sub.id, username: sub.username,
@@ -323,6 +351,40 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   // purchase by the same phone we reuse the existing 4-digit secret so the customer's
   // password doesn't change under them.
   const password = existingSub?.secret && /^\d{4}$/.test(existingSub.secret) ? existingSub.secret : genCreds().password;
+
+  // Reserve the D-number by creating the subscriber row NOW, before the name is used anywhere.
+  // Two new customers confirmed at the same moment used to both get the same next number; the
+  // second create then failed on the unique username, leaving that customer with someone else's
+  // login, no RADIUS entry and no Payment row. On a clash, take the next number and try again.
+  let reservedSubId: string | null = null;
+  if (!existingSub) {
+    for (let attempt = 0; attempt < 25 && !reservedSubId; attempt++) {
+      try {
+        const created = await prisma.subscriber.create({
+          data: {
+            tenantId: tx.tenantId,
+            routerId: tx.routerId || undefined,
+            packageId: tx.packageId || undefined,
+            username: displayName,
+            secret: password,
+            fullName: tx.phone || 'Hotspot Customer',
+            phone: tx.phone || null,
+            service: 'HOTSPOT',
+            isActive: true,
+            expiresAt: new Date(Date.now() + tx.durationMinutes * 60 * 1000),
+            macAddress: tx.clientMac || null,
+            ipAddress: tx.clientIp || null,
+          },
+        });
+        reservedSubId = created.id;
+      } catch (e) {
+        if ((e as { code?: string }).code !== 'P2002') throw e; // only a username clash is retried
+        const m = /^(.*?)(\d+)$/.exec(displayName);
+        displayName = m ? `${m[1]}${Number(m[2]) + 1}` : `${displayName}1`;
+      }
+    }
+    if (!reservedSubId) throw new Error(`could not reserve a hotspot username after 25 attempts (last ${displayName})`);
+  }
   const loginUser = displayName;
 
   // The M-Pesa receipt (uppercased alphanumeric) is also added as its OWN hotspot user
@@ -447,7 +509,10 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   const wasExpired = !!existingSub && (existingSub.expiresAt ? existingSub.expiresAt <= new Date() : false);
   let subscriberId: string | null = null;
   try {
-    if (!existingSub) {
+    if (reservedSubId) {
+      // Created above when the D-number was reserved, with these same details.
+      subscriberId = reservedSubId;
+    } else if (!existingSub) {
       const created = await prisma.subscriber.create({
         data: {
           tenantId: tx.tenantId,
@@ -504,10 +569,16 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   }
 
   // Record a Payment row so the purchase shows on the Payments tab (which reads the
-  // Payment table, not MpesaTransaction). Linked to the subscriber created above.
-  if (subscriberId) {
+  // Payment table, not MpesaTransaction). Linked to the subscriber when there is one — but
+  // recorded regardless, because money received must always show up in the books.
+  {
     try {
-      await prisma.payment.create({
+      const ref = receipt || tx.checkoutRequestId || txId;
+      const dup = await prisma.payment.findFirst({
+        where: { tenantId: tx.tenantId, OR: [{ reference: { in: [ref, txId] } }, ...(receipt ? [{ mpesaCode: receipt }] : [])] },
+        select: { id: true },
+      });
+      if (!dup) await prisma.payment.create({
         data: {
           amount: tx.amount,
           method: 'MPESA',
@@ -516,7 +587,7 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
           mpesaCode: receipt || null,
           notes: `Hotspot ${pkg?.name || 'package'} • ${tx.phone || ''}`,
           packageId: pkg?.id || null,
-          subscriberId,
+          subscriberId: subscriberId || null,
           tenantId: tx.tenantId,
         },
       });
@@ -600,14 +671,23 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   }
 }
 
+// POST /hotspot/pull-callback — required by M-Pesa's transaction-history registration. Dartbit
+// pulls history on demand instead of relying on this, so it only acknowledges and logs.
+router.post('/pull-callback', (req: Request, res: Response) => {
+  console.log('[mpesa] pull-callback received:', JSON.stringify(req.body || {}).slice(0, 500));
+  res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
+});
+
 // GET /hotspot/stk-status/:txId — portal polls this to know when payment completed.
 router.get('/stk-status/:txId', async (req: Request, res: Response) => {
   try {
-    const tx = await prisma.mpesaTransaction.findUnique({
-      where: { id: req.params.txId },
-      select: { status: true, username: true, password: true, clientMac: true, resultDesc: true },
-    });
+    const sel = { status: true, username: true, password: true, clientMac: true, resultDesc: true, createdAt: true } as const;
+    let tx = await prisma.mpesaTransaction.findUnique({ where: { id: req.params.txId }, select: sel });
     if (!tx) return res.status(404).json({ success: false, error: 'Not found' });
+    // Still pending after 30s? Ask Safaricom now rather than waiting on a callback that may be lost.
+    const { probeIfStale } = await import('../utils/mpesaSettle');
+    await probeIfStale(req.params.txId, tx.status, tx.createdAt);
+    tx = (await prisma.mpesaTransaction.findUnique({ where: { id: req.params.txId }, select: sel })) || tx;
     res.json({
       success: true,
       status: tx.status,

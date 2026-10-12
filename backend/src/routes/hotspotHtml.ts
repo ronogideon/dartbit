@@ -396,42 +396,63 @@ button.primary svg{width:14px;height:14px}
     xhr.send(JSON.stringify({apiKey:API_KEY,packageId:selectedPkg.id,phone:phone,mac:MAC,ip:IP}));
   });
 
-  // Poll STK status until PAID or FAILED (up to ~90s)
+  // Poll payment status. M-Pesa confirmations can arrive minutes late, and the server now asks
+  // Safaricom directly when they do, so keep checking for ~4 minutes: quickly at first, then slower.
+  // The pending payment is remembered, so reopening this page carries on checking instead of
+  // leaving someone who paid with nothing on screen.
+  function savePending(txId){try{localStorage.setItem('dbPendTx',JSON.stringify({id:txId,t:Date.now()}))}catch(e){}}
+  function clearPending(){try{localStorage.removeItem('dbPendTx')}catch(e){}}
+  function resetBuy(btn){if(btn){btn.disabled=false;btn.textContent='Subscribe Now';}}
   function pollStk(txId,btn){
-    var tries=0,max=30;
-    var iv=setInterval(function(){
-      tries++;
-      if(tries>max){
-        clearInterval(iv);
-        show('error','Payment timed out. If you were charged, use the Account tab with your credentials.');
-        btn.disabled=false;btn.textContent='Subscribe Now';
+    savePending(txId);
+    var started=Date.now();
+    function wait(){var a=Date.now()-started;return a<60000?3000:(a<150000?6000:10000);}
+    function tick(){
+      if(Date.now()-started>240000){
+        show('error','Still waiting for M-Pesa to confirm. If money left your M-Pesa, do not pay again: you will be connected automatically as soon as it confirms. Reopen this page to check.');
+        resetBuy(btn);
         return;
       }
       var xhr=new XMLHttpRequest();
       xhr.open('GET',BACKEND+'/hotspot/stk-status/'+txId,true);
-      xhr.timeout=8000;
+      xhr.timeout=12000;
       xhr.onload=function(){
-        try{
-          var d=JSON.parse(xhr.responseText);
-          if(d.status==='PAID'){
-            clearInterval(iv);
+        var d=null;
+        try{d=JSON.parse(xhr.responseText);}catch(e){}
+        if(d&&d.status==='PAID'){
+          clearPending();
             var creds='<div class="code-display"><div class="label">Your login</div><div class="code">'+d.username+' / '+d.password+'</div></div>';
             // The router auto-logs-in this device by MAC via the command queue (primary path).
             // As a fallback (e.g. if the captured MAC didn't match), we also form-POST the issued
             // credentials to the hotspot login after a short delay so the user exists first.
             show('success',creds+'Payment received! Connecting you...');
             setTimeout(function(){ submitMikrotik(d.username,d.password); },7000);
-          } else if(d.status==='FAILED'){
-            clearInterval(iv);
-            show('error',d.message||'Payment failed or cancelled.');
-            btn.disabled=false;btn.textContent='Subscribe Now';
-          }
-          // else still PENDING — keep polling
-        }catch(e){}
+          return;
+        }
+        if(d&&d.status==='FAILED'){
+          clearPending();
+          show('error',d.message||'Payment failed or cancelled.');
+          resetBuy(btn);
+          return;
+        }
+        if(d&&d.status==='PROCESSING'){show('success','Payment received! Setting up your connection...');}
+        else if(Date.now()-started>45000){show('success','Waiting for M-Pesa to confirm your payment. This can take a minute or two.');}
+        setTimeout(tick,wait());
       };
+      xhr.onerror=function(){setTimeout(tick,wait());};
+      xhr.ontimeout=function(){setTimeout(tick,wait());};
       xhr.send();
-    },3000);
+    }
+    setTimeout(tick,3000);
   }
+  // Reopened the page after paying? Carry on checking that payment (for up to 20 minutes).
+  (function(){
+    try{
+      var p=JSON.parse(localStorage.getItem('dbPendTx')||'null');
+      if(p&&p.id&&Date.now()-p.t<1200000){show('success','Checking your recent M-Pesa payment...');pollStk(p.id,null);}
+      else if(p){clearPending();}
+    }catch(e){}
+  })();
 
   // === VOUCHER flow ===
   document.getElementById('voucher-form').addEventListener('submit',function(e){

@@ -4,6 +4,7 @@ import { useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getSettings, updateSettings, getBillingCurrent, getBillingHistory, billingCheckout, getSystemUsers, createSystemUser, updateSystemUser, resetSystemUserPassword, changeSystemUserPassword, deleteSystemUser, getPaymentConfig, updatePaymentConfig, getNotificationConfig, saveNotificationConfig, getSmsBalance, sendTestSms, getTenantInfo, getBranding, saveBranding, type NotificationConfig } from '@/lib/api';
 import AppLayout from '@/components/layout/AppLayout';
+import MpesaHistorySetup from '@/components/ui/MpesaHistorySetup';
 import toast from 'react-hot-toast';
 import { Settings as SettingsIcon, CreditCard, Users, Plus, Trash2, KeyRound, Lock, Copy, Check, Wallet, Bell, Send } from 'lucide-react';
 
@@ -867,6 +868,8 @@ function PaymentsTab() {
             <p className="text-xs text-gray-400 mt-2">Instant pays out within about a minute. Longer intervals batch more payments per transfer to cut costs.</p>
           </div>
         )}
+
+        {method === 'DARAJA_API' && <MpesaHistorySetup />}
 
         <button onClick={save} disabled={saveMut.isPending} className="btn-primary w-full mt-5">
           {saveMut.isPending ? 'Saving…' : 'Save Payment Settings'}
