@@ -121,7 +121,7 @@ async function settleTopup(tx: Tx, receipt: string) {
   }
   await prisma.mpesaTransaction.update({
     where: { id: tx.id },
-    data: { status: 'PAID', mpesaReceipt: receipt || null, resultDesc: 'Success' },
+    data: { status: 'PAID', mpesaReceipt: receipt || null, resultDesc: 'Success', fulfilledAt: new Date() },
   });
   try {
     const { recordExpense } = await import('../routes/expenses');
@@ -261,16 +261,181 @@ export async function findInHistory(tx: Tx, creds: DarajaCreds): Promise<{ recei
 }
 
 // ---------------------------------------------------------------------------------------------
+// Fulfilment: "paid" is not the same as "served".
+//
+// A payment is PAID once Safaricom confirms the money. It is FULFILLED (fulfilledAt set) only once
+// the customer is actually served: expiry saved, RADIUS written, device reconnected, payment in the
+// books. Provisioning sets fulfilledAt itself when every step succeeds; when any step fails it
+// leaves it empty and ensureFulfilled() retries — from the background checker or a staff Recheck —
+// until it sticks. Every step is safe to repeat: expiry is never shortened, the payment row is
+// never duplicated, and reconnect commands are no-ops when the device is already online.
+
+const MAC_RE = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/;
+const SAFE_TOKEN = /^[A-Za-z0-9_.-]{1,64}$/;
+
+/**
+ * Router command that logs a paid hotspot device in, unless it's already online. The device's
+ * CURRENT IP is looked up on the router (it may have changed since purchase); if the device isn't
+ * on the hotspot at all, it does nothing. Works for RADIUS routers (the router sends this user and
+ * password to RADIUS) and local-user routers alike. Values are validated: they end up in a script.
+ */
+export function hotspotLoginCommand(user: string, password: string, mac: string | null | undefined): string | null {
+  const m = (mac || '').toUpperCase().trim();
+  if (!MAC_RE.test(m) || !SAFE_TOKEN.test(user || '') || !SAFE_TOKEN.test(password || '')) return null;
+  return ':delay 2s ; :if ([:len [/ip hotspot active find mac-address="' + m + '"]] = 0) do={ ' +
+    ':local h [/ip hotspot host find mac-address="' + m + '"]; ' +
+    ':if ([:len $h] > 0) do={ :local ip [/ip hotspot host get [:pick $h 0] address]; ' +
+    ':do { /ip hotspot active login user=' + user + ' password=' + password + ' mac-address=' + m + ' ip=$ip } ' +
+    'on-error={ :log warning "Dartbit: post-payment login failed for ' + user + '" } } }';
+}
+
+/** Payments created before this moment (first boot of v1.11.91) are left alone: they predate tracking. */
+let fulfilSince: Date | null = null;
+async function fulfilmentSince(): Promise<Date> {
+  if (fulfilSince) return fulfilSince;
+  const key = 'mpesa_fulfil_since';
+  try {
+    const row = await prisma.platformSetting.findUnique({ where: { key } });
+    if (row?.value && !Number.isNaN(Date.parse(row.value))) return (fulfilSince = new Date(row.value));
+    const now = new Date();
+    await prisma.platformSetting.create({ data: { key, value: now.toISOString() } }).catch(() => {});
+    return (fulfilSince = now);
+  } catch {
+    return new Date(); // can't read settings: be conservative, fulfil nothing old
+  }
+}
+
+async function ensurePaymentRow(tx: Tx, subscriberId: string | null, notes: string): Promise<void> {
+  const receipt = tx.mpesaReceipt || '';
+  const refs = [receipt, tx.checkoutRequestId, tx.id].filter((r): r is string => !!r);
+  const existing = await prisma.payment.findFirst({
+    where: { tenantId: tx.tenantId, OR: [{ reference: { in: refs } }, ...(receipt ? [{ mpesaCode: receipt }] : [])] },
+    select: { id: true },
+  });
+  if (existing) return;
+  await prisma.payment.create({
+    data: {
+      amount: tx.amount, method: 'MPESA', source: 'AUTOMATIC',
+      reference: receipt || tx.checkoutRequestId || tx.id, mpesaCode: receipt || null,
+      notes, packageId: tx.packageId || null, subscriberId, tenantId: tx.tenantId,
+    } as never,
+  });
+  console.log(`[mpesa] ${tx.id}: payment row was missing — recorded now`);
+}
+
+/** Did this subscriber get online at any point since paying? (decides whether lost time is restored) */
+async function usedSince(subscriberId: string, since: Date): Promise<boolean> {
+  const from = new Date(since.getTime() - 60_000);
+  const [live, past] = await Promise.all([
+    prisma.onlineSession.findFirst({ where: { subscriberId, startedAt: { gte: from } }, select: { subscriberId: true } }).catch(() => null),
+    prisma.sessionRecord.findFirst({ where: { subscriberId, startedAt: { gte: from } }, select: { subscriberId: true } }).catch(() => null),
+  ]);
+  return !!(live || past);
+}
+
+export type FulfilOutcome = 'fulfilled' | 'not-paid' | 'retry';
+
+/**
+ * Make sure a PAID transaction actually served the customer, repairing whatever didn't happen.
+ * Throws nothing: a failed step returns 'retry' and the checker tries again later.
+ */
+export async function ensureFulfilled(txId: string): Promise<FulfilOutcome> {
+  const tx = await prisma.mpesaTransaction.findUnique({ where: { id: txId } });
+  if (!tx || tx.status !== 'PAID') return 'not-paid';
+  if (tx.fulfilledAt) return 'fulfilled';
+  const done = async () => {
+    await prisma.mpesaTransaction.update({ where: { id: txId }, data: { fulfilledAt: new Date() } });
+    console.log(`[mpesa] ${txId}: customer served (fulfilment repaired)`);
+    return 'fulfilled' as const;
+  };
+
+  try {
+    if (tx.purpose === 'SMS_TOPUP') return await done(); // wallet credit happens before PAID
+
+    const radius = await import('./radius');
+    const radiusOn = radius.radiusConfigured();
+    const { enqueueCommand } = await import('./commandQueue');
+    const isOther = !tx.packageId && !!tx.notes;
+
+    // ---- PPPoE / static renewal: expiry was saved before PAID (and is retried); repair RADIUS + unwall.
+    if (tx.subscriberId) {
+      const sub = await prisma.subscriber.findUnique({ where: { id: tx.subscriberId } });
+      if (!sub) { console.warn(`[mpesa] ${txId}: subscriber ${tx.subscriberId} no longer exists — nothing to serve`); return await done(); }
+      if (!isOther) {
+        if (radiusOn) await radius.syncSubscriberToRadius(sub.id); // throws if RADIUS can't be written
+        const entitled = sub.isActive && !!sub.expiresAt && sub.expiresAt > new Date();
+        if (entitled && sub.service !== 'HOTSPOT' && sub.routerId) {
+          const { enqueueUnwall } = await import('./walledGarden');
+          await enqueueUnwall(sub.routerId, sub.username, sub.id, sub.ipAddress ?? null); // no-op unless walled
+        }
+      }
+      await ensurePaymentRow(tx, sub.id, tx.notes ? `${tx.notes}${tx.phone ? ` — paid by ${tx.phone}` : ''}` : (tx.phone ? `Paid by ${tx.phone}` : ''));
+      return await done();
+    }
+
+    // ---- Hotspot purchase: everything after the PAID mark may have been skipped.
+    if (!tx.username) { console.warn(`[mpesa] ${txId}: paid hotspot purchase has no username — needs manual attention`); return 'retry'; }
+    let sub = await prisma.subscriber.findFirst({ where: { tenantId: tx.tenantId, username: tx.username } });
+    const mac = (tx.clientMac || '').toUpperCase() || null;
+    let target = tx.expiresAt || new Date(tx.createdAt.getTime() + tx.durationMinutes * 60_000);
+
+    // Our failure, not theirs: if they never got online since paying and a good chunk of the package
+    // has already run out, restart the clock so they get the full time they paid for.
+    const late = Date.now() - tx.createdAt.getTime() > Math.min(10 * 60_000, (tx.durationMinutes * 60_000) / 4);
+    if (late && (!sub || !(await usedSince(sub.id, tx.createdAt)))) {
+      const fresh = new Date(Date.now() + tx.durationMinutes * 60_000);
+      if (fresh > target) {
+        target = fresh;
+        await prisma.mpesaTransaction.update({ where: { id: txId }, data: { expiresAt: target } });
+        console.log(`[mpesa] ${txId}: never connected after paying — restarted ${tx.durationMinutes} min from now`);
+      }
+    }
+
+    if (!sub) {
+      sub = await prisma.subscriber.create({
+        data: {
+          tenantId: tx.tenantId, routerId: tx.routerId || undefined, packageId: tx.packageId || undefined,
+          username: tx.username, secret: tx.password || '0000', fullName: tx.phone || 'Hotspot Customer',
+          phone: tx.phone || null, service: 'HOTSPOT', isActive: true, expiresAt: target,
+          macAddress: mac, ipAddress: tx.clientIp || null,
+        },
+      });
+      console.log(`[mpesa] ${txId}: hotspot subscriber ${tx.username} was missing — created`);
+    } else if (!sub.expiresAt || sub.expiresAt.getTime() < target.getTime() - 60_000 || !sub.isActive) {
+      // Never shortens: only moves the expiry forward to what this payment bought.
+      const newExpiry = sub.expiresAt && sub.expiresAt > target ? sub.expiresAt : target;
+      sub = await prisma.subscriber.update({
+        where: { id: sub.id },
+        data: { expiresAt: newExpiry, isActive: true, packageId: tx.packageId || undefined, macAddress: sub.macAddress || mac },
+      });
+      console.log(`[mpesa] ${txId}: expiry for ${sub.username} repaired to ${newExpiry.toISOString()}`);
+    }
+
+    if (radiusOn) await radius.syncSubscriberToRadius(sub.id); // throws if RADIUS can't be written
+    if (tx.routerId && sub.expiresAt && sub.expiresAt > new Date()) {
+      const cmd = hotspotLoginCommand(sub.username, sub.secret, sub.macAddress || mac);
+      if (cmd) await enqueueCommand(tx.routerId, cmd);
+    }
+    await ensurePaymentRow(tx, sub.id, `Hotspot • ${tx.phone || ''}`);
+    return await done();
+  } catch (e) {
+    console.warn(`[mpesa] ${txId}: could not finish serving the customer yet (${e instanceof Error ? e.message : e}) — will retry`);
+    return 'retry';
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Probing a single transaction
 
 const lastProbe = new Map<string, number>();
 const failedRetries = new Map<string, number>();
 const MAX_PROVISION_RETRIES = 5;
+const MAX_FULFIL_RETRIES = 30; // with the backoff below, roughly two days of attempts
 const NO_CHECKOUT_GIVE_UP_MS = 2 * 3600_000;
 const GIVE_UP_MS = 48 * 3600_000;
 
 export type ProbeOutcome =
-  | 'paid' | 'failed' | 'pending' | 'already-paid' | 'in-progress' | 'not-pending'
+  | 'paid' | 'served' | 'failed' | 'pending' | 'already-paid' | 'in-progress' | 'not-pending'
   | 'no-credentials' | 'missing' | 'needs-review' | 'error';
 
 /**
@@ -297,8 +462,23 @@ export async function probeTransaction(txId: string, source: 'sweep' | 'poll' | 
     return r === 'settled' ? 'paid' : r === 'error' ? 'error' : (r as ProbeOutcome);
   }
 
+  // Paid but the customer isn't served yet (expiry, RADIUS or reconnect failed): repair that.
+  if (tx.status === 'PAID') {
+    if (tx.fulfilledAt) return 'already-paid';
+    if (tx.createdAt < (await fulfilmentSince())) return 'already-paid'; // predates tracking
+    const n = (failedRetries.get(txId) || 0) + 1;
+    failedRetries.set(txId, n);
+    if (n > MAX_FULFIL_RETRIES && source === 'sweep') {
+      if (n === MAX_FULFIL_RETRIES + 1) console.error(`[mpesa] ${txId}: paid but the customer still can't be served after ${MAX_FULFIL_RETRIES} tries — needs manual attention`);
+      return 'needs-review';
+    }
+    const f = await ensureFulfilled(txId);
+    if (f === 'fulfilled') { failedRetries.delete(txId); return 'served'; }
+    return 'error';
+  }
+
   const lateNoResponse = tx.status === 'FAILED' && tx.resultDesc === NO_RESPONSE_DESC;
-  if (tx.status !== 'PENDING' && !lateNoResponse) return tx.status === 'PAID' ? 'already-paid' : 'not-pending';
+  if (tx.status !== 'PENDING' && !lateNoResponse) return 'not-pending';
 
   const creds = await credsForTransaction(tx);
   if (!creds) return 'no-credentials';
@@ -392,10 +572,10 @@ function interval(ageMs: number): number {
 
 let sweeping = false;
 
-export async function sweepPendingPayments(): Promise<{ checked: number; paid: number; failed: number }> {
-  if (sweeping) return { checked: 0, paid: 0, failed: 0 };
+export async function sweepPendingPayments(): Promise<{ checked: number; paid: number; failed: number; served: number }> {
+  if (sweeping) return { checked: 0, paid: 0, failed: 0, served: 0 };
   sweeping = true;
-  const stats = { checked: 0, paid: 0, failed: 0 };
+  const stats = { checked: 0, paid: 0, failed: 0, served: 0 };
   try {
     const now = Date.now();
     const candidates = await prisma.mpesaTransaction.findMany({
@@ -405,6 +585,11 @@ export async function sweepPendingPayments(): Promise<{ checked: number; paid: n
           { status: 'PROCESSING', updatedAt: { lt: new Date(now - STALE_PROCESSING_MS) } },
           // Recent "no response" failures, re-checked against the history (only if it's available).
           { status: 'FAILED', resultDesc: NO_RESPONSE_DESC, createdAt: { gt: new Date(now - 3 * 3600_000) } },
+          // Paid, but the customer isn't served yet. Given a minute for provisioning to finish first.
+          {
+            status: 'PAID', fulfilledAt: null, updatedAt: { lt: new Date(now - 60_000) },
+            createdAt: { gt: new Date(Math.max(now - GIVE_UP_MS, (await fulfilmentSince()).getTime())) },
+          },
         ],
       },
       orderBy: { createdAt: 'asc' },
@@ -414,19 +599,20 @@ export async function sweepPendingPayments(): Promise<{ checked: number; paid: n
 
     for (const c of candidates) {
       const age = now - c.createdAt.getTime();
-      const wait = c.status === 'FAILED' ? 10 * 60_000 : interval(age);
+      const wait = c.status === 'FAILED' ? 10 * 60_000 : c.status === 'PAID' ? Math.max(60_000, interval(age)) : interval(age);
       if (now - (lastProbe.get(c.id) || 0) < wait) continue;
       stats.checked++;
       try {
         const r = await probeTransaction(c.id, 'sweep');
         if (r === 'paid') stats.paid++;
+        if (r === 'served') stats.served++;
         if (r === 'failed') stats.failed++;
       } catch (e) {
         console.warn(`[mpesa] sweep ${c.id}:`, e instanceof Error ? e.message : e);
       }
       await new Promise((r) => setTimeout(r, 300)); // gentle on Daraja
     }
-    if (stats.paid || stats.failed) console.log(`[mpesa] status check: ${stats.checked} checked, ${stats.paid} recovered as paid, ${stats.failed} confirmed failed`);
+    if (stats.paid || stats.failed || stats.served) console.log(`[mpesa] status check: ${stats.checked} checked, ${stats.paid} recovered as paid, ${stats.served} customers reconnected, ${stats.failed} confirmed failed`);
   } finally {
     sweeping = false;
     // Keep the throttle maps from growing forever.

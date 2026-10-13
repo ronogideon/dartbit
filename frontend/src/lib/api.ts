@@ -335,13 +335,13 @@ export const resyncFirewall = (routerId: string) => api.post(`/router-firewall/$
 
 // ---- M-Pesa recovery ----
 export interface UnconfirmedMpesa {
-  id: string; phone: string; amount: number; status: 'PENDING' | 'PROCESSING' | 'FAILED';
+  id: string; phone: string; amount: number; status: 'PENDING' | 'PROCESSING' | 'FAILED' | 'PAID';
   resultDesc: string | null; purpose: string | null; username: string | null; mpesaReceipt: string | null;
   createdAt: string; canQuery: boolean;
 }
 export const getUnconfirmedMpesa = () => api.get('/mpesa-recovery/unconfirmed').then((r) => r.data.data as UnconfirmedMpesa[]);
 export const recheckMpesa = (txId: string) =>
-  api.post(`/mpesa-recovery/recheck/${txId}`).then((r) => r.data.data as { outcome: string; status?: string; message?: string | null; receipt?: string | null });
+  api.post(`/mpesa-recovery/recheck/${txId}`).then((r) => r.data.data as { outcome: string; status?: string; served?: boolean; message?: string | null; receipt?: string | null });
 export const getMpesaHistoryStatus = () =>
   api.get('/mpesa-recovery/history-status').then((r) => r.data.data as { applicable: boolean; available: boolean; label?: string; message?: string });
 export const registerMpesaHistory = (nominatedNumber: string) =>

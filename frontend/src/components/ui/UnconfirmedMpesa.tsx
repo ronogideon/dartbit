@@ -17,6 +17,7 @@ function ago(iso: string): string {
 }
 
 function label(r: Row): string {
+  if (r.status === 'PAID') return 'Paid — reconnecting the customer (retrying)';
   if (r.status === 'PROCESSING') return 'Paid — finishing setup';
   if (r.status === 'FAILED') return 'Phone didn’t respond — rechecking history';
   return r.resultDesc || 'Waiting for M-Pesa';
@@ -31,7 +32,8 @@ export default function UnconfirmedMpesa() {
   const recheck = useMutation({
     mutationFn: recheckMpesa,
     onSuccess: (r) => {
-      if (r.status === 'PAID') toast.success(`Confirmed paid${r.receipt ? ` (${r.receipt})` : ''} — recorded`);
+      if (r.status === 'PAID' && r.served) toast.success(`Paid${r.receipt ? ` (${r.receipt})` : ''} — customer is set up and reconnecting`);
+      else if (r.status === 'PAID') toast('Payment is recorded, but the customer couldn\u2019t be reconnected yet — Dartbit keeps retrying. Check the router is online.', { duration: 8000 });
       else if (r.status === 'FAILED') toast(`M-Pesa says: ${r.message || 'not paid'}`);
       else if (r.outcome === 'needs-review') toast('Several possible matches in M-Pesa history — check the customer’s M-Pesa message for the code.', { duration: 8000 });
       else toast('M-Pesa hasn’t confirmed it yet. Dartbit keeps checking automatically.');
@@ -47,10 +49,10 @@ export default function UnconfirmedMpesa() {
     <div className="card p-4 mb-6 border border-amber-200 dark:border-amber-900/60">
       <div className="flex items-center gap-2 mb-1">
         <Clock size={16} className="text-amber-600" />
-        <h3 className="font-semibold text-sm">Unconfirmed M-Pesa payments ({data.length})</h3>
+        <h3 className="font-semibold text-sm">M-Pesa payments needing attention ({data.length})</h3>
       </div>
       <p className="text-xs text-gray-500 mb-3">
-        Dartbit is still confirming these with Safaricom and checks them automatically. If a customer says they paid, tap Recheck.
+        Dartbit keeps working on these automatically: confirming them with Safaricom, or getting paid customers back online. If a customer says they paid, tap Recheck.
       </p>
       <div className="divide-y divide-gray-100 dark:divide-gray-800">
         {data.map((r) => (

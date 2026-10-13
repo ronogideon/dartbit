@@ -16,6 +16,13 @@ import { sendSuccess, sendError } from '../utils/response';
 import { centralDarajaCreds, decryptDarajaCreds, pullTransactions, pullRegister, normalizeBackendUrl, PullUnavailableError, type DarajaCreds } from '../utils/daraja';
 import { probeTransaction, NO_RESPONSE_DESC } from '../utils/mpesaSettle';
 
+/** Only payments since fulfilment tracking began (v1.11.91) can be "paid but not connected". */
+async function fulfilmentStart(): Promise<Date> {
+  const row = await prisma.platformSetting.findUnique({ where: { key: 'mpesa_fulfil_since' } }).catch(() => null);
+  const t = row?.value ? Date.parse(row.value) : NaN;
+  return Number.isNaN(t) ? new Date() : new Date(t);
+}
+
 const router = Router();
 router.use(authenticate);
 
@@ -44,7 +51,11 @@ router.get('/unconfirmed', async (req: AuthRequest, res: Response) => {
       where: {
         ...(tenantId ? { tenantId } : {}),
         createdAt: { gt: since },
-        OR: [{ status: 'PENDING' }, { status: 'PROCESSING' }, { status: 'FAILED', resultDesc: NO_RESPONSE_DESC }],
+        OR: [
+          { status: 'PENDING' }, { status: 'PROCESSING' }, { status: 'FAILED', resultDesc: NO_RESPONSE_DESC },
+          // Paid, but the customer still isn't connected (expiry/RADIUS/reconnect being retried).
+          { status: 'PAID', fulfilledAt: null, updatedAt: { lt: new Date(Date.now() - 2 * 60_000) }, createdAt: { gt: await fulfilmentStart() } },
+        ],
       },
       orderBy: { createdAt: 'desc' },
       take: 100,
@@ -65,8 +76,8 @@ router.post('/recheck/:txId', async (req: AuthRequest, res: Response) => {
     const tx = await prisma.mpesaTransaction.findUnique({ where: { id: req.params.txId }, select: { tenantId: true } });
     if (!tx || (!isSuper(req) && tx.tenantId !== req.user?.tenantId)) return sendError(res, 'Not found', 404);
     const outcome = await probeTransaction(req.params.txId, 'recheck');
-    const after = await prisma.mpesaTransaction.findUnique({ where: { id: req.params.txId }, select: { status: true, resultDesc: true, mpesaReceipt: true } });
-    sendSuccess(res, { outcome, status: after?.status, message: after?.resultDesc, receipt: after?.mpesaReceipt });
+    const after = await prisma.mpesaTransaction.findUnique({ where: { id: req.params.txId }, select: { status: true, resultDesc: true, mpesaReceipt: true, fulfilledAt: true } });
+    sendSuccess(res, { outcome, status: after?.status, served: !!after?.fulfilledAt, message: after?.resultDesc, receipt: after?.mpesaReceipt });
   } catch (err) {
     sendError(res, err instanceof Error ? err.message : 'Recheck failed', 500);
   }

@@ -247,6 +247,9 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
         select: { id: true },
       });
 
+      // Served = every step that gets the customer back online succeeded. Only then is fulfilledAt
+      // set; otherwise the payment checker repairs whatever was missed (see ensureFulfilled).
+      let served = true;
       const mins = tx.durationMinutes || pkg?.validityMinutes || 60;
       const wasLapsed = !sub.expiresAt || sub.expiresAt <= new Date();
       const base = sub.expiresAt && sub.expiresAt > new Date() ? sub.expiresAt : new Date();
@@ -284,7 +287,7 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
       try {
         const { radiusConfigured, syncSubscriberToRadius } = await import('../utils/radius');
         if (!isOther && radiusConfigured()) await syncSubscriberToRadius(sub.id, { forceReauth: wasLapsed });
-      } catch (e) { console.error('renew: radius sync failed:', e instanceof Error ? e.message : e); }
+      } catch (e) { served = false; console.error('renew: radius sync failed:', e instanceof Error ? e.message : e); }
       // Legacy router push only when not on RADIUS.
       try {
         const { radiusConfigured } = await import('../utils/radius');
@@ -296,17 +299,23 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
             await enqueueCommand(sub.routerId, `:foreach s in=[/ppp secret find name="${sub.username}"] do={ /ppp secret set $s disabled=no }`);
           }
         }
-      } catch { /* best-effort */ }
+      } catch { served = false; }
       // A wired (PPPoE/Static) user who was EXPIRED is confined by the dartbit-expired address-list.
       // RELEASE the LIVE session instantly — remove its list entry and flush that IP's conntrack —
       // so it gets full internet in ~1s with NO re-auth and NO reboot. (Hotspot has no walled garden.)
       try {
-        if (!isOther && wasLapsed && sub.service !== 'HOTSPOT' && sub.routerId) {
+        // On a retry the account is already extended, so "was it lapsed?" reads false — but the
+        // first attempt may have crashed before releasing it. Unwall is a no-op unless walled.
+        if (!isOther && (wasLapsed || !!alreadyRecorded) && sub.service !== 'HOTSPOT' && sub.routerId) {
           const { enqueueUnwall } = await import('../utils/walledGarden');
           await enqueueUnwall(sub.routerId, sub.username, sub.id, sub.ipAddress ?? null);
         }
-      } catch { /* best-effort */ }
-      await prisma.mpesaTransaction.update({ where: { id: tx.id }, data: { status: 'PAID', mpesaReceipt: receipt || null, resultDesc: 'Success' } });
+      } catch { served = false; }
+      await prisma.mpesaTransaction.update({
+        where: { id: tx.id },
+        data: { status: 'PAID', mpesaReceipt: receipt || null, resultDesc: 'Success', ...(served ? { fulfilledAt: new Date() } : {}) },
+      });
+      if (!served) console.warn(`[mpesa] ${tx.id}: ${sub.username} paid but not fully reconnected — the payment checker will retry`);
       // Notify the subscriber's registered phone (not the payer) that the account was renewed.
       if (!alreadyRecorded) try {
         await sendNotification({
@@ -413,7 +422,6 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   // radcheck rows are written (further down), so the login actually authorizes.
   const { radiusConfigured } = await import('../utils/radius');
   const radiusManaged = radiusConfigured() && !!tx.routerId;
-  const radiusLoginCmds: string[] = [];
   const cmds: string[] = [];
   if (!radiusManaged) {
   // Create-or-update the profile (carries the package rate-limit), verifying it exists before
@@ -508,6 +516,7 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
   // just-connected device straight back out (the "logged out after a few seconds" complaint).
   const wasExpired = !!existingSub && (existingSub.expiresAt ? existingSub.expiresAt <= new Date() : false);
   let subscriberId: string | null = null;
+  let served = true; // as in the PPPoE branch: fulfilledAt only when the customer is really online
   try {
     if (reservedSubId) {
       // Created above when the D-number was reserved, with these same details.
@@ -545,8 +554,10 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
       subscriberId = existingSub.id;
     }
   } catch (e) {
+    served = false;
     console.error('subscriber create (hotspot) error:', e instanceof Error ? e.message : e);
   }
+  if (!subscriberId) served = false;
 
   // RADIUS-managed router: now that the subscriber row exists, write its radcheck identities (MAC +
   // D-name, with Expiration + rate-limit), THEN fire the instant active-login go-ahead — in that
@@ -560,11 +571,17 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
       // kickToApply here sent a RADIUS CoA disconnect ("Radius disconnect with no ip provided") that
       // kicked the just-paid device. No kick = seamless.
       if (radiusConfigured()) await syncSubscriberToRadius(subscriberId);
+      // Log the paid device straight in. This was described here but never actually sent, so on
+      // RADIUS routers a customer whose sign-in page closed before its 7-second fallback login
+      // stayed offline after paying. Only once RADIUS has the new rows, so the login authorises.
+      if (tx.routerId) {
+        const { hotspotLoginCommand } = await import('../utils/mpesaSettle');
+        const cmd = hotspotLoginCommand(displayName, password, macUC);
+        if (cmd) await enqueueCommand(tx.routerId, cmd);
+      }
     } catch (e) {
-      console.error('radius hotspot sync error:', e instanceof Error ? e.message : e);
-    }
-    if (tx.routerId && radiusLoginCmds.length) {
-      await enqueueCommand(tx.routerId, radiusLoginCmds.join('\n')).catch(() => {});
+      served = false;
+      console.error('radius hotspot sync/login error:', e instanceof Error ? e.message : e);
     }
   }
 
@@ -592,8 +609,14 @@ export async function provisionFromTransaction(txId: string, receipt: string) {
         },
       });
     } catch (e) {
+      served = false; // the checker will record it
       console.error('payment record (hotspot) error:', e instanceof Error ? e.message : e);
     }
+  }
+  if (served) {
+    await prisma.mpesaTransaction.update({ where: { id: txId }, data: { fulfilledAt: new Date() } }).catch(() => {});
+  } else {
+    console.warn(`[mpesa] ${txId}: ${displayName} paid but not fully set up — the payment checker will retry`);
   }
 
   // Send notification SMS to the customer: a payment receipt (with login creds) every

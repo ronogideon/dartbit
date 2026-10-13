@@ -111,8 +111,8 @@ app.use(express.json());
 // malformed / over-length URL => 400 Bad Request. Scoped to text/plain so JSON routes are untouched.
 app.use(express.text({ type: 'text/plain', limit: '5mb' }));
 
-app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.90', status: 'running' }));
-app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.90', timestamp: new Date().toISOString() }));
+app.get('/', (_req, res) => res.json({ service: 'Dartbit API', version: '1.11.91', status: 'running' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', version: '1.11.91', timestamp: new Date().toISOString() }));
 
 app.use('/auth', authRoutes);
 app.use('/signup', signupRoutes);
@@ -155,7 +155,7 @@ app.use('/hotspot-html', hotspotHtmlRoutes);
 app.use((_req, res) => res.status(404).json({ success: false, error: 'Route not found' }));
 
 const server = app.listen(PORT, () => {
-  console.log(`\n🚀 Dartbit v1.11.90 running on port ${PORT}\n`);
+  console.log(`\n🚀 Dartbit v1.11.91 running on port ${PORT}\n`);
   patchDatabase().catch(e => console.error('[patchDatabase] failed:', e instanceof Error ? e.message : e));
 
   // Fair Use Policy sweep: accumulate usage and throttle/release. Every 5 minutes matches the
@@ -264,7 +264,7 @@ function startBillingStatusUpdater() {
   const FIVE_DAYS = 5 * 24 * 60 * 60 * 1000;
   const statusFor = (due: number, now: number) => (now > due ? 'OVERDUE' : due - now <= FIVE_DAYS ? 'DUE_SOON' : 'CURRENT');
 
-  // One-time, idempotent: trial tenants created before v1.11.90 have trialEndsAt but no
+  // One-time, idempotent: trial tenants created before v1.11.91 have trialEndsAt but no
   // billingDueDate, so the updater skipped them and they never reached DUE_SOON/OVERDUE.
   // Set the due date to the trial end AND write the status it implies in the same statement —
   // so the updater sees no transition and sends nothing. Backfilled tenants are silent; only
@@ -1125,9 +1125,9 @@ async function patchDatabase() {
     await safeExec(prisma, 'MpesaTx payoutStatus', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutStatus" TEXT`);
     await safeExec(prisma, 'MpesaTx payoutRef', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutRef" TEXT`);
     await safeExec(prisma, 'MpesaTx payoutAt', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "payoutAt" TIMESTAMP(3)`);
-    // v1.11.90: reason for a non-package ("other service") prompt payment, carried to the Payment row.
+    // v1.11.91: reason for a non-package ("other service") prompt payment, carried to the Payment row.
     await safeExec(prisma, 'MpesaTx notes', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "notes" TEXT`);
-    // v1.11.90 Fair Use Policy — per-package limits + per-subscriber usage counters.
+    // v1.11.91 Fair Use Policy — per-package limits + per-subscriber usage counters.
     await safeExec(prisma, 'Pkg fupEnabled', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "fupEnabled" BOOLEAN NOT NULL DEFAULT false`);
     await safeExec(prisma, 'Pkg fupPeriod', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "fupPeriod" TEXT NOT NULL DEFAULT 'MONTHLY'`);
     await safeExec(prisma, 'Pkg fupLimitMb', `ALTER TABLE "Package" ADD COLUMN IF NOT EXISTS "fupLimitMb" INTEGER`);
@@ -1338,6 +1338,10 @@ async function patchDatabase() {
       )`);
     await safeExec(prisma, 'PlatformSetting key unique', `CREATE UNIQUE INDEX IF NOT EXISTS "PlatformSetting_key_key" ON "PlatformSetting"("key")`);
     await safeExec(prisma, 'MpesaTransaction purpose', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "purpose" TEXT`);
+    // v1.11.91: set only once the customer is actually served (expiry saved, RADIUS written, device
+    // reconnected). PAID without it means "money received, connection still being retried".
+    await safeExec(prisma, 'MpesaTransaction fulfilledAt', `ALTER TABLE "MpesaTransaction" ADD COLUMN IF NOT EXISTS "fulfilledAt" TIMESTAMP(3)`);
+    await safeExec(prisma, 'MpesaTransaction fulfil idx', `CREATE INDEX IF NOT EXISTS "MpesaTransaction_status_fulfilledAt_idx" ON "MpesaTransaction"("status","fulfilledAt")`);
 
     // v1.10.21 — editable templates + system alerts.
     await safeExec(prisma, 'NotifConfig templates', `ALTER TABLE "NotificationConfig" ADD COLUMN IF NOT EXISTS "templates" JSONB`);

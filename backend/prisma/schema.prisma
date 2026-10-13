@@ -474,6 +474,7 @@ model MpesaTransaction {
   durationMinutes   Int       @default(60)
   expiresAt         DateTime?
   resultDesc        String?
+  fulfilledAt       DateTime?                  // set once the customer is actually served (expiry + RADIUS + reconnect); PAID without it = still retrying
   notes             String?                    // reason for a non-package ("other service") payment; carried through to the Payment row on success
   // Collection routing + payout (for Dartbit-collected manual methods)
   collectedVia      String?   @default("TENANT") // TENANT | DARTBIT
@@ -488,6 +489,7 @@ model MpesaTransaction {
   @@index([tenantId, status])
   @@index([checkoutRequestId])
   @@index([mpesaReceipt])
+  @@index([status, fulfilledAt])
 }
 
 // Persistent command queue for routers. Replaces the old in-memory queue, which
